@@ -32,7 +32,7 @@ async fn create_relay(
     // as JSON into a `CreateRelay` type
     Json(payload): Json<CreateRelay>,
 ) -> impl IntoResponse {
-    // TODO get payload and create Transaction from SignedDelegateAction and send to RPC
+    // TODO get payload and create near_primitives::transaction::Transaction from SignedDelegateAction and send to RPC
     let relay = Relay {
         signed_delegate_action: payload.signed_delegate_action,
     };
@@ -47,7 +47,7 @@ async fn create_relay(
 struct CreateRelay {
     // TODO get SignedDelegateAction from https://github.com/binary-star-near/nearcore/tree/NEP-366 instead of near_primatives
     // signed_delegate_action: near_primitives::transaction::SignedDelegateAction,
-    signed_delegate_action: String,
+    signed_delegate_action: String,  // mocking out signed_delegate_action as String to compile - rm when typing and deserialization is done
 }
 
 // the output to our `create_relay` handler
@@ -55,5 +55,5 @@ struct CreateRelay {
 struct Relay {
     // TODO get SignedDelegateAction from https://github.com/binary-star-near/nearcore/tree/NEP-366 instead of near_primatives
     // signed_delegate_action: near_primitives::transaction::SignedDelegateAction,
-    signed_delegate_action: String,
+    signed_delegate_action: String,  // mocking out signed_delegate_action as String to compile - rm when typing and deserialization is done
 }
