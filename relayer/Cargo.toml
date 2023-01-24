@@ -6,17 +6,17 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-axum = "0.6.2"
+axum = "~0.5"  # using an older version to avoid conflicts with nearcore version
 color-eyre = "0.6"
 dirs = "4.0"
 linked-hash-map = { version = "0.5", features = ["serde_impl"] }
 near-jsonrpc-client = "0.4.0"
 near-jsonrpc-primitives = "0.15"
 near-primitives = "0.15"  # near_primitives::transaction::SignedDelegateAction is not released yet TODO figure out how to get SignedDelegateAction from nearcore version below or Mock out
-# nearcore = { git = "https://github.com/near/nearcore.git", branch = "master"}
+nearcore = { git = "https://github.com/near/nearcore.git", branch = "master"}
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0.68"
-tokio = { version = "^1", features = ["full"] }
+tokio = { version = "~1", features = ["full"] }  # using this version to avoid conflicts with nearcore version
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 url = { version = "2", features = ["serde"] }
