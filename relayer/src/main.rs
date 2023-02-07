@@ -8,6 +8,7 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 use std::net::SocketAddr;
+use near_primitives::transaction::SignedDelegateAction;
 use near_primitives::transaction::TransferAction;
 
 #[tokio::main]
