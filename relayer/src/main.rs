@@ -1,15 +1,9 @@
 mod config;
 
-use axum::{
-    http::StatusCode,
-    response::IntoResponse,
-    routing::post,
-    Json, Router,
-};
-use serde::{Deserialize, Serialize};
+use axum::{response::IntoResponse, routing::post, Router, extract};
 use std::net::SocketAddr;
-use near_primitives::transaction::SignedDelegateAction;
-use near_primitives::transaction::TransferAction;
+use near_primitives::borsh::BorshDeserialize;
+use near_primitives::delegate_action::SignedDelegateAction;
 
 #[tokio::main]
 async fn main() {
@@ -32,55 +26,43 @@ async fn main() {
 }
 
 async fn create_relay(
-    // this argument tells axum to parse the request body
-    // as JSON into a `CreateRelay` type
-    Json(payload): Json<CreateRelay>,
+    data: extract::Json<Vec<u8>>,
 ) -> impl IntoResponse {
-    // TODO get payload and create near_primitives::transaction::Transaction from SignedDelegateAction
-    let relay = Relay {
-        signed_delegate_action: payload.signed_delegate_action,
-    };
+    // deserialize SignedDelegateAction using borsh
+    match SignedDelegateAction::try_from_slice(&data.0) {
+        Ok(signed_delegate_action) => {
+            println!("Deserialized SignedDelegateAction object: {:#?}", signed_delegate_action);
+            // TODO create near_primitives::transaction::Transaction from SignedDelegateAction
 
-    // TODO filter out transfer Action types (FT transfers or NFT OK)
-    //let transfer_action = near_primitives::transaction::TransferAction;
+            // TODO filter out transfer Action types (FT transfers or NFT OK)
+            // let transfer_action = near_primitives::transaction::TransferAction;
 
-    // create json_rpc_client, TODO send the Transaction
-    println!("Sending transaction ...");
-    // let transaction_info = loop {
-    //     let transaction_info_result = network_config.json_rpc_client()
-    //         .call(near_jsonrpc_client::methods::broadcast_tx_commit::RpcBroadcastTxCommitRequest{signed_transaction: signed_transaction.clone()})
-    //         .await;
-    //     match transaction_info_result {
-    //         Ok(response) => {
-    //             break response;
-    //         }
-    //         Err(err) => match crate::common::rpc_transaction_error(err) {
-    //             Ok(_) => {
-    //                 tokio::time::sleep(std::time::Duration::from_millis(100)).await
-    //             }
-    //             Err(report) => return color_eyre::eyre::Result::Err(report),
-    //         },
-    //     };
-    // };
-    // TODO return transaction_info
+            // create json_rpc_client, TODO send the Transaction
+            println!("Sending transaction ...");
+            // let transaction_info = loop {
+            //     let transaction_info_result = network_config.json_rpc_client()
+            //         .call(near_jsonrpc_client::methods::broadcast_tx_commit::RpcBroadcastTxCommitRequest{signed_transaction: signed_transaction.clone()})
+            //         .await;
+            //     match transaction_info_result {
+            //         Ok(response) => {
+            //             break response;
+            //         }
+            //         Err(err) => match crate::common::rpc_transaction_error(err) {
+            //             Ok(_) => {
+            //                 tokio::time::sleep(std::time::Duration::from_millis(100)).await
+            //             }
+            //             Err(report) => return color_eyre::eyre::Result::Err(report),
+            //         },
+            //     };
+            // };
+            // TODO return transaction_info
 
-    // this will be converted into a JSON response
-    // with a status code of `201 Created`
-    (StatusCode::CREATED, Json(relay))
-}
+            "Successfully relayed SignedDelegateAction".into_response()
+        },
+        Err(e) => {
+            println!("Error deserializing MyData object: {:?}", e);
+            "Error deserializing MyData object".into_response()
+        },
+    }
 
-// the input to our `create_relay` handler
-#[derive(Deserialize)]
-struct CreateRelay {
-    // TODO get SignedDelegateAction from nearcore instead of near_primatives
-    // signed_delegate_action: near_primitives::transaction::SignedDelegateAction,
-    signed_delegate_action: String,  // mocking out signed_delegate_action as String to compile - rm when typing and deserialization is done
-}
-
-// the output to our `create_relay` handler
-#[derive(Serialize)]
-struct Relay {
-    // TODO get SignedDelegateAction from nearcore instead of near_primatives
-    // signed_delegate_action: near_primitives::transaction::SignedDelegateAction,
-    signed_delegate_action: String,  // mocking out signed_delegate_action as String to compile - rm when typing and deserialization is done
 }
