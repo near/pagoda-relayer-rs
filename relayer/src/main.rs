@@ -3,7 +3,8 @@ mod config;
 use axum::{response::IntoResponse, routing::post, Router, extract};
 use std::net::SocketAddr;
 use near_primitives::borsh::BorshDeserialize;
-use near_primitives::delegate_action::SignedDelegateAction;
+use near_primitives::delegate_action::{DelegateAction, NonDelegateAction, SignedDelegateAction};
+use near_primitives::transaction::Action;
 
 #[tokio::main]
 async fn main() {
@@ -32,10 +33,34 @@ async fn create_relay(
     match SignedDelegateAction::try_from_slice(&data.0) {
         Ok(signed_delegate_action) => {
             println!("Deserialized SignedDelegateAction object: {:#?}", signed_delegate_action);
-            // TODO create near_primitives::transaction::Transaction from SignedDelegateAction
 
-            // TODO filter out transfer Action types (FT transfers or NFT OK)
-            // let transfer_action = near_primitives::transaction::TransferAction;
+            // filter out transfer Action types (FT transfers or NFT OK)
+            let filtered_actions: Vec<NonDelegateAction> = signed_delegate_action.delegate_action.actions
+                .into_iter()
+                .map(|a| Action::try_from(a.clone()).unwrap())
+                .filter(|action| {
+                    // TODO error[E0308]: mismatched types expected `NonDelegateAction`, found `Action`
+                    if let Action::Transfer(_) = action {
+                        false // exclude TransferAction types
+                    } else {
+                        true // include all other Action variants
+                    }
+                })
+                .collect();
+            // SignedDelegateAction is immutable so need to create new instance post action filter
+            let signed_delegate_action_filtered = SignedDelegateAction {
+                delegate_action: DelegateAction {
+                    sender_id: signed_delegate_action.delegate_action.sender_id,
+                    receiver_id: signed_delegate_action.delegate_action.receiver_id,
+                    actions: filtered_actions,
+                    nonce: signed_delegate_action.delegate_action.nonce,
+                    max_block_height: signed_delegate_action.delegate_action.max_block_height,
+                    public_key: signed_delegate_action.delegate_action.public_key,
+                },
+                signature: signed_delegate_action.signature,
+            };
+
+            // TODO create near_primitives::transaction::Transaction from SignedDelegateAction
 
             // create json_rpc_client, TODO send the Transaction
             println!("Sending transaction ...");
