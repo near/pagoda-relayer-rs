@@ -3,7 +3,7 @@ mod config;
 use axum::{response::IntoResponse, routing::post, Router, extract};
 use std::net::SocketAddr;
 use near_jsonrpc_client::methods::broadcast_tx_commit::RpcBroadcastTxCommitRequest;
-use near_primitives::borsh::BorshDeserialize;
+use near_primitives::borsh::{BorshDeserialize, BorshSerialize};
 use near_primitives::delegate_action::{NonDelegateAction, SignedDelegateAction};
 use near_primitives::transaction::{Action, SignedTransaction};
 
@@ -80,12 +80,12 @@ async fn create_relay(
                         Ok(_) => {
                             tokio::time::sleep(std::time::Duration::from_millis(100)).await
                         }
-                        Err(report) => return color_eyre::eyre::Result::Err(report),
+                        Err(report) => return Err(report).try_to_vec().expect("REASON").into_response(),
                     },
                 };
             };
 
-            "Successfully relayed SignedDelegateAction".into_response()
+            "Successfully relayed and sent transaction".into_response()
         },
         Err(e) => {
             println!("Error deserializing MyData object: {:?}", e);
