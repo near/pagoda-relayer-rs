@@ -2,6 +2,7 @@ mod config;
 
 use axum::{response::IntoResponse, routing::post, Router, extract};
 use std::net::SocketAddr;
+use near_jsonrpc_client::methods::broadcast_tx_commit::RpcBroadcastTxCommitRequest;
 use near_primitives::borsh::BorshDeserialize;
 use near_primitives::delegate_action::{NonDelegateAction, SignedDelegateAction};
 use near_primitives::transaction::{Action, SignedTransaction};
@@ -67,23 +68,22 @@ async fn create_relay(
 
             // create json_rpc_client, TODO send the SignedTransaction
             println!("Sending transaction ...");
-            // let transaction_info = loop {
-            //     let transaction_info_result = network_config.json_rpc_client()
-            //         .call(near_jsonrpc_client::methods::broadcast_tx_commit::RpcBroadcastTxCommitRequest{signed_transaction: signed_transaction.clone()})
-            //         .await;
-            //     match transaction_info_result {
-            //         Ok(response) => {
-            //             break response;
-            //         }
-            //         Err(err) => match crate::common::rpc_transaction_error(err) {
-            //             Ok(_) => {
-            //                 tokio::time::sleep(std::time::Duration::from_millis(100)).await
-            //             }
-            //             Err(report) => return color_eyre::eyre::Result::Err(report),
-            //         },
-            //     };
-            // };
-            // TODO return transaction_info
+            let transaction_info = loop {
+                let transaction_info_result = network_config.json_rpc_client()
+                    .call(RpcBroadcastTxCommitRequest{signed_transaction: signed_transaction.clone()})
+                    .await;
+                match transaction_info_result {
+                    Ok(response) => {
+                        break response;
+                    }
+                    Err(err) => match crate::common::rpc_transaction_error(err) {
+                        Ok(_) => {
+                            tokio::time::sleep(std::time::Duration::from_millis(100)).await
+                        }
+                        Err(report) => return color_eyre::eyre::Result::Err(report),
+                    },
+                };
+            };
 
             "Successfully relayed SignedDelegateAction".into_response()
         },
