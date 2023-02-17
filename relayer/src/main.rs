@@ -3,8 +3,8 @@ mod config;
 use axum::{response::IntoResponse, routing::post, Router, extract};
 use std::net::SocketAddr;
 use near_primitives::borsh::BorshDeserialize;
-use near_primitives::delegate_action::{DelegateAction, NonDelegateAction, SignedDelegateAction};
-use near_primitives::transaction::Action;
+use near_primitives::delegate_action::{NonDelegateAction, SignedDelegateAction};
+use near_primitives::transaction::{Action, SignedTransaction};
 
 #[tokio::main]
 async fn main() {
@@ -47,22 +47,25 @@ async fn create_relay(
                     }
                 })
                 .collect();
-            // SignedDelegateAction is immutable so need to create new instance post action filter
-            let signed_delegate_action_filtered = SignedDelegateAction {
-                delegate_action: DelegateAction {
-                    sender_id: signed_delegate_action.delegate_action.sender_id,
-                    receiver_id: signed_delegate_action.delegate_action.receiver_id,
-                    actions: filtered_actions,
-                    nonce: signed_delegate_action.delegate_action.nonce,
-                    max_block_height: signed_delegate_action.delegate_action.max_block_height,
-                    public_key: signed_delegate_action.delegate_action.public_key,
-                },
-                signature: signed_delegate_action.signature,
+
+            // create Transaction, SignedTransaction from SignedDelegateAction
+            let transaction = near_primitives::transaction::Transaction{
+                signer_id: signed_delegate_action.delegate_action.sender_id,
+                public_key: signed_delegate_action.delegate_action.public_key,
+                nonce: signed_delegate_action.delegate_action.nonce,
+                receiver_id: signed_delegate_action.delegate_action.receiver_id,
+                block_hash: Default::default(),
+                actions: filtered_actions
+                    .into_iter()
+                    .map(|a| Action::try_from(a.clone()).unwrap())
+                    .collect()
             };
+            let signed_transaction = SignedTransaction::new(
+                signed_delegate_action.signature,
+                transaction
+            );
 
-            // TODO create near_primitives::transaction::Transaction from SignedDelegateAction
-
-            // create json_rpc_client, TODO send the Transaction
+            // create json_rpc_client, TODO send the SignedTransaction
             println!("Sending transaction ...");
             // let transaction_info = loop {
             //     let transaction_info_result = network_config.json_rpc_client()
