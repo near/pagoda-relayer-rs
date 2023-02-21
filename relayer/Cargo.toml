@@ -11,9 +11,8 @@ color-eyre = "0.6"
 dirs = "4.0"
 linked-hash-map = { version = "0.5", features = ["serde_impl"] }
 near-jsonrpc-client = "0.4.0"
-near-jsonrpc-primitives = "0.15"
-# near-primitives = "0.15"  # near_primitives::transaction::SignedDelegateAction is not released yet TODO
-near-primitives = { path = "/Users/awit/repos/nearcore/core/primitives" }
+near-jsonrpc-primitives = "0.16"
+near-primitives = "0.16"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0.68"
 tokio = { version = "~1", features = ["full"] }  # using this version to avoid conflicts with nearcore version
