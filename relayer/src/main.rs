@@ -4,7 +4,7 @@ mod common;
 use axum::{response::IntoResponse, routing::post, Router, extract};
 use std::net::SocketAddr;
 use near_jsonrpc_client::methods::broadcast_tx_commit::RpcBroadcastTxCommitRequest;
-use near_primitives::borsh::{BorshDeserialize, BorshSerialize};
+use near_primitives::borsh::BorshDeserialize;
 use near_primitives::delegate_action::{NonDelegateAction, SignedDelegateAction};
 use near_primitives::transaction::{Action, SignedTransaction};
 use crate::common::rpc_transaction_error;
@@ -83,6 +83,8 @@ async fn create_relay(
             println!("Sending transaction ...");
             let transaction_info = loop {
                 let transaction_info_result = NETWORK_CONFIG.json_rpc_client()
+                    // TODO error[E0308]: mismatched types expected `SignedTransaction`, found a different `SignedTransaction`
+                    // 0.15.0 is still around and keeps getting added to cargo.lock due to near-jsonrpc-client dependency
                     .call(RpcBroadcastTxCommitRequest{signed_transaction: signed_transaction.clone()})
                     .await;
                 match transaction_info_result {
