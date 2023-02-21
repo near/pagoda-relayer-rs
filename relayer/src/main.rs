@@ -48,18 +48,18 @@ async fn create_relay(
         Ok(signed_delegate_action) => {
             println!("Deserialized SignedDelegateAction object: {:#?}", signed_delegate_action);
 
-            // filter out transfer Action types (FT transfers or NFT OK)
+            // filter out Transfer Action types (FT transfers or NFT OK)
             let filtered_actions: Vec<NonDelegateAction> = signed_delegate_action.delegate_action.actions
                 .into_iter()
-                .map(|a| Action::try_from(a.clone()).unwrap())
+                .map(|nda| Action::try_from(nda.clone()).unwrap())
                 .filter(|action| {
-                    // TODO error[E0308]: mismatched types expected `NonDelegateAction`, found `Action`
                     if let Action::Transfer(_) = action {
-                        false // exclude TransferAction types
+                        false // exclude Transfer Action types
                     } else {
                         true // include all other Action variants
                     }
                 })
+                .map(|a| NonDelegateAction::try_from(a.clone()).unwrap())
                 .collect();
 
             // create Transaction, SignedTransaction from SignedDelegateAction
