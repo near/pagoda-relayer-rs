@@ -76,7 +76,7 @@ async fn create_relay(
                     Ok(response) => {
                         break response;
                     }
-                    Err(err) => match crate::common::rpc_transaction_error(err) {
+                    Err(err) => match err {
                         Ok(_) => {
                             tokio::time::sleep(std::time::Duration::from_millis(100)).await
                         }
