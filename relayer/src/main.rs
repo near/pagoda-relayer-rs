@@ -1,4 +1,5 @@
 mod config;
+mod common;
 
 use axum::{response::IntoResponse, routing::post, Router, extract};
 use std::net::SocketAddr;
@@ -6,6 +7,18 @@ use near_jsonrpc_client::methods::broadcast_tx_commit::RpcBroadcastTxCommitReque
 use near_primitives::borsh::{BorshDeserialize, BorshSerialize};
 use near_primitives::delegate_action::{NonDelegateAction, SignedDelegateAction};
 use near_primitives::transaction::{Action, SignedTransaction};
+use crate::common::rpc_transaction_error;
+
+// TODO read from local config instead of hardcoding
+static NETWORK_CONFIG: config::NetworkConfig = config::NetworkConfig {
+    network_name: "testnet".to_string(),
+    rpc_url: "https://archival-rpc.testnet.near.org".parse().unwrap(),
+    wallet_url: "https://wallet.testnet.near.org".parse().unwrap(),
+    explorer_transaction_url: "https://explorer.testnet.near.org/transactions/"
+        .parse()
+        .unwrap(),
+    rpc_api_key: None,
+};
 
 #[tokio::main]
 async fn main() {
@@ -66,21 +79,21 @@ async fn create_relay(
                 transaction
             );
 
-            // create json_rpc_client, TODO send the SignedTransaction
+            // create json_rpc_client, send the SignedTransaction
             println!("Sending transaction ...");
             let transaction_info = loop {
-                let transaction_info_result = network_config.json_rpc_client()
+                let transaction_info_result = NETWORK_CONFIG.json_rpc_client()
                     .call(RpcBroadcastTxCommitRequest{signed_transaction: signed_transaction.clone()})
                     .await;
                 match transaction_info_result {
                     Ok(response) => {
                         break response;
                     }
-                    Err(err) => match err {
+                    Err(err) => match rpc_transaction_error(err) {
                         Ok(_) => {
                             tokio::time::sleep(std::time::Duration::from_millis(100)).await
                         }
-                        Err(report) => return Err(report).try_to_vec().expect("REASON").into_response(),
+                        Err(report) => return Err(report).expect("REASON").into_response(),
                     },
                 };
             };
@@ -88,8 +101,8 @@ async fn create_relay(
             "Successfully relayed and sent transaction".into_response()
         },
         Err(e) => {
-            println!("Error deserializing MyData object: {:?}", e);
-            "Error deserializing MyData object".into_response()
+            println!("Error deserializing payload data object: {:?}", e);
+            "Error deserializing payload data object".into_response()
         },
     }
 
