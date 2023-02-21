@@ -2078,7 +2078,7 @@ dependencies = [
  "color-eyre",
  "dirs",
  "linked-hash-map",
- "near-jsonrpc-client",
+ "near-jsonrpc-client 0.4.1",
  "near-jsonrpc-primitives 0.16.0",
  "near-primitives 0.16.0",
  "serde",

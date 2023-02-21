@@ -10,7 +10,7 @@ axum = "~0.5"  # using an older version to avoid conflicts with nearcore version
 color-eyre = "0.6"
 dirs = "4.0"
 linked-hash-map = { version = "0.5", features = ["serde_impl"] }
-near-jsonrpc-client = "0.4.0"
+near-jsonrpc-client = "0.4.1"
 near-jsonrpc-primitives = "0.16"
 near-primitives = "0.16"
 serde = { version = "1.0", features = ["derive"] }
