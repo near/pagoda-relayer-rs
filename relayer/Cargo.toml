@@ -10,7 +10,7 @@ axum = "~0.5"  # using an older version to avoid conflicts with nearcore version
 color-eyre = "0.6"
 dirs = "4.0"
 linked-hash-map = { version = "0.5", features = ["serde_impl"] }
-near-jsonrpc-client = "0.4.1"
+# near-jsonrpc-client = { version = "0.4.1", features = ["derive"] }
 near-jsonrpc-primitives = "0.16"
 near-primitives = "0.16"
 serde = { version = "1.0", features = ["derive"] }
@@ -19,3 +19,8 @@ tokio = { version = "~1", features = ["full"] }  # using this version to avoid c
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 url = { version = "2", features = ["serde"] }
+
+[dependencies.near-jsonrpc-client]
+version = "0.4.1"
+default-features = false
+features = ["auth"]
