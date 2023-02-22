@@ -4,9 +4,10 @@ mod common;
 use axum::{response::IntoResponse, routing::post, Router, extract};
 use std::net::SocketAddr;
 use near_jsonrpc_client::methods::broadcast_tx_commit::RpcBroadcastTxCommitRequest;
-use near_primitives::borsh::BorshDeserialize;
-use near_primitives::delegate_action::{NonDelegateAction, SignedDelegateAction};
-use near_primitives::transaction::{Action, SignedTransaction};
+use ::near_primitives::borsh::BorshDeserialize;
+use ::near_primitives::delegate_action::{NonDelegateAction, SignedDelegateAction};
+use ::near_primitives::transaction::{Action, SignedTransaction, Transaction};
+use serde_json::{json, Map, Value};
 use crate::common::rpc_transaction_error;
 
 // TODO read from local config instead of hardcoding
@@ -27,8 +28,8 @@ async fn main() {
 
     // build our application with a route
     let app = Router::new()
-        // `POST /relay` goes to `create_relay`
-        .route("/relay", post(create_relay));
+        // `POST /relay` goes to `relay` handler function
+        .route("/relay", post(relay));
 
     // run our app with hyper
     // `axum::Server` is a re-export of `hyper::Server`
@@ -40,7 +41,7 @@ async fn main() {
         .unwrap();
 }
 
-async fn create_relay(
+async fn relay(
     data: extract::Json<Vec<u8>>,
 ) -> impl IntoResponse {
     // deserialize SignedDelegateAction using borsh
@@ -63,7 +64,7 @@ async fn create_relay(
                 .collect();
 
             // create Transaction, SignedTransaction from SignedDelegateAction
-            let transaction = near_primitives::transaction::Transaction{
+            let transaction = Transaction{
                 signer_id: signed_delegate_action.delegate_action.sender_id,
                 public_key: signed_delegate_action.delegate_action.public_key,
                 nonce: signed_delegate_action.delegate_action.nonce,
@@ -100,11 +101,27 @@ async fn create_relay(
                 };
             };
 
-            "Successfully relayed and sent transaction".into_response()
+            // build response json
+            let mut success_msg_json: Map<String, Value> = Map::new();
+            success_msg_json.insert("message".to_string(),
+                                    json!("Successfully relayed and sent transaction."));
+            success_msg_json.insert("Status".to_string(),
+                                    json!(transaction_info.status));
+            success_msg_json.insert("Transaction Outcome Logs".to_string(),
+                                    json!(transaction_info.transaction_outcome.outcome.logs.join("\n")));
+
+            let success_msg_str = serde_json::to_string(&success_msg_json).unwrap();
+            success_msg_str.into_response()
         },
         Err(e) => {
-            println!("Error deserializing payload data object: {:?}", e);
-            "Error deserializing payload data object".into_response()
+            let err_msg = String::from(
+                format!("{}: {:?}",
+                        "Error deserializing payload data object".to_string(),
+                        e.to_string()
+                )
+            );
+            println!("{}", err_msg);
+            err_msg.into_response()
         },
     }
 
