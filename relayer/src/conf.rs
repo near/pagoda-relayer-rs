@@ -2,6 +2,8 @@
  For ApiKey data structure
  */
 
+use std::fmt::Debug;
+
 #[derive(Eq, Hash, Clone, Debug, PartialEq)]
 pub struct ApiKey(pub near_jsonrpc_client::auth::ApiKey);
 
@@ -28,9 +30,9 @@ impl std::str::FromStr for ApiKey {
 impl serde::ser::Serialize for ApiKey {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
         where
-            S: serde::ser::Serializer,
+            S: serde::ser::Serializer
     {
-        serializer.serialize_str(self.0.as_str())
+        serializer.serialize_str(&self.0.to_str().unwrap())
     }
 }
 

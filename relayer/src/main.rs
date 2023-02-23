@@ -15,19 +15,18 @@ use crate::conf::RPCConfig;
 
 
 // load network config from yaml and setup json rpc client
-static CONF: Config = Config::builder()
-    .add_source(File::with_name("config.toml"))
-    .build()
-    .unwrap();
-static NETWORK_NAME: String = CONF.get("network").unwrap();
-static RPC_CONFIG: RPCConfig = RPCConfig::default();
 // TODO add RPC api key to config file and JsonRpcClient
 static JSON_RPC_CLIENT: Lazy<near_jsonrpc_client::JsonRpcClient> = Lazy::new(|| {
-        let rpc_config = RPCConfig::default();
-        let network_config = rpc_config.networks.get(&NETWORK_NAME).unwrap();
-        let json_rpc_client = network_config.json_rpc_client();
-        json_rpc_client
-    });
+    let conf: Config = Config::builder()
+        .add_source(File::with_name("config.toml"))
+        .build()
+        .unwrap();
+    let network_name: String = conf.get("network").unwrap();
+    let rpc_config = RPCConfig::default();
+    let network_config = rpc_config.networks.get(&network_name).unwrap();
+    let json_rpc_client = network_config.json_rpc_client();
+    json_rpc_client
+});
 
 
 #[tokio::main]
@@ -105,7 +104,7 @@ async fn relay(
                         Ok(_) => {
                             tokio::time::sleep(std::time::Duration::from_millis(100)).await
                         }
-                        Err(report) => return Err(report).expect("REASON").into_response(),
+                        Err(report) => return report.to_string().into_response(),
                     },
                 };
             };

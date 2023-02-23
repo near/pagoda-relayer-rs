@@ -15,7 +15,7 @@ pub fn rpc_transaction_error(
                     println!("Timeout error transaction.\nPlease wait. The next try to send this transaction is happening right now ...");
                 }
                 near_jsonrpc_client::methods::broadcast_tx_commit::RpcTransactionError::InvalidTransaction { context } => {
-                    return Err(color_eyre::eyre::eyre!("Invalid Transaction Error "));
+                    return Err(color_eyre::eyre::eyre!("Invalid Transaction Error. Context: {}", context.to_string()));
                 }
                 near_jsonrpc_client::methods::broadcast_tx_commit::RpcTransactionError::DoesNotTrackShard => {
                     return Err(color_eyre::eyre::eyre!("RPC Server Error"));
