@@ -1,0 +1,2 @@
+# mainnet, testnet, shardnet are acceptable values for network
+network = "testnet"

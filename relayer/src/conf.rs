@@ -46,11 +46,11 @@ impl<'de> serde::de::Deserialize<'de> for ApiKey {
 }
 
 /*
- For Config data structure for creating the RPC connection
+ For RPCConfig data structure for creating the RPC connection
  */
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct Config {
+pub struct RPCConfig {
     pub credentials_home_dir: std::path::PathBuf,
     pub networks: linked_hash_map::LinkedHashMap<String, NetworkConfig>,
 }
@@ -64,7 +64,7 @@ pub struct NetworkConfig {
     pub explorer_transaction_url: url::Url,
 }
 
-impl Default for Config {
+impl Default for RPCConfig {
     fn default() -> Self {
         let home_dir = dirs::home_dir().expect("Impossible to get your home dir!");
         let mut credentials_home_dir = std::path::PathBuf::from(&home_dir);

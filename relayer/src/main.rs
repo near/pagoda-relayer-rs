@@ -1,25 +1,34 @@
-mod config;
+mod conf;
 mod common;
 
-use axum::{response::IntoResponse, routing::post, Router, extract};
+use config::{Config, File};
+use axum::{extract, response::IntoResponse, Router, routing::post};
 use std::net::SocketAddr;
 use near_jsonrpc_client::methods::broadcast_tx_commit::RpcBroadcastTxCommitRequest;
-use ::near_primitives::borsh::BorshDeserialize;
-use ::near_primitives::delegate_action::{NonDelegateAction, SignedDelegateAction};
-use ::near_primitives::transaction::{Action, SignedTransaction, Transaction};
+use near_primitives::borsh::BorshDeserialize;
+use near_primitives::delegate_action::{NonDelegateAction, SignedDelegateAction};
+use near_primitives::transaction::{Action, SignedTransaction, Transaction};
+use once_cell::sync::Lazy;
 use serde_json::{json, Map, Value};
 use crate::common::rpc_transaction_error;
+use crate::conf::RPCConfig;
 
-// TODO read from local config instead of hardcoding
-static NETWORK_CONFIG: config::NetworkConfig = config::NetworkConfig {
-    network_name: "testnet".to_string(),
-    rpc_url: "https://archival-rpc.testnet.near.org".parse().unwrap(),
-    wallet_url: "https://wallet.testnet.near.org".parse().unwrap(),
-    explorer_transaction_url: "https://explorer.testnet.near.org/transactions/"
-        .parse()
-        .unwrap(),
-    rpc_api_key: None,
-};
+
+// load network config from yaml and setup json rpc client
+static CONF: Config = Config::builder()
+    .add_source(File::with_name("config.toml"))
+    .build()
+    .unwrap();
+static NETWORK_NAME: String = CONF.get("network").unwrap();
+static RPC_CONFIG: RPCConfig = RPCConfig::default();
+// TODO add RPC api key to config file and JsonRpcClient
+static JSON_RPC_CLIENT: Lazy<near_jsonrpc_client::JsonRpcClient> = Lazy::new(|| {
+        let rpc_config = RPCConfig::default();
+        let network_config = rpc_config.networks.get(&NETWORK_NAME).unwrap();
+        let json_rpc_client = network_config.json_rpc_client();
+        json_rpc_client
+    });
+
 
 #[tokio::main]
 async fn main() {
@@ -83,7 +92,7 @@ async fn relay(
             // create json_rpc_client, send the SignedTransaction
             println!("Sending transaction ...");
             let transaction_info = loop {
-                let transaction_info_result = NETWORK_CONFIG.json_rpc_client()
+                let transaction_info_result = JSON_RPC_CLIENT
                     // TODO error[E0308]: mismatched types expected `SignedTransaction`, found a different `SignedTransaction`
                     // 0.15.0 is still around and keeps getting added to cargo.lock due to near-jsonrpc-client dependency
                     .call(RpcBroadcastTxCommitRequest{signed_transaction: signed_transaction.clone()})
