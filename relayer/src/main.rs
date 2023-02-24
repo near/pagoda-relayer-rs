@@ -1,10 +1,12 @@
 mod conf;
 mod common;
 
+// TODO a bunch of unused import warnings when compiling, but they're used for tests
 use axum::{extract, response::IntoResponse, Router, routing::post};
 use config::{Config, File};
-use mockall::{mock};
-use mockers::Mock;
+use mockall::mock;
+use mockers::matchers::{eq, ANY};
+use mockers::{Expectation, Scenario};
 use near_crypto::{KeyType, PublicKey, Signature};
 use near_jsonrpc_client::methods::broadcast_tx_commit::RpcBroadcastTxCommitRequest;
 use near_primitives::borsh::{BorshDeserialize, BorshSerialize};
@@ -198,7 +200,7 @@ async fn test_relay() {
                 receipt_ids: vec![],
                 gas_burnt: 0,
                 tokens_burnt: 0,
-                executor_id: relayer_account_id,
+                executor_id: relayer_account_id.unwrap(),
                 status: ExecutionStatusView::Unknown,
                 metadata: Default::default()
             }
@@ -215,14 +217,25 @@ async fn test_relay() {
     };
 
     // Create a mock JSON RPC client that returns the mock response
-    let json_rpc_client = near_jsonrpc_client::JsonRpcClient::connect("http://example.com");
-    let call_mock = Mock::new().returns(Ok(mock_response.clone()));
-    let call_mock_clone = call_mock.clone();
-    mock(json_rpc_client).with(move |mock| {
-        mock.expect_call()
-            .times(1)
-            .return_once(move |_| call_mock_clone.call(()))
-    });
+    mock! {
+        pub JsonRpcClient {}
+        trait Call {
+            fn call(&self, request: serde_json::Value) -> Result<serde_json::Value, near_jsonrpc_client::error::JsonRpcError>;
+        }
+    }
+
+    // Create a scenario for the mock JSON RPC client
+    let scenario = Scenario::new();
+    let mock_client = MockJsonRpcClient::new();
+    let call_mock = mock_client.expect_call()
+        .times(1)
+        .with(eq(mock_request.clone(), ()))
+        .returning(|_| Ok(mock_response.clone()));
+
+    // Execute the scenario and verify the mock
+    let handle = scenario.handle();
+    handle.expect(call_mock);
+    let json_rpc_client = Box::new(mock_client);
 
     // Call the `relay` function with the mock payload and JSON RPC client
     let response = relay(extract::Json(Vec::from(json_payload))).await.into_response();
