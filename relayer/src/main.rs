@@ -10,10 +10,12 @@ use near_jsonrpc_client::methods::broadcast_tx_commit::RpcBroadcastTxCommitReque
 use near_primitives::borsh::{BorshDeserialize, BorshSerialize};
 use near_primitives::delegate_action::{DelegateAction, NonDelegateAction, SignedDelegateAction};
 use near_primitives::transaction::{Action, CreateAccountAction, SignedTransaction, Transaction, TransferAction};
-use near_primitives::types::AccountId;
+use near_primitives::types::{AccountId, BlockHeight, Nonce};
+use near_primitives::views::{ActionView, ExecutionOutcomeView, ExecutionOutcomeWithIdView, ExecutionStatusView, SignedTransactionView};
 use once_cell::sync::Lazy;
 use serde_json::{json, Map, Value};
 use std::net::SocketAddr;
+use std::str::FromStr;
 use crate::common::rpc_transaction_error;
 use crate::conf::RPCConfig;
 
@@ -142,45 +144,68 @@ async fn relay(
 #[tokio::test]
 async fn test_relay() {
     // Test Transfer Action and a CreateAccount Action
+    const SENDER_ID: String = "aaa".parse().unwrap();
+    const RECEIVER_ID: String = "bbb".parse().unwrap();
+    const NONCE: i32 = 1;
+    const MAX_BLOCK_HEIGHT: i32 = 2;
+    const PUBLIC_KEY: PublicKey = PublicKey::empty(KeyType::ED25519);
+    const SIGNATURE: Signature = Signature::empty(KeyType::ED25519);
 
     fn create_signed_delegate_action(actions: Vec<Action>) -> SignedDelegateAction {
         SignedDelegateAction {
             delegate_action: DelegateAction {
-                sender_id: "aaa".parse().unwrap(),
-                receiver_id: "bbb".parse().unwrap(),
+                sender_id: SENDER_ID.parse().unwrap(),
+                receiver_id: RECEIVER_ID.parse().unwrap(),
                 actions: actions
                     .iter()
                     .map(|a| NonDelegateAction::try_from(a.clone()).unwrap())
                     .collect(),
-                nonce: 1,
-                max_block_height: 2,
-                public_key: PublicKey::empty(KeyType::ED25519),
+                nonce: NONCE as Nonce,
+                max_block_height: MAX_BLOCK_HEIGHT as BlockHeight,
+                public_key: PUBLIC_KEY,
             },
-            signature: Signature::empty(KeyType::ED25519),
+            signature: SIGNATURE,
         }
     }
 
-    let signed_delegate_action = create_signed_delegate_action(
-        vec![
-            Action::CreateAccount(CreateAccountAction {}),
-            Action::Transfer(TransferAction { deposit: 100 })
-        ]
-    );
+    let relayer_account_id = AccountId::from_str(&"relayer.near".to_string());
+    let actions = vec![
+        Action::CreateAccount(CreateAccountAction {}),
+        Action::Transfer(TransferAction { deposit: 100 })
+    ];
+    let signed_delegate_action = create_signed_delegate_action(actions.clone());
     let serialized_sda = signed_delegate_action.try_to_vec().unwrap();
     let json_payload = serde_json::to_string(&serialized_sda).unwrap();
 
-    // Create a mock response for the JSON RPC call TODO update
-    let transaction_info = near_jsonrpc_client::types::RpcTransactionInfo {
-        status: near_jsonrpc_client::types::TransactionStatus::SuccessValue,
-        transaction_outcome: near_jsonrpc_client::types::RpcTransactionOutcome {
-            outcome: near_jsonrpc_client::types::RpcTransactionOutcomeOutcome {
-                logs: vec!["test log message".to_string()],
-                ..Default::default()
-            },
-            ..Default::default()
+    // Create a mock response for the JSON RPC call
+    let transaction_info = near_primitives::views::FinalExecutionOutcomeView{
+        status: Default::default(),
+        transaction: SignedTransactionView {
+            signer_id: SENDER_ID.parse().unwrap(),
+            public_key: PUBLIC_KEY,
+            nonce: NONCE as Nonce,
+            receiver_id: RECEIVER_ID.parse().unwrap(),
+            actions: actions.iter().map(Action::view).collect(),
+            signature: SIGNATURE,
+            hash: Default::default()
         },
-        ..Default::default()
+        transaction_outcome: ExecutionOutcomeWithIdView {
+            proof: vec![],
+            block_hash: Default::default(),
+            id: Default::default(),
+            outcome: ExecutionOutcomeView {
+                logs: vec![],
+                receipt_ids: vec![],
+                gas_burnt: 0,
+                tokens_burnt: 0,
+                executor_id: relayer_account_id,
+                status: ExecutionStatusView::Unknown,
+                metadata: Default::default()
+            }
+        },
+        receipts_outcome: vec![]
     };
+
     let json_response = serde_json::to_string(&transaction_info).unwrap();
     let mock_response = near_jsonrpc_client::types::JsonRpcResponse {
         jsonrpc: "2.0".to_string(),
