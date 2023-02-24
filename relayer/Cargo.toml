@@ -11,6 +11,7 @@ color-eyre = "0.6"
 config = "*"
 dirs = "4.0"
 linked-hash-map = { version = "0.5", features = ["serde_impl"] }
+near-crypto = "0.16.0"
 # near-jsonrpc-client = { version = "0.4.1", features = ["auth"] } # TODO use this when near-primitives subdependency is updated to 0.16.0
 near-jsonrpc-client = { version = "0.4.1", path = "/Users/awit/repos/near-jsonrpc-client-rs" }
 near-jsonrpc-primitives = "0.16"

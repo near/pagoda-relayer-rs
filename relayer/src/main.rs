@@ -4,10 +4,12 @@ mod common;
 use config::{Config, File};
 use axum::{extract, response::IntoResponse, Router, routing::post};
 use std::net::SocketAddr;
+use near_crypto::KeyType;
 use near_jsonrpc_client::methods::broadcast_tx_commit::RpcBroadcastTxCommitRequest;
 use near_primitives::borsh::BorshDeserialize;
 use near_primitives::delegate_action::{NonDelegateAction, SignedDelegateAction};
-use near_primitives::transaction::{Action, SignedTransaction, Transaction};
+use near_primitives::transaction::{Action, CreateAccountAction, SignedTransaction, Transaction, TransferAction};
+use near_primitives::types::AccountId;
 use once_cell::sync::Lazy;
 use serde_json::{json, Map, Value};
 use crate::common::rpc_transaction_error;
@@ -133,4 +135,69 @@ async fn relay(
         },
     }
 
+}
+
+#[tokio::test]
+async fn test_relay() {
+    // Test Transfer Action and a CreateAccount Action
+    let sender_id = AccountId::try_from("sender.testnet").unwrap();
+    let receiver_id = AccountId::try_from("receiver.testnet").unwrap();;
+    let public_key = PublicKey::empty(KeyType::ED25519);
+    let nonce = 1;
+    let transfer_action = NonDelegateAction::try_from(
+        Action::from(TransferAction { deposit: 100.into() })
+    ).unwrap();
+    let create_account_action = NonDelegateAction::try_from(
+        Action::CreateAccount(CreateAccountAction {})
+    ).unwrap();
+    let delegate_action = SignedDelegateAction {
+        delegate_action: near_primitives::delegate_action::DelegateAction {
+            sender_id,
+            public_key,
+            nonce,
+            receiver_id,
+            actions: vec![transfer_action.clone(), create_account_action.clone()],
+            max_block_height: 2
+        },
+        signature: PublicKey::empty(KeyType::ED25519),
+    };
+    let serialized_action = delegate_action.try_to_vec().unwrap();
+    let json_payload = serde_json::to_string(&serialized_action).unwrap();
+
+    // Create a mock response for the JSON RPC call
+    let transaction_info = near_jsonrpc_client::types::RpcTransactionInfo {
+        status: near_jsonrpc_client::types::TransactionStatus::SuccessValue,
+        transaction_outcome: near_jsonrpc_client::types::RpcTransactionOutcome {
+            outcome: near_jsonrpc_client::types::RpcTransactionOutcomeOutcome {
+                logs: vec!["test log message".to_string()],
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let json_response = serde_json::to_string(&transaction_info).unwrap();
+    let mock_response = near_jsonrpc_client::types::JsonRpcResponse {
+        jsonrpc: "2.0".to_string(),
+        id: 0,
+        result: Some(json!(json_response)),
+        error: None,
+    };
+
+    // Create a mock JSON RPC client that returns the mock response
+    let json_rpc_client = near_jsonrpc_client::JsonRpcClient::connect("http://example.com").unwrap();
+    let call_mock = Mock::new().returns(Ok(mock_response.clone()));
+    let call_mock_clone = call_mock.clone();
+    mock(json_rpc_client).with(move |mock| {
+        mock.expect_call()
+            .times(1)
+            .return_once(move |_| call_mock_clone.call(()))
+    });
+
+    // Call the `relay` function with the mock payload and JSON RPC client
+    let response = relay(extract::Json(Vec::from(json_payload))).await.into_response();
+    let response_body = response.into_body().into_string().await.unwrap();
+
+    // Verify that the response body contains the expected transaction outcome logs
+    assert!(response_body.contains("test log message"));
 }

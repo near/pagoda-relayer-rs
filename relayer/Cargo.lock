@@ -2185,6 +2185,7 @@ dependencies = [
  "config",
  "dirs",
  "linked-hash-map",
+ "near-crypto",
  "near-jsonrpc-client",
  "near-jsonrpc-primitives",
  "near-primitives",
