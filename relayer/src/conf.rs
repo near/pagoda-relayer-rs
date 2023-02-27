@@ -98,6 +98,18 @@ impl Default for RPCConfig {
             },
         );
         networks.insert(
+            "betanet".to_string(),
+            NetworkConfig {
+                network_name: "betanet".to_string(),
+                rpc_url: "https://rpc.betanet.near.org".parse().unwrap(),
+                wallet_url: "https://wallet.betanet.near.org".parse().unwrap(),
+                explorer_transaction_url: "https://explorer.betanet.near.org/transactions/"
+                    .parse()
+                    .unwrap(),
+                rpc_api_key: None,
+            },
+        );
+        networks.insert(
             "shardnet".to_string(),
             NetworkConfig {
                 network_name: "shardnet".to_string(),
