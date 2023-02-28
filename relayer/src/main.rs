@@ -189,8 +189,6 @@ async fn test_relay() {
 
     // Call the `relay` function with a payload that can't be deserialized into a SignedDelegateAction
     let bad_json_payload = serde_json::to_string("arrrgh").unwrap();
-
-    // Call the `relay` function with the mock payload and JSON RPC client
     let err_response = relay(Json(Vec::from(bad_json_payload))).await.into_response();
     let err_response_status = err_response.status();
     assert_eq!(err_response_status, StatusCode::INTERNAL_SERVER_ERROR);
