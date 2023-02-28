@@ -3,7 +3,7 @@ mod common;
 
 #[cfg(test)]
 use axum::Json;
-use axum::{extract, response::IntoResponse, Router, routing::post};
+use axum::{extract, http::StatusCode, response::IntoResponse, Router, routing::post};
 use config::{Config, File};
 #[cfg(test)]
 use near_crypto::{KeyType, PublicKey, Signature};
@@ -139,7 +139,10 @@ async fn relay(
                 )
             );
             println!("{}", err_msg);
-            err_msg.into_response()
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                err_msg,
+            ).into_response()
         },
     }
 }
@@ -176,11 +179,19 @@ async fn test_relay() {
         Action::Transfer(TransferAction { deposit: 100 })
     ];
     let signed_delegate_action = create_signed_delegate_action(actions.clone());
-    let serialized_sda = signed_delegate_action.try_to_vec().unwrap();
-    let json_payload = serde_json::to_string(&serialized_sda).unwrap();
+    let json_payload = signed_delegate_action.try_to_vec().unwrap();
+    println!("SignedDelegateAction Json Serialized: {:?}", json_payload);
 
     // Call the `relay` function with the mock payload and JSON RPC client
     let response = relay(Json(Vec::from(json_payload))).await.into_response();
     let response_status = response.status();
-    assert_eq!(response_status, 200);
+    assert_eq!(response_status, StatusCode::OK);
+
+    // Call the `relay` function with a payload that can't be deserialized into a SignedDelegateAction
+    let bad_json_payload = serde_json::to_string("arrrgh").unwrap();
+
+    // Call the `relay` function with the mock payload and JSON RPC client
+    let err_response = relay(Json(Vec::from(bad_json_payload))).await.into_response();
+    let err_response_status = err_response.status();
+    assert_eq!(err_response_status, StatusCode::INTERNAL_SERVER_ERROR);
 }
