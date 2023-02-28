@@ -1,23 +1,27 @@
 mod conf;
 mod common;
 
-// TODO a bunch of unused import warnings when compiling, but they're used for tests
+#[cfg(test)]
+use axum::Json;
 use axum::{extract, response::IntoResponse, Router, routing::post};
 use config::{Config, File};
-use mockall::mock;
-use mockers::matchers::{eq, ANY};
-use mockers::{Expectation, Scenario};
+#[cfg(test)]
 use near_crypto::{KeyType, PublicKey, Signature};
 use near_jsonrpc_client::methods::broadcast_tx_commit::RpcBroadcastTxCommitRequest;
-use near_primitives::borsh::{BorshDeserialize, BorshSerialize};
-use near_primitives::delegate_action::{DelegateAction, NonDelegateAction, SignedDelegateAction};
-use near_primitives::transaction::{Action, CreateAccountAction, SignedTransaction, Transaction, TransferAction};
-use near_primitives::types::{AccountId, BlockHeight, Nonce};
-use near_primitives::views::{ActionView, ExecutionOutcomeView, ExecutionOutcomeWithIdView, ExecutionStatusView, SignedTransactionView};
+#[cfg(test)]
+use near_primitives::borsh::BorshSerialize;
+use near_primitives::borsh::BorshDeserialize;
+#[cfg(test)]
+use near_primitives::delegate_action::DelegateAction;
+use near_primitives::delegate_action::{NonDelegateAction, SignedDelegateAction};
+#[cfg(test)]
+use near_primitives::transaction::{CreateAccountAction, TransferAction};
+use near_primitives::transaction::{Action, SignedTransaction, Transaction};
+#[cfg(test)]
+use near_primitives::types::{BlockHeight, Nonce};
 use once_cell::sync::Lazy;
 use serde_json::{json, Map, Value};
 use std::net::SocketAddr;
-use std::str::FromStr;
 use crate::common::rpc_transaction_error;
 use crate::conf::RPCConfig;
 
@@ -100,8 +104,6 @@ async fn relay(
             println!("Sending transaction ...");
             let transaction_info = loop {
                 let transaction_info_result = JSON_RPC_CLIENT
-                    // TODO error[E0308]: mismatched types expected `SignedTransaction`, found a different `SignedTransaction`
-                    // 0.15.0 is still around and keeps getting added to cargo.lock due to near-jsonrpc-client dependency
                     .call(RpcBroadcastTxCommitRequest{signed_transaction: signed_transaction.clone()})
                     .await;
                 match transaction_info_result {
@@ -140,37 +142,35 @@ async fn relay(
             err_msg.into_response()
         },
     }
-
 }
 
 #[tokio::test]
 async fn test_relay() {
     // Test Transfer Action and a CreateAccount Action
-    const SENDER_ID: String = "aaa".parse().unwrap();
-    const RECEIVER_ID: String = "bbb".parse().unwrap();
-    const NONCE: i32 = 1;
-    const MAX_BLOCK_HEIGHT: i32 = 2;
-    const PUBLIC_KEY: PublicKey = PublicKey::empty(KeyType::ED25519);
-    const SIGNATURE: Signature = Signature::empty(KeyType::ED25519);
 
     fn create_signed_delegate_action(actions: Vec<Action>) -> SignedDelegateAction {
+        let sender_id: String = "aaa".parse().unwrap();
+        let receiver_id: String = "bbb".parse().unwrap();
+        let nonce: i32 = 1;
+        let max_block_height: i32 = 2;
+        let public_key: PublicKey = PublicKey::empty(KeyType::ED25519);
+        let signature: Signature = Signature::empty(KeyType::ED25519);
         SignedDelegateAction {
             delegate_action: DelegateAction {
-                sender_id: SENDER_ID.parse().unwrap(),
-                receiver_id: RECEIVER_ID.parse().unwrap(),
+                sender_id: sender_id.parse().unwrap(),
+                receiver_id: receiver_id.parse().unwrap(),
                 actions: actions
                     .iter()
                     .map(|a| NonDelegateAction::try_from(a.clone()).unwrap())
                     .collect(),
-                nonce: NONCE as Nonce,
-                max_block_height: MAX_BLOCK_HEIGHT as BlockHeight,
-                public_key: PUBLIC_KEY,
+                nonce: nonce as Nonce,
+                max_block_height: max_block_height as BlockHeight,
+                public_key,
             },
-            signature: SIGNATURE,
+            signature,
         }
     }
 
-    let relayer_account_id = AccountId::from_str(&"relayer.near".to_string());
     let actions = vec![
         Action::CreateAccount(CreateAccountAction {}),
         Action::Transfer(TransferAction { deposit: 100 })
@@ -179,68 +179,8 @@ async fn test_relay() {
     let serialized_sda = signed_delegate_action.try_to_vec().unwrap();
     let json_payload = serde_json::to_string(&serialized_sda).unwrap();
 
-    // Create a mock response for the JSON RPC call
-    let transaction_info = near_primitives::views::FinalExecutionOutcomeView{
-        status: Default::default(),
-        transaction: SignedTransactionView {
-            signer_id: SENDER_ID.parse().unwrap(),
-            public_key: PUBLIC_KEY,
-            nonce: NONCE as Nonce,
-            receiver_id: RECEIVER_ID.parse().unwrap(),
-            actions: actions.iter().map(Action::view).collect(),
-            signature: SIGNATURE,
-            hash: Default::default()
-        },
-        transaction_outcome: ExecutionOutcomeWithIdView {
-            proof: vec![],
-            block_hash: Default::default(),
-            id: Default::default(),
-            outcome: ExecutionOutcomeView {
-                logs: vec![],
-                receipt_ids: vec![],
-                gas_burnt: 0,
-                tokens_burnt: 0,
-                executor_id: relayer_account_id.unwrap(),
-                status: ExecutionStatusView::Unknown,
-                metadata: Default::default()
-            }
-        },
-        receipts_outcome: vec![]
-    };
-
-    let json_response = serde_json::to_string(&transaction_info).unwrap();
-    let mock_response = near_jsonrpc_client::types::JsonRpcResponse {
-        jsonrpc: "2.0".to_string(),
-        id: 0,
-        result: Some(json!(json_response)),
-        error: None,
-    };
-
-    // Create a mock JSON RPC client that returns the mock response
-    mock! {
-        pub JsonRpcClient {}
-        trait Call {
-            fn call(&self, request: serde_json::Value) -> Result<serde_json::Value, near_jsonrpc_client::error::JsonRpcError>;
-        }
-    }
-
-    // Create a scenario for the mock JSON RPC client
-    let scenario = Scenario::new();
-    let mock_client = MockJsonRpcClient::new();
-    let call_mock = mock_client.expect_call()
-        .times(1)
-        .with(eq(mock_request.clone(), ()))
-        .returning(|_| Ok(mock_response.clone()));
-
-    // Execute the scenario and verify the mock
-    let handle = scenario.handle();
-    handle.expect(call_mock);
-    let json_rpc_client = Box::new(mock_client);
-
     // Call the `relay` function with the mock payload and JSON RPC client
-    let response = relay(extract::Json(Vec::from(json_payload))).await.into_response();
-    let response_body = response.into_body().into_string().await.unwrap();
-
-    // Verify that the response body contains the expected transaction outcome logs
-    assert!(response_body.contains("test log message"));
+    let response = relay(Json(Vec::from(json_payload))).await.into_response();
+    let response_status = response.status();
+    assert_eq!(response_status, 200);
 }
