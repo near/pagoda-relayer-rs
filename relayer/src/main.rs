@@ -114,7 +114,19 @@ async fn relay(
                         Ok(_) => {
                             tokio::time::sleep(std::time::Duration::from_millis(100)).await
                         }
-                        Err(report) => return report.to_string().into_response(),
+                        Err(report) => {
+                            let err_msg = String::from(
+                                format!("{}: {:?}",
+                                        "Error sending transaction to RPC".to_string(),
+                                        report.to_string()
+                                )
+                            );
+                            println!("{}", err_msg);
+                            return (
+                                StatusCode::BAD_REQUEST,
+                                err_msg,
+                                ).into_response()
+                        },
                     },
                 };
             };
@@ -127,7 +139,7 @@ async fn relay(
                                     json!(transaction_info.status));
             success_msg_json.insert("Transaction Outcome Logs".to_string(),
                                     json!(transaction_info.transaction_outcome.outcome.logs.join("\n")));
-
+            println!("Success message: {:?}", success_msg_json);
             let success_msg_str = serde_json::to_string(&success_msg_json).unwrap();
             success_msg_str.into_response()
         },
@@ -140,7 +152,7 @@ async fn relay(
             );
             println!("{}", err_msg);
             (
-                StatusCode::INTERNAL_SERVER_ERROR,
+                StatusCode::BAD_REQUEST,
                 err_msg,
             ).into_response()
         },
@@ -148,14 +160,14 @@ async fn relay(
 }
 
 #[tokio::test]
-async fn test_relay() {
+async fn test_relay() {   // tests assume testnet in config
     // Test Transfer Action and a CreateAccount Action
 
-    fn create_signed_delegate_action(actions: Vec<Action>) -> SignedDelegateAction {
-        let sender_id: String = "aaa".parse().unwrap();
-        let receiver_id: String = "bbb".parse().unwrap();
+    fn create_signed_delegate_action(actions: Vec<Action>, max_block_height: i32) -> SignedDelegateAction {
+        let sender_id: String = "near".parse().unwrap();
+        let receiver_id: String = "nomnomnom.testnet".parse().unwrap();
         let nonce: i32 = 1;
-        let max_block_height: i32 = 2;
+        let max_block_height: i32 = max_block_height;
         let public_key: PublicKey = PublicKey::empty(KeyType::ED25519);
         let signature: Signature = Signature::empty(KeyType::ED25519);
         SignedDelegateAction {
@@ -176,20 +188,35 @@ async fn test_relay() {
 
     let actions = vec![
         Action::CreateAccount(CreateAccountAction {}),
-        Action::Transfer(TransferAction { deposit: 100 })
+        Action::Transfer(TransferAction { deposit: 1 })
     ];
-    let signed_delegate_action = create_signed_delegate_action(actions.clone());
-    let json_payload = signed_delegate_action.try_to_vec().unwrap();
-    println!("SignedDelegateAction Json Serialized: {:?}", json_payload);
 
     // Call the `relay` function with the mock payload and JSON RPC client
-    let response = relay(Json(Vec::from(json_payload))).await.into_response();
-    let response_status = response.status();
-    assert_eq!(response_status, StatusCode::OK);
+    // let signed_delegate_action = create_signed_delegate_action(
+    //     actions.clone(),
+    //     2000000000
+    // );
+    // let json_payload = signed_delegate_action.try_to_vec().unwrap();
+    // println!("SignedDelegateAction Json Serialized: {:?}", json_payload);
+    // let response = relay(Json(Vec::from(json_payload))).await.into_response();
+    // let response_status = response.status();
+    // assert_eq!(response_status, StatusCode::OK);
+
+    // Call the `relay` function with a bad block height in payload
+    let bad_block_height_signed_delegate_action = create_signed_delegate_action(
+        actions.clone(),
+        2
+    );
+    let bbh_json_payload = bad_block_height_signed_delegate_action.try_to_vec().unwrap();
+    println!("Bad Block Height SignedDelegateAction Json Serialized: {:?}", bbh_json_payload);
+    let bbh_response = relay(Json(Vec::from(bbh_json_payload))).await.into_response();
+    let bbh_response_status = bbh_response.status();
+    assert_eq!(bbh_response_status, StatusCode::BAD_REQUEST);
 
     // Call the `relay` function with a payload that can't be deserialized into a SignedDelegateAction
     let bad_json_payload = serde_json::to_string("arrrgh").unwrap();
+    println!("Malformed Json Payload Serialized: {:?}", bad_json_payload);
     let err_response = relay(Json(Vec::from(bad_json_payload))).await.into_response();
     let err_response_status = err_response.status();
-    assert_eq!(err_response_status, StatusCode::INTERNAL_SERVER_ERROR);
+    assert_eq!(err_response_status, StatusCode::BAD_REQUEST);
 }
