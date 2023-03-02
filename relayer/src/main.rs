@@ -22,6 +22,7 @@ use near_primitives::types::{BlockHeight, Nonce};
 use once_cell::sync::Lazy;
 use serde_json::{json, Map, Value};
 use std::net::SocketAddr;
+use tracing::{debug, info};
 use crate::common::rpc_transaction_error;
 use crate::conf::RPCConfig;
 
@@ -54,7 +55,7 @@ async fn main() {
     // run our app with hyper
     // `axum::Server` is a re-export of `hyper::Server`
     let addr = SocketAddr::from(([127, 0, 0, 1], 3030));
-    tracing::debug!("listening on {}", addr);
+    info!("listening on {}", addr);
     axum::Server::bind(&addr)
         .serve(app.into_make_service())
         .await
@@ -67,7 +68,7 @@ async fn relay(
     // deserialize SignedDelegateAction using borsh
     match SignedDelegateAction::try_from_slice(&data.0) {
         Ok(signed_delegate_action) => {
-            println!("Deserialized SignedDelegateAction object: {:#?}", signed_delegate_action);
+            debug!("Deserialized SignedDelegateAction object: {:#?}", signed_delegate_action);
 
             // filter out Transfer Action types (FT transfers or NFT OK)
             let filtered_actions: Vec<NonDelegateAction> = signed_delegate_action.delegate_action.actions
@@ -101,7 +102,7 @@ async fn relay(
             );
 
             // create json_rpc_client, send the SignedTransaction
-            println!("Sending transaction ...");
+            info!("Sending transaction ...");
             let transaction_info = loop {
                 let transaction_info_result = JSON_RPC_CLIENT
                     .call(RpcBroadcastTxCommitRequest{signed_transaction: signed_transaction.clone()})
@@ -121,7 +122,7 @@ async fn relay(
                                         report.to_string()
                                 )
                             );
-                            println!("{}", err_msg);
+                            info!("{}", err_msg);
                             return (
                                 StatusCode::BAD_REQUEST,
                                 err_msg,
@@ -139,18 +140,18 @@ async fn relay(
                                     json!(transaction_info.status));
             success_msg_json.insert("Transaction Outcome Logs".to_string(),
                                     json!(transaction_info.transaction_outcome.outcome.logs.join("\n")));
-            println!("Success message: {:?}", success_msg_json);
+            info!("Success message: {:?}", success_msg_json);
             let success_msg_str = serde_json::to_string(&success_msg_json).unwrap();
             success_msg_str.into_response()
         },
         Err(e) => {
             let err_msg = String::from(
                 format!("{}: {:?}",
-                        "Error deserializing payload data object".to_string(),
-                        e.to_string()
+                    "Error deserializing payload data object".to_string(),
+                    e.to_string()
                 )
             );
-            println!("{}", err_msg);
+            info!("{}", err_msg);
             (
                 StatusCode::BAD_REQUEST,
                 err_msg,
@@ -190,17 +191,6 @@ async fn test_relay() {   // tests assume testnet in config
         Action::CreateAccount(CreateAccountAction {}),
         Action::Transfer(TransferAction { deposit: 1 })
     ];
-
-    // Call the `relay` function with the mock payload and JSON RPC client
-    // let signed_delegate_action = create_signed_delegate_action(
-    //     actions.clone(),
-    //     2000000000
-    // );
-    // let json_payload = signed_delegate_action.try_to_vec().unwrap();
-    // println!("SignedDelegateAction Json Serialized: {:?}", json_payload);
-    // let response = relay(Json(Vec::from(json_payload))).await.into_response();
-    // let response_status = response.status();
-    // assert_eq!(response_status, StatusCode::OK);
 
     // Call the `relay` function with a bad block height in payload
     let bad_block_height_signed_delegate_action = create_signed_delegate_action(
