@@ -22,7 +22,9 @@ use near_primitives::types::{BlockHeight, Nonce};
 use once_cell::sync::Lazy;
 use serde_json::{json, Map, Value};
 use std::net::SocketAddr;
+//use tower_http::{classify::ServerErrorsFailureClass, trace::TraceLayer};
 use tracing::{debug, info};
+use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 use crate::common::rpc_transaction_error;
 use crate::conf::RPCConfig;
 
@@ -44,13 +46,15 @@ static JSON_RPC_CLIENT: Lazy<near_jsonrpc_client::JsonRpcClient> = Lazy::new(|| 
 
 #[tokio::main]
 async fn main() {
-    // initialize tracing
-    tracing_subscriber::fmt::init();
+    // initialize tracing (aka logging)
+    tracing_subscriber::registry().with(tracing_subscriber::fmt::layer()).init();
 
     // build our application with a route
     let app = Router::new()
         // `POST /relay` goes to `relay` handler function
         .route("/relay", post(relay));
+        // See https://docs.rs/tower-http/0.1.1/tower_http/trace/index.html for more details.
+        //.layer(TraceLayer::new_for_http()); // TODO re-add when tower-http dependency conflict is resolved
 
     // run our app with hyper
     // `axum::Server` is a re-export of `hyper::Server`
