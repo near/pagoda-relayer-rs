@@ -1,12 +1,12 @@
 mod rpc_conf;
+mod signing;
 
 #[cfg(test)]
 use axum::Json;
 use axum::{extract, http::StatusCode, response::IntoResponse, Router, routing::post};
 use config::{Config, File};
 #[cfg(test)]
-use near_crypto::{KeyType, PublicKey};
-use near_crypto::Signature;
+use near_crypto::{KeyType, PublicKey, Signature};
 use near_jsonrpc_client::methods::broadcast_tx_commit::RpcBroadcastTxCommitRequest;
 #[cfg(test)]
 use near_primitives::borsh::BorshSerialize;
@@ -16,7 +16,7 @@ use near_primitives::delegate_action::DelegateAction;
 use near_primitives::delegate_action::{NonDelegateAction, SignedDelegateAction};
 #[cfg(test)]
 use near_primitives::transaction::{CreateAccountAction, TransferAction};
-use near_primitives::transaction::{Action, SignedTransaction, Transaction};
+use near_primitives::transaction::{Action, Transaction};
 #[cfg(test)]
 use near_primitives::types::{BlockHeight, Nonce};
 use once_cell::sync::Lazy;
@@ -27,6 +27,7 @@ use near_primitives::types::{BlockReference, Finality};
 use tracing::{debug, info};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 use rpc_conf::rpc_transaction_error;
+use signing::sign_transaction;
 use crate::rpc_conf::RPCConfig;
 
 
@@ -38,7 +39,7 @@ static LOCAL_CONF: Lazy<Config> = Lazy::new(|| {
         .unwrap();
     conf
 });
-// TODO add RPC api key to config file and JsonRpcClient
+// TODO LP: add RPC api key to config file and JsonRpcClient
 static JSON_RPC_CLIENT: Lazy<near_jsonrpc_client::JsonRpcClient> = Lazy::new(|| {
     let network_name: String = LOCAL_CONF.get("network").unwrap();
     let rpc_config = RPCConfig::default();
@@ -49,6 +50,10 @@ static JSON_RPC_CLIENT: Lazy<near_jsonrpc_client::JsonRpcClient> = Lazy::new(|| 
 static RELAYER_ACCOUNT_ID: Lazy<String> = Lazy::new(|| {
     let relayer_account_id: String = LOCAL_CONF.get("relayer_account_id").unwrap();
     relayer_account_id
+});
+static KEYS_FILENAME: Lazy<String> = Lazy::new(|| {
+   let keys_filename: String = LOCAL_CONF.get("keys_filename").unwrap();
+    keys_filename
 });
 
 
@@ -62,7 +67,7 @@ async fn main() {
         // `POST /relay` goes to `relay` handler function
         .route("/relay", post(relay));
         // See https://docs.rs/tower-http/0.1.1/tower_http/trace/index.html for more details.
-        //.layer(TraceLayer::new_for_http()); // TODO re-add when tower-http dependency conflict is resolved
+        //.layer(TraceLayer::new_for_http()); // TODO LP: re-add when tower-http dependency conflict is resolved
 
     // run our app with hyper
     // `axum::Server` is a re-export of `hyper::Server`
@@ -100,14 +105,10 @@ async fn relay(
             let latest_final_block_hash = JSON_RPC_CLIENT
                 .call(near_jsonrpc_client::methods::block::RpcBlockRequest{
                     block_reference: BlockReference::Finality(Finality::Final)
-                })
-                .await
-                .unwrap()
-                .header
-                .hash;
+                }).await.unwrap().header.hash;  // TODO LP: better err handling on unwrap
 
             // create Transaction, SignedTransaction from SignedDelegateAction
-            let transaction = Transaction{
+            let unsigned_transaction = Transaction{
                 signer_id: RELAYER_ACCOUNT_ID.as_str().parse().unwrap(),
                 public_key: signed_delegate_action.delegate_action.public_key,
                 nonce: signed_delegate_action.delegate_action.nonce,
@@ -119,11 +120,13 @@ async fn relay(
                     .map(|a| Action::try_from(a.clone()).unwrap())
                     .collect()
             };
-            // TODO sign with locally stored private key in json file
-            let signed_transaction = SignedTransaction::new(
-                Signature::default(),
-                transaction
-            );
+
+            // sign with locally stored key from json file
+            let signed_transaction = sign_transaction(
+                unsigned_transaction,
+                KEYS_FILENAME.as_str(),
+                JSON_RPC_CLIENT.clone(),
+            ).await.unwrap().unwrap();  // TODO LP: better err handling on unwrap
 
             // create json_rpc_client, send the SignedTransaction
             info!("Sending transaction ...");
@@ -189,7 +192,7 @@ async fn test_relay() {   // tests assume testnet in config
     // Test Transfer Action and a CreateAccount Action
 
     fn create_signed_delegate_action(actions: Vec<Action>, max_block_height: i32) -> SignedDelegateAction {
-        let sender_id: String = "nomnomnom".parse().unwrap();
+        let sender_id: String = "nomnomnom.testnet".parse().unwrap();
         let receiver_id: String = "nomnomnom.testnet".parse().unwrap();
         let nonce: i32 = 1;
         let max_block_height: i32 = max_block_height;
@@ -216,16 +219,16 @@ async fn test_relay() {   // tests assume testnet in config
         Action::Transfer(TransferAction { deposit: 1 })
     ];
 
-    // Call the `relay` function with a bad block height in payload
+    // Call the `relay` function happy path
     let bad_block_height_signed_delegate_action = create_signed_delegate_action(
         actions.clone(),
-        2
+        2000000000
     );
     let bbh_json_payload = bad_block_height_signed_delegate_action.try_to_vec().unwrap();
-    println!("Bad Block Height SignedDelegateAction Json Serialized: {:?}", bbh_json_payload);
+    println!("SignedDelegateAction Json Serialized: {:?}", bbh_json_payload);
     let bbh_response = relay(Json(Vec::from(bbh_json_payload))).await.into_response();
     let bbh_response_status = bbh_response.status();
-    assert_eq!(bbh_response_status, StatusCode::INTERNAL_SERVER_ERROR);
+    assert_eq!(bbh_response_status, StatusCode::OK);
 
     // Call the `relay` function with a payload that can't be deserialized into a SignedDelegateAction
     let bad_json_payload = serde_json::to_string("arrrgh").unwrap();
