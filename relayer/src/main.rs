@@ -101,7 +101,7 @@ async fn relay(
                 // the receiver of the txn is the sender of the signed delegate action
                 receiver_id: signed_delegate_action.delegate_action.sender_id,
                 block_hash: latest_final_block_hash,
-                actions: filtered_actions
+                actions: signed_delegate_action.delegate_action.actions
                     .into_iter()
                     .map(|a| Action::try_from(a.clone()).unwrap())
                     .collect()
