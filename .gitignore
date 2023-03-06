@@ -11,3 +11,6 @@ relayer/target/
 
 # jetbrains ide files
 *.idea
+
+# where account and keys are stored
+*.json

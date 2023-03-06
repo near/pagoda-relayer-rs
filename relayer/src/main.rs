@@ -1,12 +1,12 @@
-mod conf;
-mod common;
+mod rpc_conf;
 
 #[cfg(test)]
 use axum::Json;
 use axum::{extract, http::StatusCode, response::IntoResponse, Router, routing::post};
 use config::{Config, File};
 #[cfg(test)]
-use near_crypto::{KeyType, PublicKey, Signature};
+use near_crypto::{KeyType, PublicKey};
+use near_crypto::Signature;
 use near_jsonrpc_client::methods::broadcast_tx_commit::RpcBroadcastTxCommitRequest;
 #[cfg(test)]
 use near_primitives::borsh::BorshSerialize;
@@ -26,8 +26,8 @@ use near_primitives::types::{BlockReference, Finality};
 //use tower_http::{classify::ServerErrorsFailureClass, trace::TraceLayer};
 use tracing::{debug, info};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
-use crate::common::rpc_transaction_error;
-use crate::conf::RPCConfig;
+use rpc_conf::rpc_transaction_error;
+use crate::rpc_conf::RPCConfig;
 
 
 // load config from toml and setup json rpc client
@@ -46,9 +46,9 @@ static JSON_RPC_CLIENT: Lazy<near_jsonrpc_client::JsonRpcClient> = Lazy::new(|| 
     let json_rpc_client = network_config.json_rpc_client();
     json_rpc_client
 });
-static SIGNER_ID: Lazy<String> = Lazy::new(|| {
-    let signer_id: String = LOCAL_CONF.get("signer_id").unwrap();
-    signer_id
+static RELAYER_ACCOUNT_ID: Lazy<String> = Lazy::new(|| {
+    let relayer_account_id: String = LOCAL_CONF.get("relayer_account_id").unwrap();
+    relayer_account_id
 });
 
 
@@ -108,7 +108,7 @@ async fn relay(
 
             // create Transaction, SignedTransaction from SignedDelegateAction
             let transaction = Transaction{
-                signer_id: SIGNER_ID.as_str().parse().unwrap(),
+                signer_id: RELAYER_ACCOUNT_ID.as_str().parse().unwrap(),
                 public_key: signed_delegate_action.delegate_action.public_key,
                 nonce: signed_delegate_action.delegate_action.nonce,
                 // the receiver of the txn is the sender of the signed delegate action
@@ -119,9 +119,9 @@ async fn relay(
                     .map(|a| Action::try_from(a.clone()).unwrap())
                     .collect()
             };
-            // TODO create new signature and sign with locally stored private key
+            // TODO sign with locally stored private key in json file
             let signed_transaction = SignedTransaction::new(
-                signed_delegate_action.signature,
+                Signature::default(),
                 transaction
             );
 
