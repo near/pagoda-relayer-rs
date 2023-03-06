@@ -12,8 +12,8 @@ use near_jsonrpc_client::methods::broadcast_tx_commit::RpcBroadcastTxCommitReque
 use near_primitives::borsh::BorshSerialize;
 use near_primitives::borsh::BorshDeserialize;
 #[cfg(test)]
-use near_primitives::delegate_action::DelegateAction;
-use near_primitives::delegate_action::{NonDelegateAction, SignedDelegateAction};
+use near_primitives::delegate_action::{DelegateAction, NonDelegateAction};
+use near_primitives::delegate_action::SignedDelegateAction;
 #[cfg(test)]
 use near_primitives::transaction::{CreateAccountAction, TransferAction};
 use near_primitives::transaction::{Action, Transaction};
@@ -39,7 +39,7 @@ static LOCAL_CONF: Lazy<Config> = Lazy::new(|| {
         .unwrap();
     conf
 });
-// TODO LP: add RPC api key to config file and JsonRpcClient
+// TODO LP: add RPC api key (and RPC endpoint, etc) to config file and JsonRpcClient
 static JSON_RPC_CLIENT: Lazy<near_jsonrpc_client::JsonRpcClient> = Lazy::new(|| {
     let network_name: String = LOCAL_CONF.get("network").unwrap();
     let rpc_config = RPCConfig::default();
@@ -54,6 +54,10 @@ static RELAYER_ACCOUNT_ID: Lazy<String> = Lazy::new(|| {
 static KEYS_FILENAME: Lazy<String> = Lazy::new(|| {
    let keys_filename: String = LOCAL_CONF.get("keys_filename").unwrap();
     keys_filename
+});
+static PORT: Lazy<u16> = Lazy::new(|| {
+    let port: u16 = LOCAL_CONF.get("port").unwrap();
+    port
 });
 
 
@@ -71,7 +75,7 @@ async fn main() {
 
     // run our app with hyper
     // `axum::Server` is a re-export of `hyper::Server`
-    let addr = SocketAddr::from(([127, 0, 0, 1], 3030));
+    let addr = SocketAddr::from(([127, 0, 0, 1], PORT.clone()));
     info!("listening on {}", addr);
     axum::Server::bind(&addr)
         .serve(app.into_make_service())
@@ -93,7 +97,7 @@ async fn relay(
                     block_reference: BlockReference::Finality(Finality::Final)
                 }).await.unwrap().header.hash;  // TODO LP: better err handling on unwrap
 
-            // create Transaction, SignedTransaction from SignedDelegateAction
+            // create Transaction from SignedDelegateAction
             let unsigned_transaction = Transaction{
                 signer_id: RELAYER_ACCOUNT_ID.as_str().parse().unwrap(),
                 public_key: signed_delegate_action.delegate_action.public_key,
@@ -107,7 +111,7 @@ async fn relay(
                     .collect()
             };
 
-            // sign with locally stored key from json file
+            // sign transaction with locally stored key from json file
             let signed_transaction = sign_transaction(
                 unsigned_transaction,
                 KEYS_FILENAME.as_str(),

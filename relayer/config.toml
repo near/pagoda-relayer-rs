@@ -1,6 +1,8 @@
 # mainnet, testnet, shardnet, betanet are acceptable values for network
 network = "testnet"
-# replace with the account id of the public key you will use to sign relay transactions
+# port to expose
+port = 3030
+# replace with the account id of the public key you will use to sign relay transactions - this should match the account_id in your json file
 relayer_account_id = "nomnomnom.testnet"
 # replace with json file containing 3 entries: account_id (should match relayer_account_id), public_key, private_key
 keys_filename = "nomnomnom.testnet.json"
