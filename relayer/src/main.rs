@@ -87,20 +87,6 @@ async fn relay(
         Ok(signed_delegate_action) => {
             debug!("Deserialized SignedDelegateAction object: {:#?}", signed_delegate_action);
 
-            // filter out Transfer Action types (FT transfers or NFT OK)
-            let filtered_actions: Vec<NonDelegateAction> = signed_delegate_action.delegate_action.actions
-                .into_iter()
-                .map(|nda| Action::try_from(nda.clone()).unwrap())
-                .filter(|action| {
-                    if let Action::Transfer(_) = action {
-                        false // exclude Transfer Action types
-                    } else {
-                        true // include all other Action variants
-                    }
-                })
-                .map(|a| NonDelegateAction::try_from(a.clone()).unwrap())
-                .collect();
-
             // get the latest block hash
             let latest_final_block_hash = JSON_RPC_CLIENT
                 .call(near_jsonrpc_client::methods::block::RpcBlockRequest{
