@@ -30,18 +30,25 @@ use crate::common::rpc_transaction_error;
 use crate::conf::RPCConfig;
 
 
-// load network config from yaml and setup json rpc client
-// TODO add RPC api key to config file and JsonRpcClient
-static JSON_RPC_CLIENT: Lazy<near_jsonrpc_client::JsonRpcClient> = Lazy::new(|| {
+// load config from toml and setup json rpc client
+static LOCAL_CONF: Lazy<Config> = Lazy::new(|| {
     let conf: Config = Config::builder()
         .add_source(File::with_name("config.toml"))
         .build()
         .unwrap();
-    let network_name: String = conf.get("network").unwrap();
+    conf
+});
+// TODO add RPC api key to config file and JsonRpcClient
+static JSON_RPC_CLIENT: Lazy<near_jsonrpc_client::JsonRpcClient> = Lazy::new(|| {
+    let network_name: String = LOCAL_CONF.get("network").unwrap();
     let rpc_config = RPCConfig::default();
     let network_config = rpc_config.networks.get(&network_name).unwrap();
     let json_rpc_client = network_config.json_rpc_client();
     json_rpc_client
+});
+static SIGNER_ID: Lazy<String> = Lazy::new(|| {
+    let signer_id: String = LOCAL_CONF.get("signer_id").unwrap();
+    signer_id
 });
 
 
@@ -101,16 +108,18 @@ async fn relay(
 
             // create Transaction, SignedTransaction from SignedDelegateAction
             let transaction = Transaction{
-                signer_id: signed_delegate_action.delegate_action.sender_id,
+                signer_id: SIGNER_ID.as_str().parse().unwrap(),
                 public_key: signed_delegate_action.delegate_action.public_key,
                 nonce: signed_delegate_action.delegate_action.nonce,
-                receiver_id: signed_delegate_action.delegate_action.receiver_id,
+                // the receiver of the txn is the sender of the signed delegate action
+                receiver_id: signed_delegate_action.delegate_action.sender_id,
                 block_hash: latest_final_block_hash,
                 actions: filtered_actions
                     .into_iter()
                     .map(|a| Action::try_from(a.clone()).unwrap())
                     .collect()
             };
+            // TODO create new signature and sign with locally stored private key
             let signed_transaction = SignedTransaction::new(
                 signed_delegate_action.signature,
                 transaction
@@ -139,7 +148,7 @@ async fn relay(
                             );
                             info!("{}", err_msg);
                             return (
-                                StatusCode::BAD_REQUEST,
+                                StatusCode::INTERNAL_SERVER_ERROR,
                                 err_msg,
                                 ).into_response()
                         },
@@ -180,7 +189,7 @@ async fn test_relay() {   // tests assume testnet in config
     // Test Transfer Action and a CreateAccount Action
 
     fn create_signed_delegate_action(actions: Vec<Action>, max_block_height: i32) -> SignedDelegateAction {
-        let sender_id: String = "near".parse().unwrap();
+        let sender_id: String = "nomnomnom".parse().unwrap();
         let receiver_id: String = "nomnomnom.testnet".parse().unwrap();
         let nonce: i32 = 1;
         let max_block_height: i32 = max_block_height;
@@ -216,7 +225,7 @@ async fn test_relay() {   // tests assume testnet in config
     println!("Bad Block Height SignedDelegateAction Json Serialized: {:?}", bbh_json_payload);
     let bbh_response = relay(Json(Vec::from(bbh_json_payload))).await.into_response();
     let bbh_response_status = bbh_response.status();
-    assert_eq!(bbh_response_status, StatusCode::BAD_REQUEST);
+    assert_eq!(bbh_response_status, StatusCode::INTERNAL_SERVER_ERROR);
 
     // Call the `relay` function with a payload that can't be deserialized into a SignedDelegateAction
     let bad_json_payload = serde_json::to_string("arrrgh").unwrap();

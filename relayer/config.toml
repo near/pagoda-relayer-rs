@@ -1,2 +1,4 @@
 # mainnet, testnet, shardnet, betanet are acceptable values for network
 network = "testnet"
+# replace with the account id of the public key you will use to sign relay transactions
+signer_id = "nomnomnom.testnet"
