@@ -22,6 +22,7 @@ use near_primitives::types::{BlockHeight, Nonce};
 use once_cell::sync::Lazy;
 use serde_json::{json, Map, Value};
 use std::net::SocketAddr;
+use near_primitives::types::{BlockReference, Finality};
 //use tower_http::{classify::ServerErrorsFailureClass, trace::TraceLayer};
 use tracing::{debug, info};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
@@ -88,13 +89,23 @@ async fn relay(
                 .map(|a| NonDelegateAction::try_from(a.clone()).unwrap())
                 .collect();
 
+            // get the latest block hash
+            let latest_final_block_hash = JSON_RPC_CLIENT
+                .call(near_jsonrpc_client::methods::block::RpcBlockRequest{
+                    block_reference: BlockReference::Finality(Finality::Final)
+                })
+                .await
+                .unwrap()
+                .header
+                .hash;
+
             // create Transaction, SignedTransaction from SignedDelegateAction
             let transaction = Transaction{
                 signer_id: signed_delegate_action.delegate_action.sender_id,
                 public_key: signed_delegate_action.delegate_action.public_key,
                 nonce: signed_delegate_action.delegate_action.nonce,
                 receiver_id: signed_delegate_action.delegate_action.receiver_id,
-                block_hash: Default::default(),
+                block_hash: latest_final_block_hash,
                 actions: filtered_actions
                     .into_iter()
                     .map(|a| Action::try_from(a.clone()).unwrap())
