@@ -242,7 +242,6 @@ async fn test_relay() {   // tests assume testnet in config
 
 #[tokio::test]
 #[ignore]
-// TODO refactor into separate file that calls http://127.0.0.1:3030/relay instead of relay fn directly
 async fn test_relay_with_load() {   // tests assume testnet in config
     // Test Transfer Action and a CreateAccount Action
 
