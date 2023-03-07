@@ -177,42 +177,51 @@ async fn relay(
     }
 }
 
+fn create_signed_delegate_action(
+    sender_id: String,
+    receiver_id: String,
+    actions: Vec<Action>,
+    nonce: i32,
+    max_block_height: i32
+) -> SignedDelegateAction {
+    let max_block_height: i32 = max_block_height;
+    let public_key: PublicKey = PublicKey::empty(KeyType::ED25519);
+    let signature: Signature = Signature::empty(KeyType::ED25519);
+    SignedDelegateAction {
+        delegate_action: DelegateAction {
+            sender_id: sender_id.parse().unwrap(),
+            receiver_id: receiver_id.parse().unwrap(),
+            actions: actions
+                .iter()
+                .map(|a| NonDelegateAction::try_from(a.clone()).unwrap())
+                .collect(),
+            nonce: nonce as Nonce,
+            max_block_height: max_block_height as BlockHeight,
+            public_key,
+        },
+        signature,
+    }
+}
+
 #[tokio::test]
 async fn test_relay() {   // tests assume testnet in config
     // Test Transfer Action and a CreateAccount Action
-
-    fn create_signed_delegate_action(actions: Vec<Action>, max_block_height: i32) -> SignedDelegateAction {
-        let sender_id: String = "nomnomnom.testnet".parse().unwrap();
-        let receiver_id: String = "nomnomnom.testnet".parse().unwrap();
-        let nonce: i32 = 1;
-        let max_block_height: i32 = max_block_height;
-        let public_key: PublicKey = PublicKey::empty(KeyType::ED25519);
-        let signature: Signature = Signature::empty(KeyType::ED25519);
-        SignedDelegateAction {
-            delegate_action: DelegateAction {
-                sender_id: sender_id.parse().unwrap(),
-                receiver_id: receiver_id.parse().unwrap(),
-                actions: actions
-                    .iter()
-                    .map(|a| NonDelegateAction::try_from(a.clone()).unwrap())
-                    .collect(),
-                nonce: nonce as Nonce,
-                max_block_height: max_block_height as BlockHeight,
-                public_key,
-            },
-            signature,
-        }
-    }
-
     let actions = vec![
         Action::CreateAccount(CreateAccountAction {}),
         Action::Transfer(TransferAction { deposit: 1 })
     ];
+    let sender_id: String = String::from("nomnomnom.testnet");
+    let receiver_id: String = String::from("nomnomnom.testnet");
+    let nonce: i32 = 1;
+    let max_block_height = 2000000000;
 
     // Call the `relay` function happy path
     let bad_block_height_signed_delegate_action = create_signed_delegate_action(
-        actions.clone(),
-        2000000000
+        sender_id,
+        receiver_id,
+        actions,
+        nonce,
+        max_block_height,
     );
     let bbh_json_payload = bad_block_height_signed_delegate_action.try_to_vec().unwrap();
     println!("SignedDelegateAction Json Serialized: {:?}", bbh_json_payload);
@@ -226,4 +235,49 @@ async fn test_relay() {   // tests assume testnet in config
     let err_response = relay(Json(Vec::from(bad_json_payload))).await.into_response();
     let err_response_status = err_response.status();
     assert_eq!(err_response_status, StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+#[ignore]
+async fn test_relay_with_load() {   // tests assume testnet in config
+    // Test Transfer Action and a CreateAccount Action
+
+    let actions = vec![
+        Action::CreateAccount(CreateAccountAction {}),
+        Action::Transfer(TransferAction { deposit: 1 })
+    ];
+    // TODO update account ids
+    let account_id0: String = "nomnomnom.testnet".to_string();
+    let account_id1: String = "nomnomnom.testnet".to_string();
+    let mut sender_id: String = String::new();
+    let mut receiver_id: String = String::new();
+    let mut nonce: i32 = 1;
+    let max_block_height = 2000000000;
+
+    let num_tests = 1000;
+
+    for i in 0..num_tests {
+        if i % 2 == 0 {
+            sender_id.push_str(&*account_id0.clone());
+            receiver_id.push_str(&*account_id1.clone());
+        } else {
+            sender_id.push_str(&*account_id1.clone());
+            receiver_id.push_str(&*account_id0.clone());
+        }
+        // Call the `relay` function happy path
+        let bad_block_height_signed_delegate_action = create_signed_delegate_action(
+            sender_id.clone(),
+            receiver_id.clone(),
+            actions.clone(),
+            nonce,
+            max_block_height,
+        );
+        let bbh_json_payload = bad_block_height_signed_delegate_action.try_to_vec().unwrap();
+        println!("SignedDelegateAction Json Serialized: {:?}", bbh_json_payload);
+        let bbh_response = relay(Json(Vec::from(bbh_json_payload))).await.into_response();
+        let bbh_response_status = bbh_response.status();
+        assert_eq!(bbh_response_status, StatusCode::OK);
+
+        nonce += 1;
+    }
 }
