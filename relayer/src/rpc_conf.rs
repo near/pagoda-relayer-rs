@@ -74,6 +74,7 @@ impl Default for RPCConfig {
         credentials_home_dir.push(".near-credentials");
 
         let mut networks = linked_hash_map::LinkedHashMap::new();
+        // TODO add these to config
         networks.insert(
             "mainnet".to_string(),
             NetworkConfig {
