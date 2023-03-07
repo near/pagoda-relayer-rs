@@ -216,18 +216,18 @@ async fn test_relay() {   // tests assume testnet in config
     let max_block_height = 2000000000;
 
     // Call the `relay` function happy path
-    let bad_block_height_signed_delegate_action = create_signed_delegate_action(
-        sender_id,
-        receiver_id,
-        actions,
+    let signed_delegate_action = create_signed_delegate_action(
+        sender_id.clone(),
+        receiver_id.clone(),
+        actions.clone(),
         nonce,
         max_block_height,
     );
-    let bbh_json_payload = bad_block_height_signed_delegate_action.try_to_vec().unwrap();
-    println!("SignedDelegateAction Json Serialized: {:?}", bbh_json_payload);
-    let bbh_response = relay(Json(Vec::from(bbh_json_payload))).await.into_response();
-    let bbh_response_status = bbh_response.status();
-    assert_eq!(bbh_response_status, StatusCode::OK);
+    let json_payload = signed_delegate_action.try_to_vec().unwrap();
+    println!("SignedDelegateAction Json Serialized: {:?}", json_payload);
+    let response = relay(Json(Vec::from(json_payload))).await.into_response();
+    let response_status = response.status();
+    assert_eq!(response_status, StatusCode::OK);
 
     // Call the `relay` function with a payload that can't be deserialized into a SignedDelegateAction
     let bad_json_payload = serde_json::to_string("arrrgh").unwrap();
@@ -255,7 +255,9 @@ async fn test_relay_with_load() {   // tests assume testnet in config
     let max_block_height = 2000000000;
 
     let num_tests = 1000;
+    let mut response_statuses = vec![];
 
+    // fire off all post requests in rapid succession and save the response status codes
     for i in 0..num_tests {
         if i % 2 == 0 {
             sender_id.push_str(&*account_id0.clone());
@@ -265,19 +267,25 @@ async fn test_relay_with_load() {   // tests assume testnet in config
             receiver_id.push_str(&*account_id0.clone());
         }
         // Call the `relay` function happy path
-        let bad_block_height_signed_delegate_action = create_signed_delegate_action(
+        let signed_delegate_action = create_signed_delegate_action(
             sender_id.clone(),
             receiver_id.clone(),
             actions.clone(),
             nonce,
             max_block_height,
         );
-        let bbh_json_payload = bad_block_height_signed_delegate_action.try_to_vec().unwrap();
-        println!("SignedDelegateAction Json Serialized: {:?}", bbh_json_payload);
-        let bbh_response = relay(Json(Vec::from(bbh_json_payload))).await.into_response();
-        let bbh_response_status = bbh_response.status();
-        assert_eq!(bbh_response_status, StatusCode::OK);
+        let json_payload = signed_delegate_action.try_to_vec().unwrap();
+        let response = relay(Json(Vec::from(json_payload))).await.into_response();
+        response_statuses.push(response.status());
 
+        // increment nonce & reset sender, receiver strs
         nonce += 1;
+        sender_id.clear();
+        receiver_id.clear();
+    }
+
+    // all responses should be successful
+    for i in 0..response_statuses.len() {
+        assert_eq!(response_statuses[i], StatusCode::OK);
     }
 }
