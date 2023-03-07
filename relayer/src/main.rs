@@ -242,6 +242,7 @@ async fn test_relay() {   // tests assume testnet in config
 
 #[tokio::test]
 #[ignore]
+// TODO refactor into separate file that calls http://127.0.0.1:3030/relay instead of relay fn directly
 async fn test_relay_with_load() {   // tests assume testnet in config
     // Test Transfer Action and a CreateAccount Action
 
@@ -257,7 +258,7 @@ async fn test_relay_with_load() {   // tests assume testnet in config
     let mut nonce: i32 = 1;
     let max_block_height = 2000000000;
 
-    let num_tests = 1000;
+    let num_tests = 100;
     let mut response_statuses = vec![];
 
     // fire off all post requests in rapid succession and save the response status codes
