@@ -6,3 +6,12 @@ port = 3030
 relayer_account_id = "nomnomnom.testnet"
 # replace with json file containing 3 entries: account_id (should match relayer_account_id), public_key, private_key
 keys_filename = "nomnomnom.testnet.json"
+
+# ------------------------ OPTIONAL ------------------------
+# change to true if you're overriding defaults
+override_rpc_conf = false
+# only uncomment & change if you want to override defaults set in rpc_conf.rs
+#rpc_url = "https://archival-rpc.testnet.near.org"
+#wallet_url = "https://wallet.testnet.near.org"
+#explorer_transaction_url = "https://explorer.testnet.near.org/transactions/"
+#rpc_api_key = ""

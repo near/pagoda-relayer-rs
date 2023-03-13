@@ -28,7 +28,7 @@ use tracing::{debug, info};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 use rpc_conf::rpc_transaction_error;
 use signing::sign_transaction;
-use crate::rpc_conf::RPCConfig;
+use crate::rpc_conf::{NetworkConfig, RPCConfig};
 
 
 // load config from toml and setup json rpc client
@@ -39,13 +39,27 @@ static LOCAL_CONF: Lazy<Config> = Lazy::new(|| {
         .unwrap();
     conf
 });
-// TODO LP: add RPC api key (and RPC endpoint, etc) to config file and JsonRpcClient
 static JSON_RPC_CLIENT: Lazy<near_jsonrpc_client::JsonRpcClient> = Lazy::new(|| {
     let network_name: String = LOCAL_CONF.get("network").unwrap();
     let rpc_config = RPCConfig::default();
-    let network_config = rpc_config.networks.get(&network_name).unwrap();
-    let json_rpc_client = network_config.json_rpc_client();
-    json_rpc_client
+
+    // optional overrides
+    if LOCAL_CONF.get::<bool>("override_rpc_conf").unwrap() == true {
+        let network_config = NetworkConfig {
+            network_name,
+            rpc_url: LOCAL_CONF.get("rpc_url").unwrap(),
+            rpc_api_key: LOCAL_CONF.get("rpc_api_key").unwrap(),
+            wallet_url: LOCAL_CONF.get("wallet_url").unwrap(),
+            explorer_transaction_url: LOCAL_CONF.get("explorer_transaction_url").unwrap(),
+        };
+        let json_rpc_client = network_config.json_rpc_client();
+        json_rpc_client
+    } else {
+        let network_config = rpc_config.networks.get(&network_name).unwrap();
+        let json_rpc_client = network_config.json_rpc_client();
+        json_rpc_client
+    }
+
 });
 static RELAYER_ACCOUNT_ID: Lazy<String> = Lazy::new(|| {
     let relayer_account_id: String = LOCAL_CONF.get("relayer_account_id").unwrap();
@@ -59,7 +73,6 @@ static PORT: Lazy<u16> = Lazy::new(|| {
     let port: u16 = LOCAL_CONF.get("port").unwrap();
     port
 });
-
 
 #[tokio::main]
 async fn main() {
@@ -180,6 +193,7 @@ async fn relay(
 /**
 --------------------------- Testing below here ---------------------------
 */
+#[cfg(test)]
 fn create_signed_delegate_action(
     sender_id: String,
     receiver_id: String,
@@ -249,7 +263,6 @@ async fn test_relay_with_load() {   // tests assume testnet in config
         Action::CreateAccount(CreateAccountAction {}),
         Action::Transfer(TransferAction { deposit: 1 })
     ];
-    // TODO update account ids
     let account_id0: String = "nomnomnom.testnet".to_string();
     let account_id1: String = "nomnomnom.testnet".to_string();
     let mut sender_id: String = String::new();
