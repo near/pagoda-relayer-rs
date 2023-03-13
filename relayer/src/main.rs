@@ -108,7 +108,7 @@ async fn relay(
             let latest_final_block_hash = JSON_RPC_CLIENT
                 .call(near_jsonrpc_client::methods::block::RpcBlockRequest{
                     block_reference: BlockReference::Finality(Finality::Final)
-                }).await.unwrap().header.hash;  // TODO LP: better err handling on unwrap
+                }).await.unwrap().header.hash;
 
             // create Transaction from SignedDelegateAction
             let unsigned_transaction = Transaction{
@@ -129,7 +129,7 @@ async fn relay(
                 unsigned_transaction,
                 KEYS_FILENAME.as_str(),
                 JSON_RPC_CLIENT.clone(),
-            ).await.unwrap().unwrap();  // TODO LP: better err handling on unwrap
+            ).await.unwrap().unwrap();
 
             // create json_rpc_client, send the SignedTransaction
             info!("Sending transaction ...");

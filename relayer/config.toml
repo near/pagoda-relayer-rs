@@ -1,4 +1,5 @@
 # mainnet, testnet, shardnet, betanet are acceptable values for network
+# other networks can be used, but optional params below are required
 network = "testnet"
 # port to expose
 port = 3030
