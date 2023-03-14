@@ -131,7 +131,7 @@ async fn relay(
                 JSON_RPC_CLIENT.clone(),
             ).await.unwrap().unwrap();
 
-            // create json_rpc_client, send the SignedTransaction
+            // send the SignedTransaction with retry logic
             info!("Sending transaction ...");
             let transaction_info = loop {
                 let transaction_info_result = JSON_RPC_CLIENT
