@@ -33,7 +33,7 @@ impl serde::ser::Serialize for ApiKey {
         where
             S: serde::ser::Serializer
     {
-        serializer.serialize_str(&self.0.to_str().unwrap())
+        serializer.serialize_str(self.0.to_str().unwrap())
     }
 }
 

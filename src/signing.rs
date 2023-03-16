@@ -44,13 +44,13 @@ pub async fn sign_transaction(
     json_rpc_client: JsonRpcClient,
 ) -> color_eyre::eyre::Result<Option<SignedTransaction>> {
     let signing_keys = get_signing_keys(filename).unwrap();
-    let signer_secret_key: SecretKey = signing_keys.signer_private_key.clone().into();
+    let signer_secret_key: SecretKey = signing_keys.signer_private_key.clone();
     let online_signer_access_key_response = json_rpc_client
         .call(near_jsonrpc_client::methods::query::RpcQueryRequest {
             block_reference: near_primitives::types::Finality::Final.into(),
             request: near_primitives::views::QueryRequest::ViewAccessKey {
                 account_id: signing_keys.account_id.clone(),
-                public_key: signing_keys.signer_public_key.clone().into(),
+                public_key: signing_keys.signer_public_key.clone(),
             },
         })
         .await
@@ -71,7 +71,7 @@ pub async fn sign_transaction(
             return Err(color_eyre::Report::msg("Error current_nonce".to_string()));
         };
     let unsigned_transaction = near_primitives::transaction::Transaction {
-        public_key: signing_keys.signer_public_key.clone().into(),
+        public_key: signing_keys.signer_public_key.clone(),
         block_hash: online_signer_access_key_response.block_hash,
         nonce: current_nonce + 1,
         ..prepopulated_unsigned_transaction

@@ -19,8 +19,7 @@ use near_primitives::delegate_action::SignedDelegateAction;
 use near_primitives::transaction::TransferAction;
 use near_primitives::transaction::{Action, Transaction};
 #[cfg(test)]
-use near_primitives::types::BlockHeight;
-use near_primitives::types::Nonce;
+use near_primitives::types::{BlockHeight, Nonce};
 use once_cell::sync::Lazy;
 use serde_json::json;
 use std::net::SocketAddr;
@@ -47,7 +46,7 @@ static JSON_RPC_CLIENT: Lazy<near_jsonrpc_client::JsonRpcClient> = Lazy::new(|| 
     let rpc_config = RPCConfig::default();
 
     // optional overrides
-    if LOCAL_CONF.get::<bool>("override_rpc_conf").unwrap() == true {
+    if LOCAL_CONF.get::<bool>("override_rpc_conf").unwrap() {
         let network_config = NetworkConfig {
             network_name,
             rpc_url: LOCAL_CONF.get("rpc_url").unwrap(),
@@ -55,12 +54,10 @@ static JSON_RPC_CLIENT: Lazy<near_jsonrpc_client::JsonRpcClient> = Lazy::new(|| 
             wallet_url: LOCAL_CONF.get("wallet_url").unwrap(),
             explorer_transaction_url: LOCAL_CONF.get("explorer_transaction_url").unwrap(),
         };
-        let json_rpc_client = network_config.json_rpc_client();
-        json_rpc_client
+        network_config.json_rpc_client()
     } else {
         let network_config = rpc_config.networks.get(&network_name).unwrap();
-        let json_rpc_client = network_config.json_rpc_client();
-        json_rpc_client
+        network_config.json_rpc_client()
     }
 
 });
@@ -99,7 +96,7 @@ async fn main() {
 
     // run our app with hyper
     // `axum::Server` is a re-export of `hyper::Server`
-    let addr = SocketAddr::from((IP_ADDRESS.clone(), PORT.clone()));
+    let addr = SocketAddr::from((*IP_ADDRESS, *PORT));
     info!("listening on {}", addr);
     axum::Server::bind(&addr)
         .serve(app.into_make_service())
@@ -124,7 +121,7 @@ async fn relay(
             // create Transaction from SignedDelegateAction
             let public_key = PublicKey::from_str(RELAYER_PUBLIC_KEY.as_str()).unwrap();
             // TODO is this the proper way to construct a nonce?
-            let nonce = Nonce::from(369369369369369369_u64);
+            let nonce = 369369369369369369_u64;
             // the receiver of the txn is the sender of the signed delegate action
             let receiver_id = signed_delegate_action.delegate_action.sender_id.clone();
             // TODO for batching add multiple signed delegate actions, then flush
@@ -165,11 +162,9 @@ async fn relay(
                                     sleep_time_ms *= 2;
                                 }
                                 Err(report) => {
-                                    let err_msg = String::from(
-                                        format!("{}: {:?}",
-                                                "Error sending transaction to RPC".to_string(),
-                                                report.to_string()
-                                        )
+                                    let err_msg = format!("{}: {:?}",
+                                            "Error sending transaction to RPC",
+                                            report.to_string()
                                     );
                                     info!("{}", err_msg);
                                     return (
@@ -194,7 +189,7 @@ async fn relay(
                 Err(_) => {
                     let err_msg = String::from("Error signing transaction");
                     info!("{}", err_msg);
-                    return (
+                    (
                         StatusCode::INTERNAL_SERVER_ERROR,
                         err_msg,
                     ).into_response()
@@ -202,11 +197,9 @@ async fn relay(
             }
         },
         Err(e) => {
-            let err_msg = String::from(
-                format!("{}: {:?}",
-                    "Error deserializing payload data object".to_string(),
-                    e.to_string()
-                )
+            let err_msg = format!("{}: {:?}",
+                "Error deserializing payload data object",
+                e.to_string(),
             );
             info!("{}", err_msg);
             (
