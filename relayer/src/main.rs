@@ -137,6 +137,7 @@ async fn relay(
 
             // send the SignedTransaction with retry logic
             info!("Sending transaction ...");
+            let mut sleep_time_ms = 100;
             let transaction_info = loop {
                 let transaction_info_result = JSON_RPC_CLIENT
                     .call(RpcBroadcastTxCommitRequest{signed_transaction: signed_transaction.clone()})
@@ -147,7 +148,8 @@ async fn relay(
                     }
                     Err(err) => match rpc_transaction_error(err) {
                         Ok(_) => {
-                            tokio::time::sleep(std::time::Duration::from_millis(100)).await
+                            tokio::time::sleep(std::time::Duration::from_millis(sleep_time_ms)).await
+                            sleep_time_ms *= 2;
                         }
                         Err(report) => {
                             let err_msg = String::from(
@@ -167,13 +169,11 @@ async fn relay(
             };
 
             // build response json
-            let mut success_msg_json: Map<String, Value> = Map::new();
-            success_msg_json.insert("message".to_string(),
-                                    json!("Successfully relayed and sent transaction."));
-            success_msg_json.insert("Status".to_string(),
-                                    json!(transaction_info.status));
-            success_msg_json.insert("Transaction Outcome Logs".to_string(),
-                                    json!(transaction_info.transaction_outcome.outcome.logs.join("\n")));
+            let mut success_msg_json = json!({
+                "message": "Successfully relayed and sent transaction.",
+                "status": transaction_info.status,
+                "Transaction Outcome Logs": transaction_info.transaction_outcome.outcome.logs.join("\n"),
+            });
             info!("Success message: {:?}", success_msg_json);
             let success_msg_str = serde_json::to_string(&success_msg_json).unwrap();
             success_msg_str.into_response()
