@@ -6,7 +6,8 @@ use axum::Json;
 use axum::{extract, http::StatusCode, response::IntoResponse, Router, routing::post};
 use config::{Config, File};
 #[cfg(test)]
-use near_crypto::{KeyType, PublicKey, Signature};
+use near_crypto::{KeyType, Signature};
+use near_crypto::PublicKey;
 use near_jsonrpc_client::methods::broadcast_tx_commit::RpcBroadcastTxCommitRequest;
 #[cfg(test)]
 use near_primitives::borsh::BorshSerialize;
@@ -18,10 +19,12 @@ use near_primitives::delegate_action::SignedDelegateAction;
 use near_primitives::transaction::TransferAction;
 use near_primitives::transaction::{Action, Transaction};
 #[cfg(test)]
-use near_primitives::types::{BlockHeight, Nonce};
+use near_primitives::types::BlockHeight;
+use near_primitives::types::Nonce;
 use once_cell::sync::Lazy;
 use serde_json::json;
 use std::net::SocketAddr;
+use std::str::FromStr;
 use near_primitives::types::{BlockReference, Finality};
 //use tower_http::{classify::ServerErrorsFailureClass, trace::TraceLayer};
 use tracing::{debug, info};
@@ -74,8 +77,12 @@ static RELAYER_ACCOUNT_ID: Lazy<String> = Lazy::new(|| {
     relayer_account_id
 });
 static KEYS_FILENAME: Lazy<String> = Lazy::new(|| {
-   let keys_filename: String = LOCAL_CONF.get("keys_filename").unwrap();
+    let keys_filename: String = LOCAL_CONF.get("keys_filename").unwrap();
     keys_filename
+});
+static RELAYER_PUBLIC_KEY: Lazy<String> = Lazy::new(|| {
+    let relayer_public_key: String = LOCAL_CONF.get("relayer_public_key").unwrap();
+    relayer_public_key
 });
 
 #[tokio::main]
@@ -115,17 +122,20 @@ async fn relay(
                 }).await.unwrap().header.hash;
 
             // create Transaction from SignedDelegateAction
+            let public_key = PublicKey::from_str(RELAYER_PUBLIC_KEY.as_str()).unwrap();
+            // TODO is this the proper way to construct a nonce?
+            let nonce = Nonce::from(369369369369369369_u64);
+            // the receiver of the txn is the sender of the signed delegate action
+            let receiver_id = signed_delegate_action.delegate_action.sender_id.clone();
+            // TODO for batching add multiple signed delegate actions, then flush
+            let actions = vec![Action::Delegate(signed_delegate_action)];
             let unsigned_transaction = Transaction{
                 signer_id: RELAYER_ACCOUNT_ID.as_str().parse().unwrap(),
-                public_key: signed_delegate_action.delegate_action.public_key,
-                nonce: signed_delegate_action.delegate_action.nonce,
-                // the receiver of the txn is the sender of the signed delegate action
-                receiver_id: signed_delegate_action.delegate_action.sender_id,
+                public_key,
+                nonce,
+                receiver_id,
                 block_hash: latest_final_block_hash,
-                actions: signed_delegate_action.delegate_action.actions
-                    .into_iter()
-                    .map(|a| Action::try_from(a.clone()).unwrap())
-                    .collect()
+                actions,
             };
 
             // sign transaction with locally stored key from json file
