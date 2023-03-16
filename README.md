@@ -12,6 +12,3 @@ The `SignedTransaction` is then sent to the network via RPC call and the result 
 2. update values in `config.toml`
 3. make sure to open up the `port` from `config.toml` in your machine's network settings
 4. run the server using `cargo run`
-
-## Configuration Options
-TODO

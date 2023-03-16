@@ -159,12 +159,12 @@ async fn relay(
                             Err(err) => match rpc_transaction_error(err) {
                                 Ok(_) => {
                                     tokio::time::sleep(std::time::Duration::from_millis(sleep_time_ms)).await;
-                                    sleep_time_ms *= 2;
+                                    sleep_time_ms *= 2;  // exponential backoff
                                 }
                                 Err(report) => {
                                     let err_msg = format!("{}: {:?}",
-                                            "Error sending transaction to RPC",
-                                            report.to_string()
+                                        "Error sending transaction to RPC",
+                                        report.to_string()
                                     );
                                     info!("{}", err_msg);
                                     return (
