@@ -15,12 +15,12 @@ use near_primitives::borsh::BorshDeserialize;
 use near_primitives::delegate_action::{DelegateAction, NonDelegateAction};
 use near_primitives::delegate_action::SignedDelegateAction;
 #[cfg(test)]
-use near_primitives::transaction::{CreateAccountAction, TransferAction};
+use near_primitives::transaction::TransferAction;
 use near_primitives::transaction::{Action, Transaction};
 #[cfg(test)]
 use near_primitives::types::{BlockHeight, Nonce};
 use once_cell::sync::Lazy;
-use serde_json::{json, Map, Value};
+use serde_json::json;
 use std::net::SocketAddr;
 use near_primitives::types::{BlockReference, Finality};
 //use tower_http::{classify::ServerErrorsFailureClass, trace::TraceLayer};
@@ -61,8 +61,8 @@ static JSON_RPC_CLIENT: Lazy<near_jsonrpc_client::JsonRpcClient> = Lazy::new(|| 
     }
 
 });
-static IP_ADDRESS: Lazy<Vec<u8>> = Lazy::new(|| {
-    let ip_address: Vec<u8> = LOCAL_CONF.get("addr").unwrap();
+static IP_ADDRESS: Lazy<[u8; 4]> = Lazy::new(|| {
+    let ip_address: [u8; 4] = LOCAL_CONF.get("addr").unwrap();
     ip_address
 });
 static PORT: Lazy<u16> = Lazy::new(|| {
@@ -129,54 +129,67 @@ async fn relay(
             };
 
             // sign transaction with locally stored key from json file
-            let signed_transaction = sign_transaction(
+            let signed_transaction_result = sign_transaction(
                 unsigned_transaction,
                 KEYS_FILENAME.as_str(),
                 JSON_RPC_CLIENT.clone(),
-            ).await.unwrap().unwrap();
+                ).await;
+            match signed_transaction_result {
+                Ok(_) => {
+                    let signed_transaction = signed_transaction_result.unwrap().unwrap();
 
-            // send the SignedTransaction with retry logic
-            info!("Sending transaction ...");
-            let mut sleep_time_ms = 100;
-            let transaction_info = loop {
-                let transaction_info_result = JSON_RPC_CLIENT
-                    .call(RpcBroadcastTxCommitRequest{signed_transaction: signed_transaction.clone()})
-                    .await;
-                match transaction_info_result {
-                    Ok(response) => {
-                        break response;
-                    }
-                    Err(err) => match rpc_transaction_error(err) {
-                        Ok(_) => {
-                            tokio::time::sleep(std::time::Duration::from_millis(sleep_time_ms)).await
-                            sleep_time_ms *= 2;
-                        }
-                        Err(report) => {
-                            let err_msg = String::from(
-                                format!("{}: {:?}",
-                                        "Error sending transaction to RPC".to_string(),
-                                        report.to_string()
-                                )
-                            );
-                            info!("{}", err_msg);
-                            return (
-                                StatusCode::INTERNAL_SERVER_ERROR,
-                                err_msg,
-                                ).into_response()
-                        },
-                    },
-                };
-            };
+                    // send the SignedTransaction with retry logic
+                    info!("Sending transaction ...");
+                    let mut sleep_time_ms = 100;
+                    let transaction_info = loop {
+                        let transaction_info_result = JSON_RPC_CLIENT
+                            .call(RpcBroadcastTxCommitRequest{signed_transaction: signed_transaction.clone()})
+                            .await;
+                        match transaction_info_result {
+                            Ok(response) => {
+                                break response;
+                            }
+                            Err(err) => match rpc_transaction_error(err) {
+                                Ok(_) => {
+                                    tokio::time::sleep(std::time::Duration::from_millis(sleep_time_ms)).await;
+                                    sleep_time_ms *= 2;
+                                }
+                                Err(report) => {
+                                    let err_msg = String::from(
+                                        format!("{}: {:?}",
+                                                "Error sending transaction to RPC".to_string(),
+                                                report.to_string()
+                                        )
+                                    );
+                                    info!("{}", err_msg);
+                                    return (
+                                        StatusCode::INTERNAL_SERVER_ERROR,
+                                        err_msg,
+                                    ).into_response()
+                                },
+                            },
+                        };
+                    };
 
-            // build response json
-            let mut success_msg_json = json!({
-                "message": "Successfully relayed and sent transaction.",
-                "status": transaction_info.status,
-                "Transaction Outcome Logs": transaction_info.transaction_outcome.outcome.logs.join("\n"),
-            });
-            info!("Success message: {:?}", success_msg_json);
-            let success_msg_str = serde_json::to_string(&success_msg_json).unwrap();
-            success_msg_str.into_response()
+                    // build response json
+                    let success_msg_json = json!({
+                        "message": "Successfully relayed and sent transaction.",
+                        "status": transaction_info.status,
+                        "Transaction Outcome Logs": transaction_info.transaction_outcome.outcome.logs.join("\n"),
+                    });
+                    info!("Success message: {:?}", success_msg_json);
+                    let success_msg_str = serde_json::to_string(&success_msg_json).unwrap();
+                    success_msg_str.into_response()
+                }
+                Err(_) => {
+                    let err_msg = String::from("Error signing transaction");
+                    info!("{}", err_msg);
+                    return (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        err_msg,
+                    ).into_response()
+                }
+            }
         },
         Err(e) => {
             let err_msg = String::from(
