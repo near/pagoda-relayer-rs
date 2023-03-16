@@ -14,3 +14,5 @@ target/
 
 # where account and keys are stored
 *.json
+# except for example json file used for testing
+!nomnomnom.testnet.json
