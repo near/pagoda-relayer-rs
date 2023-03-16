@@ -1,6 +1,8 @@
 # mainnet, testnet, shardnet, betanet are acceptable values for network
 # other networks can be used, but optional params below are required
 network = "testnet"
+# ip address to run server on, default to localhost
+ip_address = [127, 0, 0, 1]
 # port to expose
 port = 3030
 # replace with the account id of the public key you will use to sign relay transactions - this should match the account_id in your json file

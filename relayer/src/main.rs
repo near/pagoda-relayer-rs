@@ -61,6 +61,14 @@ static JSON_RPC_CLIENT: Lazy<near_jsonrpc_client::JsonRpcClient> = Lazy::new(|| 
     }
 
 });
+static IP_ADDRESS: Lazy<Vec<u8>> = Lazy::new(|| {
+    let ip_address: Vec<u8> = LOCAL_CONF.get("addr").unwrap();
+    ip_address
+});
+static PORT: Lazy<u16> = Lazy::new(|| {
+    let port: u16 = LOCAL_CONF.get("port").unwrap();
+    port
+});
 static RELAYER_ACCOUNT_ID: Lazy<String> = Lazy::new(|| {
     let relayer_account_id: String = LOCAL_CONF.get("relayer_account_id").unwrap();
     relayer_account_id
@@ -68,10 +76,6 @@ static RELAYER_ACCOUNT_ID: Lazy<String> = Lazy::new(|| {
 static KEYS_FILENAME: Lazy<String> = Lazy::new(|| {
    let keys_filename: String = LOCAL_CONF.get("keys_filename").unwrap();
     keys_filename
-});
-static PORT: Lazy<u16> = Lazy::new(|| {
-    let port: u16 = LOCAL_CONF.get("port").unwrap();
-    port
 });
 
 #[tokio::main]
@@ -88,7 +92,7 @@ async fn main() {
 
     // run our app with hyper
     // `axum::Server` is a re-export of `hyper::Server`
-    let addr = SocketAddr::from(([127, 0, 0, 1], PORT.clone()));
+    let addr = SocketAddr::from((IP_ADDRESS.clone(), PORT.clone()));
     info!("listening on {}", addr);
     axum::Server::bind(&addr)
         .serve(app.into_make_service())
@@ -222,13 +226,12 @@ fn create_signed_delegate_action(
 
 #[tokio::test]
 async fn test_relay() {   // tests assume testnet in config
-    // Test Transfer Action and a CreateAccount Action
+    // Test Transfer Action
     let actions = vec![
-        Action::CreateAccount(CreateAccountAction {}),
         Action::Transfer(TransferAction { deposit: 1 })
     ];
-    let sender_id: String = String::from("nomnomnom.testnet");
-    let receiver_id: String = String::from("nomnomnom.testnet");
+    let sender_id: String = String::from("relayer_test0.testnet");
+    let receiver_id: String = String::from("relayer_test1.testnet");
     let nonce: i32 = 1;
     let max_block_height = 2000000000;
 
@@ -257,14 +260,13 @@ async fn test_relay() {   // tests assume testnet in config
 #[tokio::test]
 #[ignore]
 async fn test_relay_with_load() {   // tests assume testnet in config
-    // Test Transfer Action and a CreateAccount Action
+    // Test Transfer Action
 
     let actions = vec![
-        Action::CreateAccount(CreateAccountAction {}),
         Action::Transfer(TransferAction { deposit: 1 })
     ];
-    let account_id0: String = "nomnomnom.testnet".to_string();
-    let account_id1: String = "nomnomnom.testnet".to_string();
+    let account_id0: String = "relayer_test0.testnet".to_string();
+    let account_id1: String = "relayer_test1.testnet".to_string();
     let mut sender_id: String = String::new();
     let mut receiver_id: String = String::new();
     let mut nonce: i32 = 1;
