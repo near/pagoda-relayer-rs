@@ -1,6 +1,7 @@
 mod rpc_conf;
 mod signing;
 
+use anyhow::bail;
 #[cfg(test)]
 use axum::Json;
 use axum::{extract, http::StatusCode, response::IntoResponse, Router, routing::post};
@@ -9,22 +10,25 @@ use config::{Config, File};
 use near_crypto::{KeyType, Signature};
 use near_crypto::PublicKey;
 use near_jsonrpc_client::methods::broadcast_tx_commit::RpcBroadcastTxCommitRequest;
+use near_jsonrpc_primitives::types;
 #[cfg(test)]
 use near_primitives::borsh::BorshSerialize;
 use near_primitives::borsh::BorshDeserialize;
 #[cfg(test)]
 use near_primitives::delegate_action::{DelegateAction, NonDelegateAction};
 use near_primitives::delegate_action::SignedDelegateAction;
+use near_primitives::hash::CryptoHash;
 #[cfg(test)]
 use near_primitives::transaction::TransferAction;
 use near_primitives::transaction::{Action, Transaction};
 #[cfg(test)]
 use near_primitives::types::{BlockHeight, Nonce};
+use near_primitives::views::{AccessKeyView, QueryRequest};
 use once_cell::sync::Lazy;
 use serde_json::json;
 use std::net::SocketAddr;
 use std::str::FromStr;
-use near_primitives::types::{BlockReference, Finality};
+use near_primitives::types::{AccountId, BlockReference};
 //use tower_http::{classify::ServerErrorsFailureClass, trace::TraceLayer};
 use tracing::{debug, info};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
@@ -82,6 +86,28 @@ static RELAYER_PUBLIC_KEY: Lazy<String> = Lazy::new(|| {
     relayer_public_key
 });
 
+pub async fn sync_account_key(
+    account_id: AccountId,
+    public_key: PublicKey,
+) -> anyhow::Result<(u64, CryptoHash)> {
+    let response = JSON_RPC_CLIENT
+        .call(types::query::RpcQueryRequest {
+            block_reference: BlockReference::latest(),
+            request: QueryRequest::ViewAccessKey {
+                account_id,
+                public_key,
+            },
+        })
+        .await?;
+
+    match response.kind {
+        types::query::QueryResponseKind::AccessKey(AccessKeyView { nonce, .. }) => {
+            Ok((nonce, response.block_hash))
+        }
+        _ => bail!("Failed to get nonce, block hash - Invalid response from RPC"),
+    }
+}
+
 #[tokio::main]
 async fn main() {
     // initialize tracing (aka logging)
@@ -112,89 +138,106 @@ async fn relay(
         Ok(signed_delegate_action) => {
             debug!("Deserialized SignedDelegateAction object: {:#?}", signed_delegate_action);
 
-            // get the latest block hash
-            let latest_final_block_hash = JSON_RPC_CLIENT
-                .call(near_jsonrpc_client::methods::block::RpcBlockRequest{
-                    block_reference: BlockReference::Finality(Finality::Final)
-                }).await.unwrap().header.hash;
-
             // create Transaction from SignedDelegateAction
+            let signer_account_id: AccountId = RELAYER_ACCOUNT_ID.as_str().parse().unwrap();
             let public_key = PublicKey::from_str(RELAYER_PUBLIC_KEY.as_str()).unwrap();
-            // TODO is this the proper way to construct a nonce?
-            let nonce = 369369369369369369_u64;
-            // the receiver of the txn is the sender of the signed delegate action
-            let receiver_id = signed_delegate_action.delegate_action.sender_id.clone();
-            // TODO for batching add multiple signed delegate actions, then flush
-            let actions = vec![Action::Delegate(signed_delegate_action)];
-            let unsigned_transaction = Transaction{
-                signer_id: RELAYER_ACCOUNT_ID.as_str().parse().unwrap(),
-                public_key,
-                nonce,
-                receiver_id,
-                block_hash: latest_final_block_hash,
-                actions,
-            };
-
-            // sign transaction with locally stored key from json file
-            let signed_transaction_result = sign_transaction(
-                unsigned_transaction,
-                KEYS_FILENAME.as_str(),
-                JSON_RPC_CLIENT.clone(),
-                ).await;
-            match signed_transaction_result {
-                Ok(_) => {
-                    let signed_transaction = signed_transaction_result.unwrap().unwrap();
-
-                    // send the SignedTransaction with retry logic
-                    info!("Sending transaction ...");
-                    let mut sleep_time_ms = 100;
-                    let transaction_info = loop {
-                        let transaction_info_result = JSON_RPC_CLIENT
-                            .call(RpcBroadcastTxCommitRequest{signed_transaction: signed_transaction.clone()})
-                            .await;
-                        match transaction_info_result {
-                            Ok(response) => {
-                                break response;
-                            }
-                            Err(err) => match rpc_transaction_error(err) {
-                                Ok(_) => {
-                                    tokio::time::sleep(std::time::Duration::from_millis(sleep_time_ms)).await;
-                                    sleep_time_ms *= 2;  // exponential backoff
-                                }
-                                Err(report) => {
-                                    let err_msg = format!("{}: {:?}",
-                                        "Error sending transaction to RPC",
-                                        report.to_string()
-                                    );
-                                    info!("{}", err_msg);
-                                    return (
-                                        StatusCode::INTERNAL_SERVER_ERROR,
-                                        err_msg,
-                                    ).into_response()
-                                },
-                            },
-                        };
-                    };
-
-                    // build response json
-                    let success_msg_json = json!({
-                        "message": "Successfully relayed and sent transaction.",
-                        "status": transaction_info.status,
-                        "Transaction Outcome Logs": transaction_info.transaction_outcome.outcome.logs.join("\n"),
-                    });
-                    info!("Success message: {:?}", success_msg_json);
-                    let success_msg_str = serde_json::to_string(&success_msg_json).unwrap();
-                    success_msg_str.into_response()
-                }
+            // get nonce, block hash from rpc
+            let nonce_and_block_hash_result = match sync_account_key(
+                signer_account_id.clone(),
+                public_key.clone(),
+            ).await {
+                Ok((nonce, latest_final_block_hash)) => Ok((nonce, latest_final_block_hash)),
                 Err(_) => {
-                    let err_msg = String::from("Error signing transaction");
-                    info!("{}", err_msg);
-                    (
+                    let err_msg = String::from("Failed to get nonce, block hash - Invalid response from RPC");
+                    Err(err_msg)
+                }
+            };
+            match nonce_and_block_hash_result {
+                Ok((nonce, latest_final_block_hash)) => {
+                    // the receiver of the txn is the sender of the signed delegate action
+                    let receiver_id = signed_delegate_action.delegate_action.sender_id.clone();
+                    // TODO for batching add multiple signed delegate actions, then flush
+                    let actions = vec![Action::Delegate(signed_delegate_action)];
+                    let unsigned_transaction = Transaction{
+                        signer_id: signer_account_id.clone(),
+                        public_key,
+                        nonce: nonce + 1,
+                        receiver_id,
+                        block_hash: latest_final_block_hash,
+                        actions,
+                    };
+                    debug!("unsigned_transaction {:?}", unsigned_transaction);
+
+                    // sign transaction with locally stored key from json file
+                    let signed_transaction_result = sign_transaction(
+                        unsigned_transaction,
+                        KEYS_FILENAME.as_str(),
+                        JSON_RPC_CLIENT.clone(),
+                    ).await;
+                    match signed_transaction_result {
+                        Ok(_) => {
+                            let signed_transaction = signed_transaction_result.unwrap().unwrap();
+
+                            // send the SignedTransaction with retry logic
+                            info!("Sending transaction ...");
+                            let mut sleep_time_ms = 100;
+                            let transaction_info = loop {
+                                let transaction_info_result = JSON_RPC_CLIENT
+                                    .call(RpcBroadcastTxCommitRequest{signed_transaction: signed_transaction.clone()})
+                                    .await;
+                                match transaction_info_result {
+                                    Ok(response) => {
+                                        break response;
+                                    }
+                                    Err(err) => match rpc_transaction_error(err) {
+                                        Ok(_) => {
+                                            tokio::time::sleep(std::time::Duration::from_millis(sleep_time_ms)).await;
+                                            sleep_time_ms *= 2;  // exponential backoff
+                                        }
+                                        Err(report) => {
+                                            let err_msg = format!(
+                                                "{}: {:?}",
+                                                "Error sending transaction to RPC",
+                                                report.to_string()
+                                            );
+                                            info!("{}", err_msg);
+                                            return (
+                                                StatusCode::INTERNAL_SERVER_ERROR,
+                                                err_msg,
+                                            ).into_response()
+                                        },
+                                    },
+                                };
+                            };
+
+                            // build response json
+                            let success_msg_json = json!({
+                                "message": "Successfully relayed and sent transaction.",
+                                "status": transaction_info.status,
+                                "Transaction Outcome Logs": transaction_info.transaction_outcome.outcome.logs.join("\n"),
+                            });
+                            info!("Success message: {:?}", success_msg_json);
+                            let success_msg_str = serde_json::to_string(&success_msg_json).unwrap();
+                            success_msg_str.into_response()
+                        }
+                        Err(_) => {
+                            let err_msg = String::from("Error signing transaction");
+                            info!("{}", err_msg);
+                            (
+                                StatusCode::INTERNAL_SERVER_ERROR,
+                                err_msg,
+                            ).into_response()
+                        }
+                    }
+                }
+                Err(err_msg) => {
+                    return (
                         StatusCode::INTERNAL_SERVER_ERROR,
                         err_msg,
-                    ).into_response()
+                    ).into_response();
                 }
             }
+
         },
         Err(e) => {
             let err_msg = format!("{}: {:?}",

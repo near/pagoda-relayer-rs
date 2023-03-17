@@ -4,6 +4,7 @@ version = "0.2.0"
 edition = "2021"
 
 [dependencies]
+anyhow = "1.0.69"
 axum = "0.5.17"  # using an older version to avoid conflicts with nearcore version TODO LP: update
 color-eyre = "0.6"
 config = "*"
