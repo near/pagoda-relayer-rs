@@ -29,7 +29,7 @@ use serde_json::json;
 use std::net::SocketAddr;
 use std::str::FromStr;
 use near_primitives::types::{AccountId, BlockReference};
-//use tower_http::{classify::ServerErrorsFailureClass, trace::TraceLayer};
+use tower_http::trace::TraceLayer;
 use tracing::{debug, info};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 use rpc_conf::rpc_transaction_error;
@@ -66,7 +66,7 @@ static JSON_RPC_CLIENT: Lazy<near_jsonrpc_client::JsonRpcClient> = Lazy::new(|| 
 
 });
 static IP_ADDRESS: Lazy<[u8; 4]> = Lazy::new(|| {
-    let ip_address: [u8; 4] = LOCAL_CONF.get("addr").unwrap();
+    let ip_address: [u8; 4] = LOCAL_CONF.get("ip_address").unwrap();
     ip_address
 });
 static PORT: Lazy<u16> = Lazy::new(|| {
@@ -116,9 +116,9 @@ async fn main() {
     // build our application with a route
     let app = Router::new()
         // `POST /relay` goes to `relay` handler function
-        .route("/relay", post(relay));
+        .route("/relay", post(relay))
         // See https://docs.rs/tower-http/0.1.1/tower_http/trace/index.html for more details.
-        //.layer(TraceLayer::new_for_http()); // TODO LP: re-add when tower-http dependency conflict is resolved
+        .layer(TraceLayer::new_for_http());
 
     // run our app with hyper
     // `axum::Server` is a re-export of `hyper::Server`
@@ -231,10 +231,10 @@ async fn relay(
                     }
                 }
                 Err(err_msg) => {
-                    return (
+                    (
                         StatusCode::INTERNAL_SERVER_ERROR,
                         err_msg,
-                    ).into_response();
+                    ).into_response()
                 }
             }
 
