@@ -2,11 +2,10 @@ use std::str::FromStr;
 use near_jsonrpc_client::JsonRpcClient;
 use near_crypto::{PublicKey, SecretKey};
 use near_primitives::transaction::SignedTransaction;
-use near_primitives::types::{AccountId, BlockReference};
+use near_primitives::types::AccountId;
 use serde::{Deserialize, Serialize};
-use near_primitives::hash::CryptoHash;
 use near_jsonrpc_primitives::types;
-use near_primitives::views::{AccessKeyView, QueryRequest};
+use near_primitives::views::QueryRequest;
 
 
 #[derive(Debug, Clone)]
@@ -46,7 +45,6 @@ pub async fn sign_transaction(
     filename: &str,
     json_rpc_client: JsonRpcClient,
 ) -> color_eyre::eyre::Result<Option<SignedTransaction>> {
-    // TODO am I doing duplicate work here? try with just this signing logic
     let signing_keys = get_signing_keys(filename).unwrap();
     let signer_secret_key: SecretKey = signing_keys.signer_private_key.clone();
     let online_signer_access_key_response = json_rpc_client
@@ -82,31 +80,6 @@ pub async fn sign_transaction(
     };
     let signature = signer_secret_key.sign(unsigned_transaction.get_hash_and_size().0.as_ref());
     let signed_transaction = SignedTransaction::new(signature, unsigned_transaction);
-    // let signature = signer_secret_key.sign(prepopulated_unsigned_transaction.get_hash_and_size().0.as_ref());
-    // let signed_transaction = SignedTransaction::new(signature, prepopulated_unsigned_transaction);
     println!("\nYour transaction was signed successfully.");
     Ok(Option::from(signed_transaction))
-}
-
-pub async fn sync_account_key(
-    account_id: AccountId,
-    public_key: PublicKey,
-    json_rpc_client: JsonRpcClient,
-) -> anyhow::Result<(u64, CryptoHash)> {
-    let response = json_rpc_client
-        .call(types::query::RpcQueryRequest {
-            block_reference: BlockReference::latest(),
-            request: QueryRequest::ViewAccessKey {
-                account_id,
-                public_key,
-            },
-        })
-        .await?;
-
-    match response.kind {
-        types::query::QueryResponseKind::AccessKey(AccessKeyView { nonce, .. }) => {
-            Ok((nonce, response.block_hash))
-        }
-        _ => anyhow::bail!("Failed to get nonce, block hash - Invalid response from RPC"),
-    }
 }
