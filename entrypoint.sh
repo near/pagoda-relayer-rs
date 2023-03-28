@@ -1,7 +1,7 @@
 #!/bin/bash
 cat <<EOF > ./config.toml
 network = "${NETWORK:-testnet}"
-ip_address = [127, 0, 0, 1]
+ip_address = [0, 0, 0, 0]
 port = ${SERVER_PORT:-3030}
 relayer_account_id = "${RELAYER_ACCOUNT_ID}"
 keys_filename = "./${RELAYER_ACCOUNT_ID}.json"
