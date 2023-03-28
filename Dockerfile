@@ -14,9 +14,9 @@ COPY ./src ./relayer/src
 RUN cargo build --release
 
 FROM ubuntu:20.04
+WORKDIR /relayer-app
 RUN apt update && apt install -yy openssl ca-certificates
 COPY --from=builder /tmp/target/release/relayer .
 COPY entrypoint.sh /usr/local/bin/
 RUN chmod +x /usr/local/bin/entrypoint.sh
-ENTRYPOINT ["entrypoint.sh"]
-CMD ["/relayer"]
+ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]

@@ -1,14 +1,14 @@
 #!/bin/bash
 cat <<EOF > ./config.toml
 network = "${NETWORK:-testnet}"
-ip_address = [127,0,0,1]
-port = "${SERVER_PORT:-3030}"
+ip_address = [127, 0, 0, 1]
+port = ${SERVER_PORT:-3030}
 relayer_account_id = "${RELAYER_ACCOUNT_ID}"
-keys_filename = "./account_key.json"
+keys_filename = "./${RELAYER_ACCOUNT_ID}.json"
 EOF
 
-cat <<EOF > ./relayer/account_key.json
+cat <<EOF > ./${RELAYER_ACCOUNT_ID}.json
 {"account_id":"${RELAYER_ACCOUNT_ID}","public_key":"${PUBLIC_KEY}","private_key":"${PRIVATE_KEY}"}
 EOF
 
-exec /relayer --config /relayer/config.toml
+exec /relayer-app/relayer --config config.toml 
