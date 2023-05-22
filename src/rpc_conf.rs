@@ -1,9 +1,6 @@
 /*
- For ApiKey data structure
- */
-
-use std::fmt::Debug;
-use color_eyre::Report;
+For ApiKey data structure
+*/
 
 #[derive(Eq, Hash, Clone, Debug, PartialEq)]
 pub struct ApiKey(pub near_jsonrpc_client::auth::ApiKey);
@@ -16,12 +13,12 @@ impl From<ApiKey> for near_jsonrpc_client::auth::ApiKey {
 
 impl std::fmt::Display for ApiKey {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        self.0.fmt(f)
+        write!(f, "{:?}", self.0)
     }
 }
 
 impl std::str::FromStr for ApiKey {
-    type Err = color_eyre::eyre::Report;
+    type Err = color_eyre::Report;
 
     fn from_str(api_key: &str) -> Result<Self, Self::Err> {
         Ok(Self(near_jsonrpc_client::auth::ApiKey::new(api_key)?))
@@ -30,8 +27,8 @@ impl std::str::FromStr for ApiKey {
 
 impl serde::ser::Serialize for ApiKey {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-        where
-            S: serde::ser::Serializer
+    where
+        S: serde::ser::Serializer,
     {
         serializer.serialize_str(self.0.to_str().unwrap())
     }
@@ -39,18 +36,18 @@ impl serde::ser::Serialize for ApiKey {
 
 impl<'de> serde::de::Deserialize<'de> for ApiKey {
     fn deserialize<D>(deserializer: D) -> Result<ApiKey, D::Error>
-        where
-            D: serde::de::Deserializer<'de>,
+    where
+        D: serde::de::Deserializer<'de>,
     {
         String::deserialize(deserializer)?
             .parse()
-            .map_err(|err: color_eyre::eyre::Report| serde::de::Error::custom(err.to_string()))
+            .map_err(|err: color_eyre::Report| serde::de::Error::custom(err.to_string()))
     }
 }
 
 /*
- For RPCConfig data structure for creating the RPC connection
- */
+For RPCConfig data structure for creating the RPC connection
+*/
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct RPCConfig {
@@ -145,7 +142,7 @@ pub fn rpc_transaction_error(
     err: near_jsonrpc_client::errors::JsonRpcError<
         near_jsonrpc_client::methods::broadcast_tx_commit::RpcTransactionError,
     >,
-) -> Result<(), Report> {
+) -> Result<(), color_eyre::Report> {
     match &err {
         near_jsonrpc_client::errors::JsonRpcError::TransportError(_rpc_transport_error) => {
             println!("Transport error transaction.\nPlease wait. The next try to send this transaction is happening right now ...");
