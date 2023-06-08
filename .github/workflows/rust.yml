@@ -26,7 +26,7 @@ jobs:
       uses: actions-rs/clippy-check@v1.0.7
       with:
         # GitHub token
-        token: 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
+        token: ${{ secrets.GIT_TOKEN }}
         # Toolchain to use (without the `+` sign, ex. `nightly`)
         # toolchain: # optional
         # Arguments for the cargo command
