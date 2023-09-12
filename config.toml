@@ -6,9 +6,9 @@ ip_address = [127, 0, 0, 1]
 # port to expose
 port = 3030
 # replace with the account id of the public key you will use to sign relay transactions - this should match the account_id in your json file
-relayer_account_id = "nomnomnom.testnet"
+relayer_account_id = "relayer_test0.testnet"
 # replace with json file containing 3 entries: account_id (should match relayer_account_id), public_key, private_key
-keys_filename = "nomnomnom.testnet.json"
+keys_filename = "relayer_test0.testnet.json"
 
 # ------------------------ OPTIONAL ------------------------
 # change to true if you're overriding defaults
