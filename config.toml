@@ -2,13 +2,25 @@
 # other networks can be used, but optional params below are required
 network = "testnet"
 # ip address to run server on, default to localhost
-ip_address = [127, 0, 0, 1]
+ip_address = [0, 0, 0, 0]
 # port to expose
 port = 3030
 # replace with the account id of the public key you will use to sign relay transactions - this should match the account_id in your json file
-relayer_account_id = "relayer_test0.testnet"
-# replace with json file containing 3 entries: account_id (should match relayer_account_id), public_key, private_key
-keys_filename = "relayer_test0.testnet.json"
+relayer_account_id = "nomnomnom.testnet"   # "relayer.pagodaplatform.near"
+# replace with json files containing 3 entries: account_id (should match relayer_account_id), public_key, private_key
+keys_filenames = ["nomnomnom.testnet.json", "37cb5b936de257d014e663663b186e58e4c3c4c9b4c7643e7b89821e789b0b4b.json", "b278b7752b844a0cc88f8dbdb053b860d6283fb353e7a317b3b82efe01396c3e.json", "d7adc371186bc2013ec5de36be27ed9a36022af1112f7c62530baf6042690f61.json", "df86e9701801e30cf0649b2ea43aeacef60e394e076709d4519880d5a9c7bc9e.json", "e4a6dd159d45d4104679e709d29d49a533e5df9467b311c9dbea7fb8f0077335.json"] # "relayer.pagodaplatform.json"
+# number of keys in keys_filenames
+num_keys = 6
+# replace with the account id of the public key you will use to sign shared_storage transactions - this should match the account_id in your json file
+shared_storage_account_id = "relayer-test.testnet"  # "social-storage.pagodaplatform.near"
+# replace with json file containing 3 entries: account_id (should match shared_storage_account_id), public_key, private_key
+shared_storage_keys_filename = "relayer-test.testnet.json"  # "social-storage.pagodaplatform.json"
+# whitelisted contract ids (receiver_id) i.e. ["social.near", "devgovgigs.near"] for mainnet
+whitelisted_contracts = ["social-storage.pagodaplatform.near", "relayer.pagodaplatform.near", "social.near", "devgovgigs.near", "near", "account_creator.near", "consensus.neartasks.near", "nearhorizon.near", "relayer_test0.testnet"]
+# check if this is a whitelisted sender
+whitelisted_delegate_action_receiver_ids = ["account_creator.near", "relayer_test1.testnet", "social.near"]
+# redis url for storing and retrieving account_id, allowance
+redis_url = "redis://127.0.0.1:6379"
 
 # ------------------------ OPTIONAL ------------------------
 # change to true if you're overriding defaults
@@ -18,3 +30,7 @@ override_rpc_conf = false
 #wallet_url = "https://wallet.testnet.near.org"
 #explorer_transaction_url = "https://explorer.testnet.near.org/transactions/"
 #rpc_api_key = ""
+
+[social_db]
+mainnet = "social.near"
+testnet = "v1.social08.testnet"

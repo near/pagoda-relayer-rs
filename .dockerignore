@@ -1,0 +1,46 @@
+# Ignore documentation files
+*.md
+*.txt
+*.pdf
+*.doc
+*.psd
+
+# Ignore backup files
+*.bak
+*.zip
+
+# Ignore log files
+*.log
+
+# Ignore development files
+node_modules/
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Ignore build artifacts and intermediate files
+bin/
+obj/
+**/target
+storage/
+keystore/
+tmp/
+sandbox/
+
+# Docker files shouldn't invalidate the cache because Docker itself will use these appropriately
+.dockerignore
+Dockerfile
+Dockerfile.nightly
+
+
+# Ignore git internal structure
+.git/
+
+# Ignore sensitive data
+*env
+*.pem
+*.key
+*.crt
+*.password
+*.secret

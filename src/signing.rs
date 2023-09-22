@@ -1,12 +1,11 @@
-use std::str::FromStr;
-use near_jsonrpc_client::JsonRpcClient;
 use near_crypto::{PublicKey, SecretKey};
+use near_jsonrpc_client::JsonRpcClient;
+use near_jsonrpc_primitives::types;
 use near_primitives::transaction::SignedTransaction;
 use near_primitives::types::AccountId;
-use serde::{Deserialize, Serialize};
-use near_jsonrpc_primitives::types;
 use near_primitives::views::QueryRequest;
-
+use serde::{Deserialize, Serialize};
+use std::str::FromStr;
 
 #[derive(Debug, Clone)]
 pub struct SigningKeys {
@@ -30,7 +29,7 @@ fn read_key_file(filename: &str) -> Result<KeyFile, Box<dyn std::error::Error>> 
 
 pub fn get_signing_keys(filename: &str) -> Result<SigningKeys, Box<dyn std::error::Error>> {
     let key_file = read_key_file(filename)?;
-    let account_id = AccountId::from_str(&key_file.account_id).unwrap();
+    let account_id = AccountId::from_str(&key_file.account_id)?;
     let signer_public_key = PublicKey::from_str(&key_file.public_key)?;
     let signer_private_key = SecretKey::from_str(&key_file.private_key)?;
     Ok(SigningKeys {
@@ -43,9 +42,11 @@ pub fn get_signing_keys(filename: &str) -> Result<SigningKeys, Box<dyn std::erro
 pub async fn sign_transaction(
     prepopulated_unsigned_transaction: near_primitives::transaction::Transaction,
     filename: &str,
-    json_rpc_client: JsonRpcClient,
-) -> color_eyre::eyre::Result<Option<SignedTransaction>> {
-    let signing_keys = get_signing_keys(filename).unwrap();
+    json_rpc_client: &JsonRpcClient,
+) -> color_eyre::eyre::Result<SignedTransaction> {
+    let signing_keys = get_signing_keys(filename).map_err(|_err| {
+        color_eyre::Report::msg(format!("Failed to get signing keys={filename} for signing a transaction"))
+    })?;
     let signer_secret_key: SecretKey = signing_keys.signer_private_key.clone();
     let online_signer_access_key_response = json_rpc_client
         .call(near_jsonrpc_client::methods::query::RpcQueryRequest {
@@ -64,14 +65,14 @@ pub async fn sign_transaction(
             ))
         })?;
     let current_nonce =
-        if let types::query::QueryResponseKind::AccessKey(
-            online_signer_access_key,
-        ) = online_signer_access_key_response.kind
+        if let types::query::QueryResponseKind::AccessKey(online_signer_access_key) =
+        online_signer_access_key_response.kind
         {
             online_signer_access_key.nonce
         } else {
             return Err(color_eyre::Report::msg("Error current_nonce".to_string()));
         };
+
     let unsigned_transaction = near_primitives::transaction::Transaction {
         public_key: signing_keys.signer_public_key.clone(),
         block_hash: online_signer_access_key_response.block_hash,
@@ -81,5 +82,5 @@ pub async fn sign_transaction(
     let signature = signer_secret_key.sign(unsigned_transaction.get_hash_and_size().0.as_ref());
     let signed_transaction = SignedTransaction::new(signature, unsigned_transaction);
     println!("\nYour transaction was signed successfully.");
-    Ok(Option::from(signed_transaction))
+    Ok(signed_transaction)
 }

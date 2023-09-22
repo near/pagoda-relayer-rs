@@ -21,26 +21,28 @@ The `SignedTransaction` is then sent to the network via RPC call and the result 
 NOTE: These features can be mixed and matched "à la carte". Use of one feature does not preclude the use of any other feature unless specified.
 1. Cover the gas costs of end users while allowing them to maintain custody of their funds and approve transactions (`/relay`, `/send_meta_tx`)
 2. Only pay for users interacting with certain contracts by whitelisting contracts addresses (`whitelisted_contracts` in `config.toml`) 
-3. Specify gas cost allowances for all accounts (`/update_all_allowances`) or on a per-user account basis (`/register_account`, `/update_allowance`) and keep track of allowances (`/get_allowance`)
+3. Specify gas cost allowances for all accounts (`/update_all_allowances`) or on a per-user account basis (`/create_account_atomic`, `/register_account`, `/update_allowance`) and keep track of allowances (`/get_allowance`)
 4. Specify the accounts for which the relayer will cover gas fees (`whitelisted_delegate_action_receiver_ids` in `config.toml`)
-5. Only allow users to register if they have a unique Oauth Token (`/register_account`)
+5. Only allow users to register if they have a unique Oauth Token (`/create_account_atomic`, `/register_account`)
+6. Relayer Key Rotation: `keys_filenames` in `config.toml`
 
 ### Features - COMING SOON
 1. Allow users to pay for gas fees using Fungible Tokens they hold. This can be implemented by either:
    1. Swapping the FT for NEAR using a DEX like [Ref finance](https://app.ref.finance/) OR
    2. Sending the FT to a burn address that is verified by the relayer and the relayer covers the equivalent amount of gas in NEAR
 2. Cover storage deposit costs by deploying a storage contract
-3. Relayer Key Rotation
+3. Configure via to config use relayer without storage contract
 4. Put transactions in a queue to minimize network congestion - expected early-mid 2024
 5. Multichain relayers - expected early-mid 2024
 
 ## API Spec <a id="api_spc"></a>
-TODO
+TODO - openapi and swagger docs on github pages 
 - POST `/relay`
 - POST `/send_meta_tx`
 - GET `/get_allowance`
 - POST `/update_allowance`
 - POST `/update_all_allowances`
+- POST `/create_account_atomic`
 - POST `/register_account`
 
 ## Basic Setup - Local Dev
@@ -65,7 +67,7 @@ NOTE: this is only needed if you intend to use whitelisting, allowances, and oau
 1. Check to make sure the values in `entrypoint.sh` match what's in `config.toml`
 2. Build and run your Docker image based on the `Dockerfile` ensuring your desired ports are exposed:
    1. `docker build  -t pagoda-relayer-rs:<tag> ./`
-   2. `docker run -e RELAYER_ACCOUNT_ID="<account-id>" -e PUBLIC_KEY="<account-public-key>" -e PRIVATE_KEY="<account-private-key>" -p 3030:3030 pagoda-relayer-rs:<tag>`
+   2. `docker run -e RELAYER_ACCOUNT_ID="<account-id>" -e PUBLIC_KEY="<account-public-key>" -e PRIVATE_KEY="<account-private-key>" -e '[{"key_file_name":"<file_name1>","account_id":"<acc1>","public_key":"<pubkey1>","private_key":"<pvtkey1>"}, {"key_file_name":"<file_name2>","account_id":"<acc2>","public_key":"<pubkey2>","private_key":"<pvtkey2>"}]',-p 3030:3030 pagoda-relayer-rs-fastauth:<tag>`
 3. Test the endpoints. See [API Spec](#api_spec)
 
 ## Deployment
