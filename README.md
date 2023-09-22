@@ -32,8 +32,9 @@ NOTE: These features can be mixed and matched "à la carte". Use of one feature 
    2. Sending the FT to a burn address that is verified by the relayer and the relayer covers the equivalent amount of gas in NEAR
 2. Cover storage deposit costs by deploying a storage contract
 3. Configure via to config use relayer without storage contract
-4. Put transactions in a queue to minimize network congestion - expected early-mid 2024
-5. Multichain relayers - expected early-mid 2024
+4. automated relayer funds "top up" service
+5. Put transactions in a queue to minimize network congestion - expected early-mid 2024
+6. Multichain relayers - expected early-mid 2024
 
 ## API Spec <a id="api_spc"></a>
 TODO - openapi and swagger docs on github pages 
