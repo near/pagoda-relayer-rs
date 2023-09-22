@@ -12,14 +12,6 @@ use axum::{
     routing::{get, post}
 };
 use config::{Config, File};
-use once_cell::sync::Lazy;
-use rpc_conf::rpc_transaction_error;
-use serde_json::json;
-use std::net::SocketAddr;
-use tower_http::trace::TraceLayer;
-use tracing::{debug, info};
-use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
-
 #[cfg(test)]
 use near_crypto::{KeyType, PublicKey, Signature};
 #[cfg(test)]
@@ -62,9 +54,6 @@ use crate::error::RelayError;
 use crate::rpc_conf::{NetworkConfig, RPCConfig};
 use crate::shared_storage::SharedStoragePoolManager;
 
-mod rpc_conf;
-mod schemas;
-mod signing;
 
 // transaction cost in Gas (10^21yN or 10Tgas or 0.001N)
 const TXN_GAS_ALLOWANCE: u64 = 10_000_000_000_000;
@@ -80,11 +69,11 @@ static LOCAL_CONF: Lazy<Config> = Lazy::new(|| {
 static NETWORK_ENV: Lazy<String> = Lazy::new(|| { LOCAL_CONF.get("network").unwrap() });
 static JSON_RPC_CLIENT: Lazy<near_jsonrpc_client::JsonRpcClient> = Lazy::new(|| {
     let network_name: String = LOCAL_CONF.get("network").unwrap();
-    let rpc_config = crate::rpc_conf::RPCConfig::default();
+    let rpc_config = RPCConfig::default();
 
     // optional overrides
     if LOCAL_CONF.get::<bool>("override_rpc_conf").unwrap() {
-        let network_config = crate::rpc_conf::NetworkConfig {
+        let network_config = NetworkConfig {
             network_name,
             rpc_url: LOCAL_CONF.get("rpc_url").unwrap(),
             rpc_api_key: LOCAL_CONF.get("rpc_api_key").unwrap(),
@@ -221,7 +210,7 @@ impl Display for AccountIdJson {
 
 #[derive(Clone, Debug, Deserialize)]
 struct AllowanceJson {  // TODO: LP use for return type of GET get_allowance
-    allowance_in_gas: u64,
+allowance_in_gas: u64,
 }
 impl Display for AllowanceJson {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
@@ -233,9 +222,7 @@ impl Display for AllowanceJson {
 #[tokio::main]
 async fn main() {
     // initialize tracing (aka logging)
-    tracing_subscriber::registry()
-        .with(tracing_subscriber::fmt::layer())
-        .init();
+    tracing_subscriber::registry().with(tracing_subscriber::fmt::layer()).init();
 
     // initialize our shared storage pool manager
     if let Err(err) = SHARED_STORAGE_POOL.check_and_spawn_pool().await {
@@ -263,7 +250,7 @@ async fn main() {
     // run our app with hyper
     // `axum::Server` is a re-export of `hyper::Server`
     let addr = SocketAddr::from((*IP_ADDRESS, *PORT));
-    info!("listening on {addr}");
+    info!("listening on {}", addr);
     axum::Server::bind(&addr)
         .serve(app.into_make_service())
         .await
@@ -764,15 +751,15 @@ async fn process_signed_delegate_action(
         actions,
         "delegate_action",
     )
-    .await
-    .map_err(|_err| {
-        let err_msg: String = format!("Error signing transaction: {:?}", _err.to_string());
-        error!("{err_msg}");
-        RelayError {
-            status_code: StatusCode::INTERNAL_SERVER_ERROR,
-            message: err_msg.into(),
-        }
-    })?;
+        .await
+        .map_err(|_err| {
+            let err_msg: String = format!("Error signing transaction: {:?}", _err.to_string());
+            error!("{err_msg}");
+            RelayError {
+                status_code: StatusCode::INTERNAL_SERVER_ERROR,
+                message: err_msg.into(),
+            }
+        })?;
 
     let status = &execution.status;
     let mut response_msg: String = "".to_string();
@@ -801,17 +788,17 @@ async fn process_signed_delegate_action(
         gas_used_in_yn,
         remaining_allowance
     )
-    .await
-    .map_err(|err| {
-        let err_msg = format!(
-            "Updating redis remaining allowance errored out: {err:?}"
-        );
-        error!("{err_msg}");
-        RelayError {
-            status_code: StatusCode::INTERNAL_SERVER_ERROR,
-            message: err_msg,
-        }
-    })?;
+        .await
+        .map_err(|err| {
+            let err_msg = format!(
+                "Updating redis remaining allowance errored out: {err:?}"
+            );
+            error!("{err_msg}");
+            RelayError {
+                status_code: StatusCode::INTERNAL_SERVER_ERROR,
+                message: err_msg,
+            }
+        })?;
 
     info!("Updated remaining allowance for account {signer_account_id}: {new_allowance}",);
     return match status {
@@ -832,31 +819,31 @@ async fn process_signed_delegate_action(
 
 /**
 --------------------------- Testing below here ---------------------------
-*/
+ */
 #[cfg(test)]
 fn create_signed_delegate_action(
-    sender_id: near_primitives::types::AccountId,
-    receiver_id: near_primitives::types::AccountId,
+    sender_id: String,
+    receiver_id: String,
     actions: Vec<Action>,
     nonce: i32,
     max_block_height: i32,
-    ) -> SignedDelegateAction {
+) -> SignedDelegateAction {
     let max_block_height: i32 = max_block_height;
     let public_key: PublicKey = PublicKey::empty(KeyType::ED25519);
     let signature: Signature = Signature::empty(KeyType::ED25519);
     SignedDelegateAction {
         delegate_action: DelegateAction {
-            sender_id,
-            receiver_id,
+            sender_id: sender_id.parse().unwrap(),
+            receiver_id: receiver_id.parse().unwrap(),
             actions: actions
-                .into_iter()
-                .map(|a| NonDelegateAction::try_from(a).unwrap())
+                .iter()
+                .map(|a| NonDelegateAction::try_from(a.clone()).unwrap())
                 .collect(),
-            nonce,
-            max_block_height,
-            public_key: PublicKey::empty(KeyType::ED25519),
+            nonce: nonce as Nonce,
+            max_block_height: max_block_height as BlockHeight,
+            public_key,
         },
-        signature: Signature::empty(KeyType::ED25519),
+        signature,
     }
 }
 
@@ -934,20 +921,31 @@ async fn test_send_meta_tx_no_gas_allowance() {
 
 #[tokio::test]
 #[ignore]
-async fn test_relay_with_load() {
-    // tests assume testnet in config
+async fn test_relay_with_load() {   // tests assume testnet in config
     // Test Transfer Action
-    let actions = vec![Action::Transfer(TransferAction { deposit: 1 })];
-    let mut sender_id: AccountId = "relayer_test0.testnet".parse().unwrap();
-    let mut receiver_id: AccountId = "relayer_test1.testnet".parse().unwrap();
-    let mut nonce = 1;
+
+    let actions = vec![
+        Action::Transfer(TransferAction { deposit: 1 })
+    ];
+    let account_id0: String = "relayer_test0.testnet".to_string();
+    let account_id1: String = "relayer_test1.testnet".to_string();
+    let mut sender_id: String = String::new();
+    let mut receiver_id: String = String::new();
+    let mut nonce: i32 = 1;
     let max_block_height = 2000000000;
 
     let num_tests = 100;
     let mut response_statuses = vec![];
 
     // fire off all post requests in rapid succession and save the response status codes
-    for _ in 0..num_tests {
+    for i in 0..num_tests {
+        if i % 2 == 0 {
+            sender_id.push_str(&*account_id0.clone());
+            receiver_id.push_str(&*account_id1.clone());
+        } else {
+            sender_id.push_str(&*account_id1.clone());
+            receiver_id.push_str(&*account_id0.clone());
+        }
         // Call the `relay` function happy path
         let signed_delegate_action = create_signed_delegate_action(
             sender_id.clone(),
@@ -956,14 +954,14 @@ async fn test_relay_with_load() {
             nonce,
             max_block_height,
         );
-        let json_payload = crate::schemas::RelayInputArgs {
-            signed_delegate_action: signed_delegate_action.into(),
-        };
-        let response = relay(Json(json_payload)).await.into_response();
+        let json_payload = signed_delegate_action.try_to_vec().unwrap();
+        let response = relay(Json(Vec::from(json_payload))).await.into_response();
         response_statuses.push(response.status());
 
+        // increment nonce & reset sender, receiver strs
         nonce += 1;
-        std::mem::swap(&mut sender_id, &mut receiver_id);
+        sender_id.clear();
+        receiver_id.clear();
     }
 
     // all responses should be successful
