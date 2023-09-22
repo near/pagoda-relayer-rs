@@ -7,6 +7,7 @@ use near_primitives::views::QueryRequest;
 use serde::{Deserialize, Serialize};
 use std::str::FromStr;
 
+
 #[derive(Debug, Clone)]
 pub struct SigningKeys {
     pub account_id: AccountId,
@@ -22,9 +23,7 @@ struct KeyFile {
 }
 
 fn read_key_file(filename: &str) -> Result<KeyFile, Box<dyn std::error::Error>> {
-    let file_contents = std::fs::read_to_string(filename)?;
-    let key_file = serde_json::from_str(&file_contents)?;
-    Ok(key_file)
+    Ok(serde_json::from_reader(std::fs::File::open(filename)?)?)
 }
 
 pub fn get_signing_keys(filename: &str) -> Result<SigningKeys, Box<dyn std::error::Error>> {
@@ -52,29 +51,29 @@ pub async fn sign_transaction(
         .call(near_jsonrpc_client::methods::query::RpcQueryRequest {
             block_reference: near_primitives::types::Finality::Final.into(),
             request: QueryRequest::ViewAccessKey {
-                account_id: signing_keys.account_id.clone(),
+                account_id: signing_keys.account_id,
                 public_key: signing_keys.signer_public_key.clone(),
             },
         })
         .await
         .map_err(|err| {
             println!("\nYour transaction was not successfully signed.\n");
-            color_eyre::Report::msg(format!(
+            color_eyre::eyre::eyre!(
                 "Failed to fetch public key information for nonce: {:?}",
                 err
-            ))
+            )
         })?;
     let current_nonce =
         if let types::query::QueryResponseKind::AccessKey(online_signer_access_key) =
-        online_signer_access_key_response.kind
+            online_signer_access_key_response.kind
         {
             online_signer_access_key.nonce
         } else {
-            return Err(color_eyre::Report::msg("Error current_nonce".to_string()));
+            return Err(color_eyre::eyre::eyre!("Error current_nonce"));
         };
 
     let unsigned_transaction = near_primitives::transaction::Transaction {
-        public_key: signing_keys.signer_public_key.clone(),
+        public_key: signing_keys.signer_public_key,
         block_hash: online_signer_access_key_response.block_hash,
         nonce: current_nonce + 1,
         ..prepopulated_unsigned_transaction
