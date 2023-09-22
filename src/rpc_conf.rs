@@ -1,6 +1,9 @@
 /*
-For ApiKey data structure
-*/
+ For ApiKey data structure
+ */
+
+use color_eyre::Report;
+use std::fmt::Debug;
 
 #[derive(Eq, Hash, Clone, Debug, PartialEq)]
 pub struct ApiKey(pub near_jsonrpc_client::auth::ApiKey);
@@ -75,7 +78,7 @@ impl Default for RPCConfig {
             "mainnet".to_string(),
             NetworkConfig {
                 network_name: "mainnet".to_string(),
-                rpc_url: "https://archival-rpc.mainnet.near.org".parse().unwrap(),
+                rpc_url: "https://rpc.mainnet.near.org".parse().unwrap(),
                 wallet_url: "https://wallet.mainnet.near.org".parse().unwrap(),
                 explorer_transaction_url: "https://explorer.mainnet.near.org/transactions/"
                     .parse()
@@ -87,7 +90,7 @@ impl Default for RPCConfig {
             "testnet".to_string(),
             NetworkConfig {
                 network_name: "testnet".to_string(),
-                rpc_url: "https://archival-rpc.testnet.near.org".parse().unwrap(),
+                rpc_url: "https://rpc.testnet.near.org".parse().unwrap(),
                 wallet_url: "https://wallet.testnet.near.org".parse().unwrap(),
                 explorer_transaction_url: "https://explorer.testnet.near.org/transactions/"
                     .parse()

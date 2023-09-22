@@ -1,11 +1,12 @@
-use serde::{Deserialize, Serialize};
-
 use near_crypto::{PublicKey, SecretKey};
 use near_jsonrpc_client::JsonRpcClient;
 use near_jsonrpc_primitives::types;
 use near_primitives::transaction::SignedTransaction;
 use near_primitives::types::AccountId;
 use near_primitives::views::QueryRequest;
+use serde::{Deserialize, Serialize};
+use std::str::FromStr;
+
 
 #[derive(Debug, Clone)]
 pub struct SigningKeys {
@@ -27,9 +28,9 @@ fn read_key_file(filename: &str) -> Result<KeyFile, Box<dyn std::error::Error>> 
 
 pub fn get_signing_keys(filename: &str) -> Result<SigningKeys, Box<dyn std::error::Error>> {
     let key_file = read_key_file(filename)?;
-    let account_id = key_file.account_id.parse()?;
-    let signer_public_key = key_file.public_key.parse()?;
-    let signer_private_key = key_file.private_key.parse()?;
+    let account_id = AccountId::from_str(&key_file.account_id)?;
+    let signer_public_key = PublicKey::from_str(&key_file.public_key)?;
+    let signer_private_key = SecretKey::from_str(&key_file.private_key)?;
     Ok(SigningKeys {
         account_id,
         signer_public_key,
@@ -42,7 +43,9 @@ pub async fn sign_transaction(
     filename: &str,
     json_rpc_client: &JsonRpcClient,
 ) -> color_eyre::eyre::Result<SignedTransaction> {
-    let signing_keys = get_signing_keys(filename).unwrap();
+    let signing_keys = get_signing_keys(filename).map_err(|_err| {
+        color_eyre::Report::msg(format!("Failed to get signing keys={filename} for signing a transaction"))
+    })?;
     let signer_secret_key: SecretKey = signing_keys.signer_private_key.clone();
     let online_signer_access_key_response = json_rpc_client
         .call(near_jsonrpc_client::methods::query::RpcQueryRequest {
@@ -68,6 +71,7 @@ pub async fn sign_transaction(
         } else {
             return Err(color_eyre::eyre::eyre!("Error current_nonce"));
         };
+
     let unsigned_transaction = near_primitives::transaction::Transaction {
         public_key: signing_keys.signer_public_key,
         block_hash: online_signer_access_key_response.block_hash,
