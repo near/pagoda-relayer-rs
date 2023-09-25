@@ -73,6 +73,7 @@ NOTE: this is only needed if you intend to use whitelisting, allowances, and oau
 7. To double check your keys were successfully added to the account run `near keys your_relayer_account.testnet` again and you should see the newly added full access keys
 8. Copy all the newly generated keyfiles (usually `.json` files located in` ~/.near-credentials` directory) into the `pagoda-relayer-rs` directory
 9. Change all the `"account_id"`s of the keyfiles in the relayer directory from the implicit account_id (i.e. `e05185d0de0d6e4897555a386fdd3f48508ad1cdeaebcbd1cac81c72116cc5ab`) to the relayer account_id `your_relayer_account.testnet`
+10. Add the key filenames (i.e. `"e05185d0de0d6e4897555a386fdd3f48508ad1cdeaebcbd1cac81c72116cc5ab.json"`) to the `keys_filenames` list in `config.toml`
 
 ## Testing
 1. Run unit tests with `cargo test`
