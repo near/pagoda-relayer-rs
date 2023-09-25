@@ -17,6 +17,4 @@ FROM ubuntu:20.04
 WORKDIR /relayer-app
 RUN apt update && apt install -yy openssl ca-certificates jq
 COPY --from=builder /tmp/target/release/relayer .
-#COPY entrypoint.sh /usr/local/bin/
-#RUN chmod +x /usr/local/bin/entrypoint.sh
 ENTRYPOINT ["/relayer-app/relayer", "--config", "config.toml"]
