@@ -61,6 +61,19 @@ NOTE: this is only needed if you intend to use whitelisting, allowances, and oau
 2. Run `redis-server --bind 127.0.0.1 --port 6379` - make sure the port matches the `redis_url` in the `config.toml`.
 3. Run `redis-cli -h 127.0.0.1 -p 6379`
 
+## Multiple Key Generation - OPTIONAL
+1. [Install NEAR CLI](https://docs.near.org/tools/near-cli#installation)
+2. Make sure you're using the appropriate network: `echo $NEAR_ENV`. To change it, `export NEAR_ENV=testnet` 
+3. Make sure your keys you want to use for the relayer have a `'FullAccess'` access_key by running `near keys your_relayer_account.testnet`. This is required to create more keys. You need to have access to at least 1 `'FullAccess'` access_key 
+4. Generate a new implicit key: `near generate-key`
+   1. This will output something like `Key pair with ed25519:GdsF992LXiwNiAGUtxL7VbcPBAckbYBZubF6fTYrVY5Q public key for an account "e05185d0de0d6e4897555a386fdd3f48508ad1cdeaebcbd1cac81c72116cc5ab"`
+5. Add the newly generated key to the relayer account: `near add-key your_relayer_account.testnet ed25519:GdsF992LXiwNiAGUtxL7VbcPBAckbYBZubF6fTYrVY5Q`
+   1. This will output something like: `Adding full access key = ed25519:GdsF992LXiwNiAGUtxL7VbcPBAckbYBZubF6fTYrVY5Q to your_relayer_account.testnet. Transaction Id Bur9nJxos4f5cbibYXugZQQmZ4Uo2jsHYiVUwPT7AZMG To see the transaction in the transaction explorer, please open this url in your browser https://explorer.testnet.near.org/transactions/Bur9nJxos4f5cbibYXugZQQmZ4Uo2jsHYiVUwPT7AZMG`
+6. Repeat steps 4 & 5 until you have the desired number of keys. Anywhere between 5-20 full access keys added to the relayer account works for most cases. 
+7. To double check your keys were successfully added to the account run `near keys your_relayer_account.testnet` again and you should see the newly added full access keys
+8. Copy all the newly generated keyfiles (usually `.json` files located in` ~/.near-credentials` directory) into the `pagoda-relayer-rs` directory
+9. Change all the `"account_id"`s of the keyfiles in the relayer directory from the implicit account_id (i.e. `e05185d0de0d6e4897555a386fdd3f48508ad1cdeaebcbd1cac81c72116cc5ab`) to the relayer account_id `your_relayer_account.testnet`
+
 ## Testing
 1. Run unit tests with `cargo test`
 
