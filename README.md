@@ -78,14 +78,17 @@ NOTE: this is only needed if you intend to use whitelisting, allowances, and oau
 ## Testing
 1. Run unit tests with `cargo test`
 
-## Pre-Deployment
-1. Check to make sure the values in `entrypoint.sh` match what's in `config.toml`
-2. Build and run your Docker image based on the `Dockerfile` ensuring your desired ports are exposed:
-   1. `docker build  -t pagoda-relayer-rs:<tag> ./`
-   2. `docker run -e RELAYER_ACCOUNT_ID="<account-id>" -e PUBLIC_KEY="<account-public-key>" -e PRIVATE_KEY="<account-private-key>" -e '[{"key_file_name":"<file_name1>","account_id":"<acc1>","public_key":"<pubkey1>","private_key":"<pvtkey1>"}, {"key_file_name":"<file_name2>","account_id":"<acc2>","public_key":"<pubkey2>","private_key":"<pvtkey2>"}]',-p 3030:3030 pagoda-relayer-rs-fastauth:<tag>`
-3. Test the endpoints. See [API Spec](#api_spec)
+## Docker Deployment
+1. Update `config.toml` as per your requirements.
+2. Add any account key json files you need to use to the `account_keys` directory.
+3. Update the `key_filenames` and `num_keys` parameter in the `config.toml` based on the keys you store in the `account_keys` directory.
+4. Run command `docker compose up`
+   this will create a `pagoda-relayer-rs` and `redis` container
+   
+    Run command `docker compose down` to stop the containers
+5. Test the endpoints. See [API Spec](#api_spec)
 
-## Deployment
+## Cloud Deployment
 The Relayer is best deployed in a serverless environment, such as AWS Lambda or GCP Cloud Run, to optimally manage automatic scalability and optimize cost. 
 
 Alternatively, the relayer can be deployed on a VM instance if the expected traffic to the relayer (and thus the CPU, RAM requirements) is well known ahead of time.
