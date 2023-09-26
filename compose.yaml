@@ -1,0 +1,13 @@
+version: '3'
+services:
+  relayer:
+    build: .
+    ports:
+      - "3030:3030"
+    volumes:
+      - ./config.toml:/relayer-app/config.toml
+      - ./account_keys:/relayer-app/account_keys
+  redis:
+    image: redis:latest
+    ports:
+      - "6379:6379"
