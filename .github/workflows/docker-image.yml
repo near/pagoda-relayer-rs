@@ -35,3 +35,6 @@ jobs:
 
       - name: Push Docker image
         run: docker push ghcr.io/near/os-relayer:${{ github.sha }}
+
+      - name: Push latest Docker image
+        run: docker tag ghcr.io/near/os-relayer:${{ github.sha }} ghcr.io/near/os-relayer:latest && docker push ghcr.io/near/os-relayer:latest
