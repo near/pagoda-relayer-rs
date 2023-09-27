@@ -51,7 +51,7 @@ use tracing::log::error;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 use crate::error::RelayError;
-use crate::rpc_conf::{NetworkConfig, RPCConfig};
+use crate::rpc_conf::NetworkConfig;
 use crate::shared_storage::SharedStoragePoolManager;
 
 
@@ -68,24 +68,13 @@ static LOCAL_CONF: Lazy<Config> = Lazy::new(|| {
 });
 static NETWORK_ENV: Lazy<String> = Lazy::new(|| { LOCAL_CONF.get("network").unwrap() });
 static JSON_RPC_CLIENT: Lazy<near_jsonrpc_client::JsonRpcClient> = Lazy::new(|| {
-    let network_name: String = LOCAL_CONF.get("network").unwrap();
-    let rpc_config = RPCConfig::default();
-
-    // optional overrides
-    if LOCAL_CONF.get::<bool>("override_rpc_conf").unwrap() {
-        let network_config = NetworkConfig {
-            network_name,
-            rpc_url: LOCAL_CONF.get("rpc_url").unwrap(),
-            rpc_api_key: LOCAL_CONF.get("rpc_api_key").unwrap(),
-            wallet_url: LOCAL_CONF.get("wallet_url").unwrap(),
-            explorer_transaction_url: LOCAL_CONF.get("explorer_transaction_url").unwrap(),
-        };
-        network_config.json_rpc_client()
-    } else {
-        let network_config = rpc_config.networks.get(&network_name).unwrap();
-        network_config.json_rpc_client()
-    }
-
+    let network_config = NetworkConfig {
+        rpc_url: LOCAL_CONF.get("rpc_url").unwrap(),
+        rpc_api_key: LOCAL_CONF.get("rpc_api_key").unwrap(),
+        wallet_url: LOCAL_CONF.get("wallet_url").unwrap(),
+        explorer_transaction_url: LOCAL_CONF.get("explorer_transaction_url").unwrap(),
+    };
+    network_config.json_rpc_client()
 });
 static IP_ADDRESS: Lazy<[u8; 4]> = Lazy::new(|| { LOCAL_CONF.get("ip_address").unwrap() });
 static PORT: Lazy<u16> = Lazy::new(|| { LOCAL_CONF.get("port").unwrap() });
@@ -114,7 +103,7 @@ static REDIS_POOL: Lazy<Pool<RedisConnectionManager>> = Lazy::new(|| {
     Pool::builder().build(manager).unwrap()
 });
 static SHARED_STORAGE_POOL: Lazy<SharedStoragePoolManager> = Lazy::new(|| {
-    let social_db_id: String = LOCAL_CONF.get("social_db_contract").unwrap();
+    let social_db_id: String = LOCAL_CONF.get("social_db_contract_id").unwrap();
 
     SharedStoragePoolManager::new(
         &SHARED_STORAGE_KEYS_FILENAME,

@@ -17,13 +17,30 @@ whitelisted_delegate_action_receiver_ids = ["account_creator.near", "relayer_tes
 # redis url for storing and retrieving account_id, allowance
 redis_url = "redis://127.0.0.1:6379"
 
-# ------------------------ OPTIONAL ------------------------
-# change to true if you're overriding defaults
-override_rpc_conf = false
-# only uncomment & change if you want to override defaults set in rpc_conf.rs
-#rpc_url = "https://archival-rpc.testnet.near.org"
-#wallet_url = "https://wallet.testnet.near.org"
-#explorer_transaction_url = "https://explorer.testnet.near.org/transactions/"
-#rpc_api_key = ""
+social_db_contract_id = "v1.social08.testnet"
 
-social_db_contract = "v1.social08.testnet"
+# Uncoment the network you want to use or add your own
+
+# mainnet
+# rpc_url = "https://rpc.mainnet.near.org"
+# wallet_url = "https://wallet.mainnet.near.org"
+# explorer_transaction_url = "https://explorer.mainnet.near.org/transactions/"
+# rpc_api_key = ""
+
+# testnet
+rpc_url = "https://archival-rpc.testnet.near.org"
+wallet_url = "https://wallet.testnet.near.org"
+explorer_transaction_url = "https://explorer.testnet.near.org/transactions/"
+rpc_api_key = ""
+
+# betanet
+# rpc_url = "https://rpc.betanet.near.org"
+# wallet_url = "https://wallet.betanet.near.org"
+# explorer_transaction_url = "https://explorer.betanet.near.org/transactions/"
+# rpc_api_key = ""
+
+# shardnet
+# rpc_url = "https://rpc.shardnet.near.org"
+# wallet_url = "https://wallet.shardnet.near.org"
+# explorer_transaction_url = "https://explorer.shardnet.near.org/transactions/"
+# rpc_api_key = ""
