@@ -2,7 +2,6 @@
  For ApiKey data structure
  */
 
-use color_eyre::Report;
 use std::fmt::Debug;
 
 #[derive(Eq, Hash, Clone, Debug, PartialEq)]

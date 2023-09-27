@@ -99,7 +99,6 @@ static KEYS_FILENAMES: Lazy<Vec<String>> = Lazy::new(|| {
     LOCAL_CONF.get::<Vec<String>>("keys_filenames")
         .expect("Failed to read 'keys_filenames' from config")
 });
-static KEYS_FILENAMES_LEN: Lazy<usize> = Lazy::new(||{ LOCAL_CONF.get("num_keys").unwrap() });
 static SHARED_STORAGE_KEYS_FILENAME: Lazy<String> = Lazy::new(|| {
     LOCAL_CONF.get("shared_storage_keys_filename").unwrap()
 });
@@ -115,9 +114,7 @@ static REDIS_POOL: Lazy<Pool<RedisConnectionManager>> = Lazy::new(|| {
     Pool::builder().build(manager).unwrap()
 });
 static SHARED_STORAGE_POOL: Lazy<SharedStoragePoolManager> = Lazy::new(|| {
-    let network_name: String = LOCAL_CONF.get("network").unwrap();
-    let mut social: serde_json::Map<String, serde_json::Value> = LOCAL_CONF.get("social_db").unwrap();
-    let social_db_id: String = serde_json::from_value(social.remove(&network_name).unwrap()).unwrap();
+    let social_db_id: String = LOCAL_CONF.get("social_db_contract").unwrap();
 
     SharedStoragePoolManager::new(
         &SHARED_STORAGE_KEYS_FILENAME,
@@ -145,7 +142,7 @@ impl IndexCounter {
     }
 }
 static IDX_COUNTER: Lazy<Arc<Mutex<IndexCounter>>> = Lazy::new(|| {
-    let max_idx: usize = *KEYS_FILENAMES_LEN;
+    let max_idx: usize = KEYS_FILENAMES.len();
     let idx_counter: IndexCounter = IndexCounter::new(max_idx);
     Arc::new(Mutex::new(idx_counter))
 });
