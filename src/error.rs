@@ -19,4 +19,4 @@ impl fmt::Display for RelayError {
     }
 }
 
-impl std::error::Error for RelayError {}g
+impl std::error::Error for RelayError {}
