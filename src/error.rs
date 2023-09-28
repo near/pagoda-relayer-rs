@@ -1,11 +1,15 @@
 use axum::http::StatusCode;
+use utoipa::ToSchema;
 
 use std::fmt;
 
 // Define a custom error type for process_signed_delegate_action
-#[derive(Debug)]
+#[derive(Debug, ToSchema)]
 pub struct RelayError {
+    // NOTE: imported StatusCode itself doesn't have a corresponding schema in the OpenAPI document
+    #[schema(example = "400")]
     pub(crate) status_code: StatusCode,
+    #[schema(example = "AccountId example.near does not have enough remaining gas allowance.")]
     pub(crate) message: String,
 }
 
