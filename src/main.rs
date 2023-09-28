@@ -105,6 +105,12 @@ static REDIS_POOL: Lazy<Pool<RedisConnectionManager>> = Lazy::new(|| {
     let manager = RedisConnectionManager::new(redis_cnxn_url).unwrap();
     Pool::builder().build(manager).unwrap()
 });
+static USE_FASTAUTH_FEATURES: Lazy<bool> = Lazy::new(|| {
+    LOCAL_CONF.get("use_fastauth_features").unwrap_or(false)
+});
+static USE_SHARED_STORAGE: Lazy<bool> = Lazy::new(|| {
+    LOCAL_CONF.get("use_shared_storage").unwrap_or(false)
+});
 static SHARED_STORAGE_POOL: Lazy<SharedStoragePoolManager> = Lazy::new(|| {
     let social_db_id: String = LOCAL_CONF.get("social_db_contract_id").unwrap();
 
@@ -225,10 +231,12 @@ async fn main() {
     // initialize tracing (aka logging)
     tracing_subscriber::registry().with(tracing_subscriber::fmt::layer()).init();
 
-    // initialize our shared storage pool manager
-    if let Err(err) = SHARED_STORAGE_POOL.check_and_spawn_pool().await {
-        tracing::error!("Error initializing shared storage pool: {err}");
-        return;
+    // initialize our shared storage pool manager if using fastauth features or using shared storage
+    if USE_FASTAUTH_FEATURES.clone() || USE_SHARED_STORAGE.clone() {
+        if let Err(err) = SHARED_STORAGE_POOL.check_and_spawn_pool().await {
+            tracing::error!("Error initializing shared storage pool: {err}");
+            return;
+        }
     }
 
     //TODO: not secure, allow only for testnet, whitelist endpoint etc. for mainnet
@@ -811,7 +819,7 @@ async fn process_signed_delegate_action(
     let is_whitelisted_da_receiver = WHITELISTED_CONTRACTS.iter().any(
         |s| s == da_receiver_id.as_str()
     );
-    if !is_whitelisted_da_receiver {
+    if !is_whitelisted_da_receiver && USE_FASTAUTH_FEATURES.clone() {
         // check if sender id and receiver id are the same AND (AddKey or DeleteKey action)
         let non_delegate_action = signed_delegate_action.delegate_action.actions.get(0).ok_or_else(|| {
             RelayError {
@@ -924,7 +932,7 @@ async fn process_signed_delegate_action(
         })?;
 
     info!("Updated remaining allowance for account {signer_account_id}: {new_allowance}",);
-    return match status {
+    match status {
         near_primitives::views::FinalExecutionStatus::Failure(_) => {
             error!("Error message: \n{status_msg:?}");
             Err(RelayError {
