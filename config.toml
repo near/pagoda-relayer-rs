@@ -1,6 +1,3 @@
-# mainnet, testnet, shardnet, betanet are acceptable values for network
-# other networks can be used, but optional params below are required
-network = "testnet"
 # ip address to run server on, default to localhost
 ip_address = [0, 0, 0, 0]
 # port to expose
@@ -9,8 +6,6 @@ port = 3030
 relayer_account_id = "nomnomnom.testnet"   # "relayer.pagodaplatform.near"
 # replace with json files containing 3 entries: account_id (should match relayer_account_id), public_key, private_key
 keys_filenames = ["./account_keys/nomnomnom.testnet.json", "./account_keys/37cb5b936de257d014e663663b186e58e4c3c4c9b4c7643e7b89821e789b0b4b.json", "./account_keys/b278b7752b844a0cc88f8dbdb053b860d6283fb353e7a317b3b82efe01396c3e.json", "./account_keys/d7adc371186bc2013ec5de36be27ed9a36022af1112f7c62530baf6042690f61.json", "./account_keys/df86e9701801e30cf0649b2ea43aeacef60e394e076709d4519880d5a9c7bc9e.json", "./account_keys/e4a6dd159d45d4104679e709d29d49a533e5df9467b311c9dbea7fb8f0077335.json"] # "relayer.pagodaplatform.json"
-# number of keys in keys_filenames
-num_keys = 6
 # replace with the account id of the public key you will use to sign shared_storage transactions - this should match the account_id in your json file
 shared_storage_account_id = "relayer-test.testnet"  # "social-storage.pagodaplatform.near"
 # replace with json file containing 3 entries: account_id (should match shared_storage_account_id), public_key, private_key
@@ -22,15 +17,30 @@ whitelisted_delegate_action_receiver_ids = ["account_creator.near", "relayer_tes
 # redis url for storing and retrieving account_id, allowance
 redis_url = "redis://127.0.0.1:6379"
 
-# ------------------------ OPTIONAL ------------------------
-# change to true if you're overriding defaults
-override_rpc_conf = false
-# only uncomment & change if you want to override defaults set in rpc_conf.rs
-#rpc_url = "https://archival-rpc.testnet.near.org"
-#wallet_url = "https://wallet.testnet.near.org"
-#explorer_transaction_url = "https://explorer.testnet.near.org/transactions/"
-#rpc_api_key = ""
+social_db_contract_id = "v1.social08.testnet"
 
-[social_db]
-mainnet = "social.near"
-testnet = "v1.social08.testnet"
+# Uncoment the network you want to use or add your own
+
+# mainnet
+# rpc_url = "https://rpc.mainnet.near.org"
+# wallet_url = "https://wallet.mainnet.near.org"
+# explorer_transaction_url = "https://explorer.mainnet.near.org/transactions/"
+# rpc_api_key = ""
+
+# testnet
+rpc_url = "https://archival-rpc.testnet.near.org"
+wallet_url = "https://wallet.testnet.near.org"
+explorer_transaction_url = "https://explorer.testnet.near.org/transactions/"
+rpc_api_key = ""
+
+# betanet
+# rpc_url = "https://rpc.betanet.near.org"
+# wallet_url = "https://wallet.betanet.near.org"
+# explorer_transaction_url = "https://explorer.betanet.near.org/transactions/"
+# rpc_api_key = ""
+
+# shardnet
+# rpc_url = "https://rpc.shardnet.near.org"
+# wallet_url = "https://wallet.shardnet.near.org"
+# explorer_transaction_url = "https://explorer.shardnet.near.org/transactions/"
+# rpc_api_key = ""
