@@ -37,7 +37,46 @@ NOTE: These features can be mixed and matched "à la carte". Use of one feature 
 6. Multichain relayers - expected early-mid 2024
 
 ## API Spec <a id="api_spc"></a>
-TODO - openapi and swagger docs on github pages 
+For more details on the following endpoint and to try them out, please [setup your local dev env](#basic_setup).
+After you have started the server with `cargo run`,
+open http://0.0.0.0:3030/swagger-ui/#/ in your browser to view the swagger docs and test out the endpoints with the example payloads.
+Alternatively, you can open http://0.0.0.0:3030/rapidoc#overview for the rapidocs.
+Both swagger and rapidoc are based on the openapi standard and generated using the [utoipa crate](https://crates.io/crates/utoipa).
+These are helpful starter api docs and payloads, but not all example payloads will work on the endpoints in swagger-ui or rapidoc.
+
+#### Known issues
+1.  the SignedDelegateAction is not supported by the openapi schema. Replace
+```json
+"signed_delegate_action": "string"
+``` 
+with
+```json
+"signed_delegate_action": {
+   "delegate_action": {
+      "actions": [{
+            "Transfer": {
+                "deposit": "1"
+            }
+      }],
+      "max_block_height": 122790412,
+      "nonce": 103066617000686,
+      "public_key": "ed25519:89GtfFzez3opomVpwa7i4m3nptHtc7Ha514XHMWszQtL",
+      "receiver_id": "relayer.pagodaplatform.near",
+      "sender_id": "relayer.pagodaplatform.near"
+   },
+   "signature": "ed25519:5uJu7KapH89h9cQm5btE1DKnbiFXSZNT7McDw5LHy8pdAt5Mz9DfuyQZadGgFExo88or9152iwcw2q12rnFWa6bg"
+}
+```
+2. The `/relay` endpoint is [borsh](https://github.com/near/borsh) serialized representation of SignedDelegateAction (as opposed to json) and thus does not work with swagger or rapidoc. Please use a borsh serialized SignedDelegateAction that will look like:
+```json
+{
+    "borsh_signed_delegate_action": [64, 0, 0, 0, 49, 48, 97, 102, 100, 99, 98, 101, 99, 99, 55, 100, 54, 55, 57, 57, 102, 102, 52, 48, 48, 49, 98, 56, 56, 100, 53, 56, 97, 57, 56, 50, 51, 55, 98, 98, 49, 100, 55, 100, 54, 100, 48, 99, 98, 99, 54, 102, 57, 100, 99, 102, 100, 57, 49, 51, 56, 97, 57, 50, 57, 53, 55, 56, 11, 0, 0, 0, 116, 111, 107, 101, 110, 46, 115, 119, 101, 97, 116, 2, 0, 0, 0, 2, 11, 0, 0, 0, 102, 116, 95, 116, 114, 97, 110, 115, 102, 101, 114, 139, 0, 0, 0, 123, 34, 114, 101, 99, 101, 105, 118, 101, 114, 95, 105, 100, 34, 58, 34, 101, 100, 100, 51, 97, 49, 55, 97, 99, 50, 51, 55, 102, 102, 98, 51, 50, 54, 54, 98, 48, 98, 101, 55, 48, 98, 100, 101, 97, 49, 48, 52, 53, 51, 50, 97, 101, 48, 98, 50, 101, 100, 102, 49, 48, 100, 57, 99, 50, 97, 53, 97, 48, 49, 53, 101, 52, 56, 99, 97, 52, 54, 52, 57, 34, 44, 34, 97, 109, 111, 117, 110, 116, 34, 58, 34, 49, 48, 48, 48, 48, 48, 48, 48, 48, 48, 48, 48, 48, 48, 48, 48, 48, 48, 48, 48, 34, 44, 34, 109, 101, 109, 111, 34, 58, 34, 115, 119, 58, 116, 58, 57, 107, 118, 74, 69, 86, 119, 71, 107, 101, 34, 125, 0, 224, 6, 161, 187, 12, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2, 11, 0, 0, 0, 102, 116, 95, 116, 114, 97, 110, 115, 102, 101, 114, 88, 0, 0, 0, 123, 34, 114, 101, 99, 101, 105, 118, 101, 114, 95, 105, 100, 34, 58, 34, 102, 101, 101, 115, 46, 115, 119, 101],
+    "signature": "ed25519:3oBH35ETxwj2MJJmiQtB4WLps7CNBvhZ33y2zuamPjgbWVLBgUr47sLGVBmuoiA5nXtra9CJMEiHQNWZB8saGnFW"
+}
+```
+3. The `/get_allowance` endpoint doesn't work in swagger, but works fine in Postman ¯\_(ツ)_/¯
+
+For more extensive testing, especially when you've deployed the relayer to multiple environments, it is recommended that you use Postman or some other api testing service.
 - POST `/relay`
 - POST `/send_meta_tx`
 - GET `/get_allowance`
@@ -46,7 +85,7 @@ TODO - openapi and swagger docs on github pages
 - POST `/create_account_atomic`
 - POST `/register_account`
 
-## Basic Setup - Local Dev
+## Basic Setup - Local Dev <a id="basic_setup"></a>
 1. [Install Rust for NEAR Development](https://docs.near.org/sdk/rust/get-started)
 2. If you don't have a NEAR account, [create one](https://docs.near.org/concepts/basics/accounts/creating-accounts)
 3. With the account from step 2, create a json file in this directory in the format `{"account_id":"example.testnet","public_key":"ed25519:98GtfFzez3opomVpwa7i4m3nptHtc7Ha514XHMWszLtQ","private_key":"ed25519:YWuyKVQHE3rJQYRC3pRGV56o1qEtA1PnMYPDEtroc5kX4A4mWrJwF7XkzGe7JWNMABbtY4XFDBJEzgLyfPkwpzC"}` using a [Full Access Key](https://docs.near.org/concepts/basics/accounts/access-keys#key-types) from an account that has enough NEAR to cover the gas costs of transactions your server will be relaying. Usually, this will be a copy of the json file found in the `.near-credentials` directory. 

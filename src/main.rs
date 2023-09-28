@@ -49,6 +49,9 @@ use tower_http::trace::TraceLayer;
 use tracing::{debug, info};
 use tracing::log::error;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
+use utoipa::{OpenApi, ToSchema};
+use utoipa_rapidoc::RapiDoc;
+use utoipa_swagger_ui::SwaggerUi;
 
 use crate::error::RelayError;
 use crate::rpc_conf::NetworkConfig;
@@ -122,7 +125,7 @@ impl IndexCounter {
         IndexCounter { idx: 0, max_idx }
     }
     fn get_and_increment(&mut self) -> usize {
-        let cur = self.idx;
+        let cur = self.idx.clone();
         self.idx += 1;
         if self.idx >= self.max_idx {
             self.idx = 0;
@@ -136,56 +139,67 @@ static IDX_COUNTER: Lazy<Arc<Mutex<IndexCounter>>> = Lazy::new(|| {
     Arc::new(Mutex::new(idx_counter))
 });
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, ToSchema)]
 struct AccountIdAllowanceOauthSDAJson {
+    #[schema(example = "example.near")]
     account_id: String,
+    #[schema(example = 900000000)]
     allowance: u64,
+    #[schema(example = "https://securetoken.google.com/pagoda-oboarding-dev:Op4h13AQozM4CikngfHiFVC2xhf2")]
     oauth_token: String,
+    // NOTE: imported SignedDelegateAction itself doesn't have a corresponding schema in the OpenAPI document
+    #[schema(example = "{\"delegate_action\": {\"actions\": [{\"Transfer\": {\"deposit\": \"1\" }}], \"max_block_height\": 922790412, \"nonce\": 103066617000686, \"public_key\": \"ed25519:98GtfFzez3opomVpwa7i4m2nptHtc8Ha405XHMWszQtL\", \"receiver_id\": \"relayer.example.testnet\", \"sender_id\": \"example.testnet\" }, \"signature\": \"ed25519:4uJu8KapH98h8cQm4btE0DKnbiFXSZNT7McDw4LHy7pdAt4Mz8DfuyQZadGgFExo77or9152iwcw2q12rnFWa6bg\" }")]
     signed_delegate_action: SignedDelegateAction,
 }
 impl Display for AccountIdAllowanceOauthSDAJson {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "account_id: {}, allowance in TGas: {}, oauth_token: {}, signed_delegate_action signature: {}",
+            "account_id: {}, allowance in Gas: {}, oauth_token: {}, signed_delegate_action signature: {}",
             self.account_id, self.allowance, self.oauth_token, self.signed_delegate_action.signature
         )  // SignedDelegateAction doesn't implement display, so just displaying signature
     }
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, ToSchema)]
 struct AccountIdAllowanceOauthJson {
+    #[schema(example = "example.near")]
     account_id: String,
+    #[schema(example = 900000000)]
     allowance: u64,
+    #[schema(example = "https://securetoken.google.com/pagoda-oboarding-dev:Op4h13AQozM4CikngfHiFVC2xhf2")]
     oauth_token: String,
 }
 impl Display for AccountIdAllowanceOauthJson {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "account_id: {}, allowance in TGas: {}, oauth_token: {}",
+            "account_id: {}, allowance in Gas: {}, oauth_token: {}",
             self.account_id, self.allowance, self.oauth_token
         )
     }
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, ToSchema)]
 struct AccountIdAllowanceJson {
+    #[schema(example = "example.near")]
     account_id: String,
+    #[schema(example = 900000000)]
     allowance: u64,
 }
 impl Display for AccountIdAllowanceJson {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "account_id: {}, allowance in TGas: {}",
+            "account_id: {}, allowance in Gas: {}",
             self.account_id, self.allowance
         )
     }
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, ToSchema)]
 struct AccountIdJson {
+    #[schema(example = "example.near")]
     account_id: String,
 }
 impl Display for AccountIdJson {
@@ -194,9 +208,10 @@ impl Display for AccountIdJson {
     }
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, ToSchema)]
 struct AllowanceJson {  // TODO: LP use for return type of GET get_allowance
-allowance_in_gas: u64,
+    #[schema(example = 900000000)]
+    allowance_in_gas: u64,
 }
 impl Display for AllowanceJson {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
@@ -219,8 +234,52 @@ async fn main() {
     //TODO: not secure, allow only for testnet, whitelist endpoint etc. for mainnet
     let cors_layer = tower_http::cors::CorsLayer::permissive();
 
+    #[derive(OpenApi)]
+    #[openapi(
+        info(
+            title = "relayer",
+            description = "APIs for creating accounts, managing allowances, and relaying meta transactions. \
+                    \n NOTE: the SignedDelegateAction is not supported by the openapi schema. \
+                    \n Here's an example json of a SignedDelegateAction payload:\
+                    \n ```{\"delegate_action\": {\"actions\": [{\"Transfer\": {\"deposit\": \"1\" }}], \"max_block_height\": 922790412, \"nonce\": 103066617000686, \"public_key\": \"ed25519:98GtfFzez3opomVpwa7i4m2nptHtc8Ha405XHMWszQtL\", \"receiver_id\": \"relayer.example.testnet\", \"sender_id\": \"example.testnet\" }, \"signature\": \"ed25519:4uJu8KapH98h8cQm4btE0DKnbiFXSZNT7McDw4LHy7pdAt4Mz8DfuyQZadGgFExo77or9152iwcw2q12rnFWa6bg\" }``` \
+                    \n For more details on the SignedDelegateAction data structure, please see https://docs.rs/near-primitives/latest/near_primitives/delegate_action/struct.SignedDelegateAction.html or https://docs.near.org/develop/relayers/build-relayer#signing-a-delegated-transaction "
+        ),
+        paths(
+            relay,
+            send_meta_tx,
+            create_account_atomic,
+            get_allowance,
+            update_allowance,
+            update_all_allowances,
+            register_account_and_allowance,
+        ),
+        components(
+            schemas(
+                RelayError,
+                AllowanceJson,
+                AccountIdJson,
+                AccountIdAllowanceJson,
+                AccountIdAllowanceOauthJson,
+                AccountIdAllowanceOauthSDAJson,
+            )
+        ),
+        tags((
+            name = "relayer",
+            description = "APIs for creating accounts, managing allowances, \
+                                    and relaying meta transactions"
+        )),
+    )]
+    struct ApiDoc;
+
     // build our application with a route
     let app = Router::new()
+        .merge(SwaggerUi::new("/swagger-ui")
+            .url("/api-docs/openapi.json", ApiDoc::openapi()))
+        // There is no need to create `RapiDoc::with_openapi` because the OpenApi is served
+        // via SwaggerUi instead we only make rapidoc to point to the existing doc.
+        .merge(RapiDoc::new("/api-docs/openapi.json").path("/rapidoc"))
+        // Alternative to above
+        // .merge(RapiDoc::with_openapi("/api-docs/openapi2.json", ApiDoc::openapi()).path("/rapidoc"))
         // `POST /relay` goes to `relay` handler function
         .route("/relay", post(relay))
         .route("/send_meta_tx", post(send_meta_tx))
@@ -228,14 +287,14 @@ async fn main() {
         .route("/get_allowance", get(get_allowance))
         .route("/update_allowance", post(update_allowance))
         .route("/update_all_allowances", post(update_all_allowances))
-        .route("/register_account", post(register_account_and_allowance))
+        .route("/register_account_and_allowance", post(register_account_and_allowance))
         // See https://docs.rs/tower-http/0.1.1/tower_http/trace/index.html for more details.
         .layer(TraceLayer::new_for_http())
         .layer(cors_layer);
 
     // run our app with hyper
     // `axum::Server` is a re-export of `hyper::Server`
-    let addr = SocketAddr::from((*IP_ADDRESS, *PORT));
+    let addr = SocketAddr::from((IP_ADDRESS.clone(), PORT.clone()));
     info!("listening on {}", addr);
     axum::Server::bind(&addr)
         .serve(app.into_make_service())
@@ -243,6 +302,16 @@ async fn main() {
         .unwrap();
 }
 
+// NOTE: error in swagger-ui TypeError: Failed to execute 'fetch' on 'Window': Request with GET/HEAD method cannot have body.
+#[utoipa::path(
+    get,
+    path = "/get_allowance",
+    request_body = AccountIdJson,
+    responses(
+        (status = 200, description = "90000000000000", body = String),
+        (status = 500, description = "Error getting allowance for account_id example.near in Relayer DB: err_msg", body = String)
+    )
+)]
 async fn get_allowance(account_id_json: Json<AccountIdJson>) -> impl IntoResponse {
     // convert str account_id val from json to AccountId so I can reuse get_remaining_allowance fn
     let Ok(account_id_val) = AccountId::from_str(&account_id_json.account_id) else {
@@ -258,7 +327,7 @@ async fn get_allowance(account_id_json: Json<AccountIdJson>) -> impl IntoRespons
         ).into_response(),
         Err(err) => {
             let err_msg = format!(
-                "Error getting allowance for account_id {} in Redis: {:?}",
+                "Error getting allowance for account_id {} in Relayer DB: {:?}",
                 account_id_val.clone().as_str(), err
             );
             info!("{err_msg}");
@@ -290,11 +359,28 @@ async fn set_account_and_allowance_in_redis(
     let mut conn = get_redis_cnxn().await?;
 
     // Save the allowance information to Redis
-    conn.set(account_id, *allowance_in_gas)?;
+    conn.set(account_id, allowance_in_gas.clone())?;
     Ok(())
 }
 
 
+// TODO: LP how to get multiple 500 status messages to show up
+#[utoipa::path(
+    post,
+    path = "/create_account_atomic",
+    request_body = AccountIdAllowanceOauthSDAJson,
+    responses(
+        (status = 201, description = "Added Oauth token https://securetoken.google.com/pagoda-oboarding-dev:Op4h13AQozM4CikngfHiFVC2xhf2 for account_id example.near \
+                            with allowance (in Gas) 90000000000000 to Relayer DB. \
+                            Near onchain account creation response: {create_account_sda_result:?}", body = String),
+        (status = 400, description = "Error: oauth_token https://securetoken.google.com/pagoda-oboarding-dev:Op4h13AQozM4CikngfHiFVC2xhf2 has already been used to register an account. You can only register 1 account per oauth_token", body = String),
+        (status = 403, description = "Invalid account_id: invalid_account_id.near", body = String),
+        (status = 500, description = "Error getting oauth_token for account_id example.near, oauth_token https://securetoken.google.com/pagoda-oboarding-dev:Op4h13AQozM4CikngfHiFVC2xhf2 in Relayer DB: err_msg", body = String),
+        (status = 500, description = "Error creating account_id example.near with allowance 90000000000000 in Relayer DB:\nerr_msg", body = String),
+        (status = 500, description = "Error allocating storage for account example.near: err_msg", body = String),
+        (status = 500, description = "Error creating oauth token https://securetoken.google.com/pagoda-oboarding-dev:Op4h13AQozM4CikngfHiFVC2xhf2 in Relayer DB:\n{err:?}", body = String),
+    ),
+)]
 async fn create_account_atomic(
     account_id_allowance_oauth_sda: Json<AccountIdAllowanceOauthSDAJson>
 ) -> impl IntoResponse {
@@ -302,14 +388,14 @@ async fn create_account_atomic(
     This function atomically creates an account, both in our systems (redis)
     and on chain created both an on chain account and adding that account to the storage pool
 
-    Motivation for doing this is when calling /register_account and then /send_meta_tx and
-    /register_account succeeds, but /send_meta_tx fails, then the account is now
+    Motivation for doing this is when calling /register_account_and_allowance and then /send_meta_tx and
+    /register_account_and_allowance succeeds, but /send_meta_tx fails, then the account is now
     unable to use the relayer without manual intervention deleting the record from redis
      */
 
     // get individual vars from json object
     let account_id: &String = &account_id_allowance_oauth_sda.account_id;
-    let allowance_in_gas: u64 = account_id_allowance_oauth_sda.allowance;
+    let allowance_in_gas: &u64 = &account_id_allowance_oauth_sda.allowance;
     let oauth_token: &String = &account_id_allowance_oauth_sda.oauth_token;
     let sda: SignedDelegateAction = account_id_allowance_oauth_sda.signed_delegate_action.clone();
 
@@ -419,15 +505,26 @@ async fn set_oauth_token_in_redis(
     Ok(())
 }
 
+
+#[utoipa::path(
+post,
+    path = "/update_allowance",
+    request_body = AccountIdAllowanceJson,
+    responses(
+        (status = 201, description = "Relayer DB updated for {account_id: example.near,allowance: 90000000000000}", body = String),
+        (status = 500, description = "Error updating account_id example.near with allowance 90000000000000 in Relayer DB:\
+                    \n{db_result:?}", body = String),
+    ),
+)]
 async fn update_allowance(
     account_id_allowance: Json<AccountIdAllowanceJson>
 ) -> impl IntoResponse {
-    let account_id = &account_id_allowance.account_id;
-    let allowance_in_gas = account_id_allowance.allowance;
+    let account_id: &String = &account_id_allowance.account_id;
+    let allowance_in_gas: &u64 = &account_id_allowance.allowance;
 
     let redis_result = set_account_and_allowance_in_redis(
         account_id,
-        &allowance_in_gas,
+        allowance_in_gas,
     ).await;
 
     let Ok(_) = redis_result else {
@@ -501,6 +598,16 @@ async fn update_all_allowances_in_redis(allowance_in_gas: u64) -> Result<String,
     Ok(success_msg)
 }
 
+
+#[utoipa::path(
+    post,
+    path = "/update_all_allowances",
+    request_body = AllowanceJson,
+    responses(
+        (status = 200, description = "Updated 321 keys in Relayer DB", body = String),
+        (status = 500, description = "Error updating allowance for key example.near: err_msg", body = String),
+    ),
+)]
 async fn update_all_allowances(
     Json(allowance_json): Json<AllowanceJson>,
 ) -> impl IntoResponse {
@@ -513,11 +620,21 @@ async fn update_all_allowances(
 }
 
 
+#[utoipa::path(
+    post,
+    path = "/register_account_and_allowance",
+    request_body = AccountIdAllowanceOauthJson,
+    responses(
+        (status = 201, description = "Added Oauth token {oauth_token: https://securetoken.google.com/pagoda-oboarding-dev:Op4h13AQozM4CikngfHiFVC2xhf2, account_id: example.near, allowance: 90000000000000 to Relayer DB", body = String),
+        (status = 500, description = "Error: oauth_token https://securetoken.google.com/pagoda-oboarding-dev:Op4h13AQozM4CikngfHiFVC2xhf2 has already been used to register an account. \
+                            You can only register 1 account per oauth_token", body = String),
+    ),
+)]
 async fn register_account_and_allowance(
     account_id_allowance_oauth: Json<AccountIdAllowanceOauthJson>
 ) -> impl IntoResponse {
     let account_id: &String = &account_id_allowance_oauth.account_id;
-    let allowance_in_gas: u64 = account_id_allowance_oauth.allowance;
+    let allowance_in_gas: &u64 = &account_id_allowance_oauth.allowance;
     let oauth_token: &String = &account_id_allowance_oauth.oauth_token;
     // check if the oauth_token has already been used and is a key in Relayer DB
     match get_oauth_token_in_redis(oauth_token).await {
@@ -604,9 +721,19 @@ async fn update_remaining_allowance(
     let gas_used: u64 = (gas_used_in_yn / YN_TO_GAS) as u64;
     let remaining_allowance = allowance - gas_used;
     conn.set(key, remaining_allowance)?;
-    Ok(remaining_allowance)
+    Ok(remaining_allowance.clone())
 }
 
+#[utoipa::path(
+    post,
+    path = "/relay",
+    request_body = Vec<u8>,
+    responses(
+        (status = 201, description = "Relayed and sent transaction ...", body = String),
+        (status = 400, description = "Error deserializing payload data object ...", body = String),
+        (status = 500, description = "Error signing transaction: ...", body = String),
+    ),
+)]
 async fn relay(
     data: Json<Vec<u8>>,
 ) -> impl IntoResponse {
@@ -628,6 +755,16 @@ async fn relay(
     }
 }
 
+#[utoipa::path(
+    post,
+    path = "/send_meta_tx",
+    request_body = SignedDelegateAction,
+    responses(
+        (status = 201, description = "Relayed and sent transaction ...", body = String),
+        (status = 400, description = "Error deserializing payload data object ...", body = String),
+        (status = 500, description = "Error signing transaction: ...", body = String),
+    ),
+)]
 async fn send_meta_tx(
     data: Json<SignedDelegateAction>,
 ) -> impl IntoResponse {
@@ -651,7 +788,7 @@ fn calculate_total_gas_burned(
     let exec_outcome_sum: u128 = execution_outcome
         .iter()
         .map(|ro| {
-            ro.outcome.tokens_burnt
+            &ro.outcome.tokens_burnt
         })
         .sum();
     total_tokens_burnt_in_yn += exec_outcome_sum;
@@ -678,7 +815,7 @@ async fn process_signed_delegate_action(
         // check if sender id and receiver id are the same AND (AddKey or DeleteKey action)
         let non_delegate_action = signed_delegate_action.delegate_action.actions.get(0).ok_or_else(|| {
             RelayError {
-                status_code: StatusCode::INTERNAL_SERVER_ERROR,
+                status_code: StatusCode::BAD_REQUEST,
                 message: "DelegateAction must have at least one NonDelegateAction".to_string(),
             }
         })?;
@@ -913,8 +1050,8 @@ async fn test_relay_with_load() {   // tests assume testnet in config
     let actions = vec![
         Action::Transfer(TransferAction { deposit: 1 })
     ];
-    let account_id0: String = "relayer_test0.testnet".to_string();
-    let account_id1: String = "relayer_test1.testnet".to_string();
+    let account_id0: String = "nomnomnom.testnet".to_string();
+    let account_id1: String = "relayer_test0.testnet".to_string();
     let mut sender_id: String = String::new();
     let mut receiver_id: String = String::new();
     let mut nonce: i32 = 1;
@@ -922,6 +1059,7 @@ async fn test_relay_with_load() {   // tests assume testnet in config
 
     let num_tests = 100;
     let mut response_statuses = vec![];
+    let mut response_bodies = vec![];
 
     // fire off all post requests in rapid succession and save the response status codes
     for i in 0..num_tests {
@@ -937,12 +1075,15 @@ async fn test_relay_with_load() {   // tests assume testnet in config
             sender_id.clone(),
             receiver_id.clone(),
             actions.clone(),
-            nonce,
-            max_block_height,
+            nonce.clone(),
+            max_block_height.clone(),
         );
         let json_payload = signed_delegate_action.try_to_vec().unwrap();
         let response = relay(Json(Vec::from(json_payload))).await.into_response();
         response_statuses.push(response.status());
+        let body: BoxBody = response.into_body();
+        let body_str: String = read_body_to_string(body).await.unwrap();
+        response_bodies.push(body_str);
 
         // increment nonce & reset sender, receiver strs
         nonce += 1;
@@ -952,6 +1093,9 @@ async fn test_relay_with_load() {   // tests assume testnet in config
 
     // all responses should be successful
     for i in 0..response_statuses.len() {
-        assert_eq!(response_statuses[i], StatusCode::OK);
+        let response_status = response_statuses[i].clone();
+        println!("{}", response_status);
+        println!("{}", response_bodies[i]);
+        assert_eq!(response_status, StatusCode::OK);
     }
 }
