@@ -43,7 +43,6 @@ use std::sync::{Arc, Mutex};
 use axum::body::{BoxBody, HttpBody};
 #[cfg(test)]
 use axum::response::Response;
-use tokio::net::unix::SocketAddr;
 #[cfg(test)]
 use bytes::BytesMut;
 use tower_http::trace::TraceLayer;
@@ -307,7 +306,7 @@ async fn main() {
     // run our app with hyper
     // `axum::Server` is a re-export of `hyper::Server`
     let addr: SocketAddr = SocketAddr::from((IP_ADDRESS.clone(), PORT.clone()));
-    info!("listening on {}:{}", addr);
+    info!("listening on {}", addr);
     axum::Server::bind(&addr)
         .serve(app.into_make_service())
         .await
