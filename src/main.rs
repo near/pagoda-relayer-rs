@@ -43,6 +43,7 @@ use std::sync::{Arc, Mutex};
 use axum::body::{BoxBody, HttpBody};
 #[cfg(test)]
 use axum::response::Response;
+use tokio::net::unix::SocketAddr;
 #[cfg(test)]
 use bytes::BytesMut;
 use tower_http::trace::TraceLayer;
@@ -99,6 +100,9 @@ static WHITELISTED_CONTRACTS: Lazy<Vec<String>> = Lazy::new(|| {
 });
 static WHITELISTED_DELEGATE_ACTION_RECEIVER_IDS: Lazy<Vec<String>> = Lazy::new(|| {
     LOCAL_CONF.get("whitelisted_delegate_action_receiver_ids").unwrap()
+});
+static USE_REDIS: Lazy<bool> = Lazy::new(|| {
+    LOCAL_CONF.get("use_redis").unwrap_or(false)
 });
 static REDIS_POOL: Lazy<Pool<RedisConnectionManager>> = Lazy::new(|| {
     let redis_cnxn_url: String = LOCAL_CONF.get("redis_url").unwrap();
@@ -302,8 +306,8 @@ async fn main() {
 
     // run our app with hyper
     // `axum::Server` is a re-export of `hyper::Server`
-    let addr = SocketAddr::from((IP_ADDRESS.clone(), PORT.clone()));
-    info!("listening on {}", addr);
+    let addr: SocketAddr = SocketAddr::from((IP_ADDRESS.clone(), PORT.clone()));
+    info!("listening on {}:{}", addr);
     axum::Server::bind(&addr)
         .serve(app.into_make_service())
         .await
@@ -436,7 +440,7 @@ async fn create_account_atomic(
     }
     let redis_result = set_account_and_allowance_in_redis(
         account_id,
-        &allowance_in_gas,
+        allowance_in_gas,
     ).await;
 
     let Ok(_) = redis_result else {
@@ -457,15 +461,17 @@ async fn create_account_atomic(
         let err: RelayError = create_account_sda_result.err().unwrap();
         return (err.status_code, err.message).into_response();
     }
-
-    // allocate shared storage for account_id
     let Ok(account_id) = account_id.parse::<AccountId>() else {
         return (StatusCode::FORBIDDEN, format!("Invalid account_id: {}", account_id)).into_response();
     };
-    if let Err(err) = SHARED_STORAGE_POOL.allocate_default(account_id.clone()).await {
-        let msg = format!("Error allocating storage for account {account_id}: {err:?}");
-        info!("{}", msg);
-        return (StatusCode::INTERNAL_SERVER_ERROR, msg).into_response();
+
+    // allocate shared storage for account_id if shared storage is being used
+    if USE_FASTAUTH_FEATURES.clone() || USE_SHARED_STORAGE.clone() {
+        if let Err(err) = SHARED_STORAGE_POOL.allocate_default(account_id.clone()).await {
+            let msg = format!("Error allocating storage for account {account_id}: {err:?}");
+            info!("{}", msg);
+            return (StatusCode::INTERNAL_SERVER_ERROR, msg).into_response();
+        }
     }
 
     // add oauth token to redis (key: oauth_token, val: true)
@@ -827,11 +833,9 @@ async fn process_signed_delegate_action(
                 message: "DelegateAction must have at least one NonDelegateAction".to_string(),
             }
         })?;
-        let contains_key_action = match (*non_delegate_action).clone().into() {
-            Action::AddKey(_) => true,
-            Action::DeleteKey(_) => true,
-            _ => false,
-        };
+        let contains_key_action = matches!(
+            (*non_delegate_action).clone().into(), Action::AddKey(_) | Action::DeleteKey(_)
+        );
         // check if the receiver_id (delegate action sender_id) if a whitelisted delegate action receiver
         let is_whitelisted_sender = WHITELISTED_DELEGATE_ACTION_RECEIVER_IDS.iter().any(
             |s| s == receiver_id.as_str()
@@ -851,101 +855,161 @@ async fn process_signed_delegate_action(
         }
     }
 
-    // Check the sender's remaining gas allowance in Redis
-    let end_user_account = &signed_delegate_action.delegate_action.sender_id;
-    let remaining_allowance = get_remaining_allowance(end_user_account).await.unwrap_or(0);
-    if remaining_allowance < TXN_GAS_ALLOWANCE {
-        let err_msg = format!(
-            "AccountId {} does not have enough remaining gas allowance.",
-            end_user_account.as_str()
-        );
-        info!("{err_msg}");
-        return Err(RelayError {
-            status_code: StatusCode::BAD_REQUEST,
-            message: err_msg,
-        });
-    }
 
-    let actions = vec![Action::Delegate(signed_delegate_action)];
-    // round robin usage of keys to prevent nonce race condition
-    let tmp_str = "".to_string();
-    let mut keys_filename: &String = &tmp_str;
-    {
-        let idx: usize = IDX_COUNTER.lock().unwrap().get_and_increment();
-        keys_filename = &KEYS_FILENAMES[idx];
-    }  // lock is released when it goes out of scope here
-    let execution = rpc::send_tx(
-        &JSON_RPC_CLIENT,
-        keys_filename,
-        &signer_account_id,
-        &receiver_id,
-        actions,
-        "delegate_action",
-    )
-        .await
-        .map_err(|_err| {
-            let err_msg: String = format!("Error signing transaction: {:?}", _err.to_string());
-            error!("{err_msg}");
-            RelayError {
-                status_code: StatusCode::INTERNAL_SERVER_ERROR,
-                message: err_msg.into(),
-            }
-        })?;
-
-    let status = &execution.status;
-    let mut response_msg: String = "".to_string();
-    match status {
-        near_primitives::views::FinalExecutionStatus::Failure(_) => {
-            response_msg = "Error sending transaction".to_string();
-        }
-        _ => {
-            response_msg = "Relayed and sent transaction".to_string();
-        }
-    }
-    let status_msg = json!({
-        "message": response_msg,
-        "status": &execution.status,
-        "Transaction Outcome": &execution.transaction_outcome,
-        "Receipts Outcome": &execution.receipts_outcome,
-    });
-
-    let gas_used_in_yn = calculate_total_gas_burned(
-        execution.transaction_outcome,
-        execution.receipts_outcome,
-    );
-    debug!("total gas burnt in yN: {}", gas_used_in_yn);
-    let new_allowance = update_remaining_allowance(
-        &signer_account_id,
-        gas_used_in_yn,
-        remaining_allowance
-    )
-        .await
-        .map_err(|err| {
+    if USE_REDIS.clone() {
+        // Check the sender's remaining gas allowance in Redis
+        let end_user_account: &AccountId = &signed_delegate_action.delegate_action.sender_id;
+        let remaining_allowance: u64 = get_remaining_allowance(end_user_account).await.unwrap_or(0);
+        if remaining_allowance < TXN_GAS_ALLOWANCE {
             let err_msg = format!(
-                "Updating redis remaining allowance errored out: {err:?}"
+                "AccountId {} does not have enough remaining gas allowance.",
+                end_user_account.as_str()
             );
-            error!("{err_msg}");
-            RelayError {
-                status_code: StatusCode::INTERNAL_SERVER_ERROR,
+            info!("{err_msg}");
+            return Err(RelayError {
+                status_code: StatusCode::BAD_REQUEST,
                 message: err_msg,
-            }
-        })?;
-
-    info!("Updated remaining allowance for account {signer_account_id}: {new_allowance}",);
-    match status {
-        near_primitives::views::FinalExecutionStatus::Failure(_) => {
-            error!("Error message: \n{status_msg:?}");
-            Err(RelayError {
-                status_code: StatusCode::INTERNAL_SERVER_ERROR,
-                message: status_msg.to_string(),
-            })
+            });
         }
-        _ => {
-            info!("Success message: \n{status_msg:?}");
-            Ok(status_msg.to_string())
+
+        let actions = vec![Action::Delegate(signed_delegate_action)];
+        // round robin usage of keys to prevent nonce race condition
+        let tmp_str = "".to_string();
+        let mut keys_filename: &String = &tmp_str;
+        {
+            let idx: usize = IDX_COUNTER.lock().unwrap().get_and_increment();
+            keys_filename = &KEYS_FILENAMES[idx];
+        }  // lock is released when it goes out of scope here
+        let execution = rpc::send_tx(
+            &JSON_RPC_CLIENT,
+            keys_filename,
+            &signer_account_id,
+            &receiver_id,
+            actions,
+            "delegate_action",
+        )
+            .await
+            .map_err(|_err| {
+                let err_msg: String = format!("Error signing transaction: {:?}", _err.to_string());
+                error!("{err_msg}");
+                RelayError {
+                    status_code: StatusCode::INTERNAL_SERVER_ERROR,
+                    message: err_msg.into(),
+                }
+            })?;
+
+        let status = &execution.status;
+        let mut response_msg: String = "".to_string();
+        match status {
+            near_primitives::views::FinalExecutionStatus::Failure(_) => {
+                response_msg = "Error sending transaction".to_string();
+            }
+            _ => {
+                response_msg = "Relayed and sent transaction".to_string();
+            }
+        }
+        let status_msg = json!({
+            "message": response_msg,
+            "status": &execution.status,
+            "Transaction Outcome": &execution.transaction_outcome,
+            "Receipts Outcome": &execution.receipts_outcome,
+        });
+
+        let gas_used_in_yn = calculate_total_gas_burned(
+            execution.transaction_outcome,
+            execution.receipts_outcome,
+        );
+        debug!("total gas burnt in yN: {}", gas_used_in_yn);
+        let new_allowance = update_remaining_allowance(
+            &signer_account_id,
+            gas_used_in_yn,
+            remaining_allowance
+        )
+            .await
+            .map_err(|err| {
+                let err_msg = format!(
+                    "Updating redis remaining allowance errored out: {err:?}"
+                );
+                error!("{err_msg}");
+                RelayError {
+                    status_code: StatusCode::INTERNAL_SERVER_ERROR,
+                    message: err_msg,
+                }
+            })?;
+        info!("Updated remaining allowance for account {signer_account_id}: {new_allowance}",);
+
+        match status {
+            near_primitives::views::FinalExecutionStatus::Failure(_) => {
+                error!("Error message: \n{status_msg:?}");
+                Err(RelayError {
+                    status_code: StatusCode::INTERNAL_SERVER_ERROR,
+                    message: status_msg.to_string(),
+                })
+            }
+            _ => {
+                info!("Success message: \n{status_msg:?}");
+                Ok(status_msg.to_string())
+            }
+        }
+
+    } else {
+        let actions = vec![Action::Delegate(signed_delegate_action)];
+        // round robin usage of keys to prevent nonce race condition
+        let tmp_str = "".to_string();
+        let mut keys_filename: &String = &tmp_str;
+        {
+            let idx: usize = IDX_COUNTER.lock().unwrap().get_and_increment();
+            keys_filename = &KEYS_FILENAMES[idx];
+        }  // lock is released when it goes out of scope here
+        let execution = rpc::send_tx(
+            &JSON_RPC_CLIENT,
+            keys_filename,
+            &signer_account_id,
+            &receiver_id,
+            actions,
+            "delegate_action",
+        )
+            .await
+            .map_err(|_err| {
+                let err_msg: String = format!("Error signing transaction: {:?}", _err.to_string());
+                error!("{err_msg}");
+                RelayError {
+                    status_code: StatusCode::INTERNAL_SERVER_ERROR,
+                    message: err_msg.into(),
+                }
+            })?;
+
+        let status = &execution.status;
+        let mut response_msg: String = "".to_string();
+        match status {
+            near_primitives::views::FinalExecutionStatus::Failure(_) => {
+                response_msg = "Error sending transaction".to_string();
+            }
+            _ => {
+                response_msg = "Relayed and sent transaction".to_string();
+            }
+        }
+        let status_msg = json!({
+            "message": response_msg,
+            "status": &execution.status,
+            "Transaction Outcome": &execution.transaction_outcome,
+            "Receipts Outcome": &execution.receipts_outcome,
+        });
+
+        match status {
+            near_primitives::views::FinalExecutionStatus::Failure(_) => {
+                error!("Error message: \n{status_msg:?}");
+                Err(RelayError {
+                    status_code: StatusCode::INTERNAL_SERVER_ERROR,
+                    message: status_msg.to_string(),
+                })
+            }
+            _ => {
+                info!("Success message: \n{status_msg:?}");
+                Ok(status_msg.to_string())
+            }
         }
     }
-
 }
 
 /**
