@@ -1,3 +1,5 @@
+# This is a config that should be updated. See /examples directory for example configs corresponding to different use cases.
+
 # ip address to run server on, default to localhost
 ip_address = [0, 0, 0, 0]
 # port to expose

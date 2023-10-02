@@ -18,7 +18,7 @@ The `SignedTransaction` is then sent to the network via RPC call and the result 
 5. In exchange for covering the gas fee costs, relayer operators can limit where users spend their assets while allowing users to have custody and ownership of their assets 
 
 ## Features 
-NOTE: These features can be mixed and matched "à la carte". Use of one feature does not preclude the use of any other feature unless specified.
+NOTE: These features can be mixed and matched "à la carte". Use of one feature does not preclude the use of any other feature unless specified. See the `/examples` directory for example configs corresponding to different use cases.
 1. Cover the gas costs of end users while allowing them to maintain custody of their funds and approve transactions (`/relay`, `/send_meta_tx`)
 2. Only pay for users interacting with certain contracts by whitelisting contracts addresses (`whitelisted_contracts` in `config.toml`) 
 3. Specify gas cost allowances for all accounts (`/update_all_allowances`) or on a per-user account basis (`/create_account_atomic`, `/register_account`, `/update_allowance`) and keep track of allowances (`/get_allowance`)
