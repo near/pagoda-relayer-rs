@@ -9,4 +9,9 @@ Please note that these are for reference only and you should be updating the val
 - `redis.toml`
   - This is a config for a relayer that covers gas for user transactions up to a allowance specified in Redis to interact with a whitelisted set of contracts. 
   - Allowances are on a per-account id basis and on signup (account creation in redis and on-chain) an oauth token is required to help with sybil resistance
-- 
+- `fastauth.toml`
+  - This is a config for use if you intend to integrate with [fastuath sdk](https://docs.near.org/tools/fastauth-sdk)
+  - It covers gas for user transactions up to a allowance specified in Redis to interact with a whitelisted set of contracts. 
+  - Allowances are on a per-account id basis and on signup (account creation in redis and on-chain) an oauth token is required to help with sybil resistance 
+  - This also makes use of a shared storage functionality on the near social db contract 
+  - and a whitelisted sender (whitelisted_delegate_action_receiver_ids)

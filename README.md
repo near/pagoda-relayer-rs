@@ -25,6 +25,7 @@ NOTE: These features can be mixed and matched "à la carte". Use of one feature 
 4. Specify the accounts for which the relayer will cover gas fees (`whitelisted_delegate_action_receiver_ids` in `config.toml`)
 5. Only allow users to register if they have a unique Oauth Token (`/create_account_atomic`, `/register_account`)
 6. Relayer Key Rotation: `keys_filenames` in `config.toml`
+7. Integrate with [Fastauth SDK](https://docs.near.org/tools/fastauth-sdk). See `/examples/configs/fastauth.toml`
 
 ### Features - COMING SOON
 1. Allow users to pay for gas fees using Fungible Tokens they hold. This can be implemented by either:

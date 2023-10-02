@@ -1,5 +1,6 @@
 # Basic Whitelist config
 # This is a config for a basic relayer that covers gas for user transactions to interact with a whitelisted set of contracts
+
 # Please note this is for reference only and you should be updating the values in the `config.toml` file found in the `pagoda-relayer-rs` directory.
 
 # ip address to run server on, default to localhost
