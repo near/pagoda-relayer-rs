@@ -1,5 +1,7 @@
-# Basic Whitelist config
-# This is a config for a basic relayer that covers gas for user transactions to interact with a whitelisted set of contracts
+# Redis config
+# This is a config for a relayer that covers gas for user transactions up to a allowance specified in Redis to interact with a whitelisted set of contracts.
+# Allowances are on a per account id basis and on signup (account creation in redis and on-chain) an oauth token is required to help with sybil resistance
+
 # Please note this is for reference only and you should be updating the values in the `config.toml` file found in the `pagoda-relayer-rs` directory.
 
 # ip address to run server on, default to localhost
@@ -14,7 +16,9 @@ keys_filenames = ["./account_keys/nomnomnom.testnet.json", "./account_keys/37cb5
 whitelisted_contracts = ["nomnomnom.testnet", "relayer_test0.testnet", "relayer_test1.testnet"]
 # if this is set to false, just call /send_meta_tx or /relay endpoints. All other endpoints are coupled with using redis
 # this needs to be set to true if use_fastauth_features = true
-use_redis = false
+use_redis = true
+# redis url for storing and retrieving allowance for an account_id and seeing if an oauth_token has been used before
+redis_url = "redis://127.0.0.1:6379"
 
 # set use_fastauth_features to true if you're integrating with fastauth -
 # including check if sender id and receiver id are the same AND (AddKey or DeleteKey action) in process_signed_delegate_action fn
