@@ -1,4 +1,5 @@
 # This is a config that should be updated. See /examples directory for example configs corresponding to different use cases.
+# PLEASE READ THE COMMENTS IN THIS FILE
 
 # ip address to run server on, default to localhost
 ip_address = [0, 0, 0, 0]
@@ -26,7 +27,8 @@ redis_url = "redis://127.0.0.1:6379"
 # including check if sender id and receiver id are the same AND (AddKey or DeleteKey action) in process_signed_delegate_action fn
 # and you're using shared storage contract
 use_fastauth_features = false
-# you can still use shared storage without fastauth features if you desire
+# you can still use shared storage without fastauth features if you desire,
+# but needs to be set to true if using fastauth or the contract you're sending transactions to requires a storage deposit
 use_shared_storage = false
 social_db_contract_id = "v1.social08.testnet"
 
