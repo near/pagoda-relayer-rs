@@ -390,7 +390,7 @@ async fn create_account_atomic(
      */
 
     // check if the oauth_token has already been used and is a key in Redis
-    match redis_fns::get_oauth_token_in_redis(&oauth_token).await {
+    match redis_fns::get_oauth_token_in_redis(oauth_token).await {
         Ok(is_oauth_token_in_redis) => {
             if is_oauth_token_in_redis {
                 let err_msg = format!(
@@ -565,7 +565,7 @@ async fn register_account_and_allowance(
     }
     let redis_result = redis_fns::set_account_and_allowance_in_redis(
         account_id,
-        &allowance_in_gas,
+        allowance_in_gas,
     ).await;
 
     let Ok(_) = redis_result else {
@@ -741,7 +741,7 @@ async fn process_signed_delegate_action(
                 error!("{err_msg}");
                 RelayError {
                     status_code: StatusCode::INTERNAL_SERVER_ERROR,
-                    message: err_msg.into(),
+                    message: err_msg,
                 }
             })?;
 
@@ -822,7 +822,7 @@ async fn process_signed_delegate_action(
                 error!("{err_msg}");
                 RelayError {
                     status_code: StatusCode::INTERNAL_SERVER_ERROR,
-                    message: err_msg.into(),
+                    message: err_msg,
                 }
             })?;
 
