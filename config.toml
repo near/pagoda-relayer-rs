@@ -12,11 +12,20 @@ shared_storage_account_id = "relayer-test.testnet"  # "social-storage.pagodaplat
 shared_storage_keys_filename = "relayer-test.testnet.json"  # "social-storage.pagodaplatform.json"
 # whitelisted contract ids (receiver_id) i.e. ["social.near", "devgovgigs.near"] for mainnet
 whitelisted_contracts = ["social-storage.pagodaplatform.near", "relayer.pagodaplatform.near", "social.near", "devgovgigs.near", "near", "account_creator.near", "consensus.neartasks.near", "nearhorizon.near", "relayer_test0.testnet"]
-# check if this is a whitelisted sender
+# check if this is a whitelisted sender - to run without this feature, then set use_fastauth_features = false below
 whitelisted_delegate_action_receiver_ids = ["account_creator.near", "relayer_test1.testnet", "social.near"]
-# redis url for storing and retrieving account_id, allowance
+# if this is set to false, just call /send_meta_tx or /relay endpoints. All other endpoints are coupled with using redis
+# this needs to be set to true if use_fastauth_features = true
+use_redis = false
+# redis url for storing and retrieving allowance for an account_id and seeing if an oauth_token has been used before
 redis_url = "redis://127.0.0.1:6379"
 
+# set use_fastauth_features to true if you're integrating with fastauth -
+# including check if sender id and receiver id are the same AND (AddKey or DeleteKey action) in process_signed_delegate_action fn
+# and you're using shared storage contract
+use_fastauth_features = false
+# you can still use shared storage without fastauth features if you desire
+use_shared_storage = false
 social_db_contract_id = "v1.social08.testnet"
 
 # Uncoment the network you want to use or add your own
