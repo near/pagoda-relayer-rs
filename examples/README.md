@@ -15,3 +15,5 @@ Please note that these are for reference only and you should be updating the val
   - Allowances are on a per-account id basis and on signup (account creation in redis and on-chain) an oauth token is required to help with sybil resistance 
   - This also makes use of a shared storage functionality on the near social db contract 
   - and a whitelisted sender (whitelisted_delegate_action_receiver_ids)
+- `pay_with_ft.toml` 
+  - This is a config for a relayer that ensures there's FTs sent to a burn address used to cover the equivalent amount of gas for user transactions to interact with a whitelisted set of contracts 

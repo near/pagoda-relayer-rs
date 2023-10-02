@@ -52,15 +52,3 @@ rpc_url = "https://archival-rpc.testnet.near.org"
 wallet_url = "https://wallet.testnet.near.org"
 explorer_transaction_url = "https://explorer.testnet.near.org/transactions/"
 rpc_api_key = ""
-
-# betanet
-# rpc_url = "https://rpc.betanet.near.org"
-# wallet_url = "https://wallet.betanet.near.org"
-# explorer_transaction_url = "https://explorer.betanet.near.org/transactions/"
-# rpc_api_key = ""
-
-# shardnet
-# rpc_url = "https://rpc.shardnet.near.org"
-# wallet_url = "https://wallet.shardnet.near.org"
-# explorer_transaction_url = "https://explorer.shardnet.near.org/transactions/"
-# rpc_api_key = ""
