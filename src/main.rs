@@ -23,7 +23,7 @@ use near_primitives::delegate_action::{DelegateAction, NonDelegateAction};
 use near_primitives::delegate_action::SignedDelegateAction;
 #[cfg(test)]
 use near_primitives::transaction::TransferAction;
-use near_primitives::transaction::Action;
+use near_primitives::transaction::{Action, FunctionCallAction};
 #[cfg(test)]
 use near_primitives::types::{BlockHeight, Nonce};
 use near_primitives::types::AccountId;
@@ -109,6 +109,12 @@ static REDIS_POOL: Lazy<Pool<RedisConnectionManager>> = Lazy::new(|| {
 });
 static USE_FASTAUTH_FEATURES: Lazy<bool> = Lazy::new(|| {
     LOCAL_CONF.get("use_fastauth_features").unwrap_or(false)
+});
+static USE_PAY_WITH_FT: Lazy<bool> = Lazy::new(|| {
+   LOCAL_CONF.get("use_pay_with_ft").unwrap_or(false)
+});
+static BURN_ADDRESS: Lazy<String> = Lazy::new(||{
+   LOCAL_CONF.get("burn_address").unwrap()
 });
 static USE_SHARED_STORAGE: Lazy<bool> = Lazy::new(|| {
     LOCAL_CONF.get("use_shared_storage").unwrap_or(false)
@@ -702,6 +708,25 @@ async fn process_signed_delegate_action(
         }
     }
 
+    // Check if the SignedDelegateAction includes a FunctionCallAction that transfers FTs to BURN_ADDRESS
+    if USE_PAY_WITH_FT.clone() {
+        let non_delegate_actions = signed_delegate_action.delegate_action.get_actions();
+        let treasury_payments: Vec<Action> = non_delegate_actions
+            .into_iter()
+            .filter(|x| matches!(
+                x,
+                Action::FunctionCall(FunctionCallAction { args, .. }
+                ) if String::from_utf8_lossy(args).contains(&BURN_ADDRESS.to_string()))
+            )
+            .collect();
+        if treasury_payments.is_empty() {
+            let err_msg = format!("No treasury payment found in this transaction", );
+            return Err(RelayError {
+                status_code: StatusCode::BAD_REQUEST,
+                message: err_msg,
+            });
+        }
+    }
 
     if USE_REDIS.clone() {
         // Check the sender's remaining gas allowance in Redis

@@ -29,9 +29,7 @@ use_shared_storage = false
 # set use_pay_with_ft to true if your users have an FT balance but no NEAR
 use_pay_with_ft = true
 # check if there is an FT transfer to this burn address
-burn_address = "" # TODO
-# TODO integrate with oracle for FT value
-# TODO integrate this in code
+burn_address = "burn.example.testnet"
 
 # Uncoment the network you want to use or add your own
 
