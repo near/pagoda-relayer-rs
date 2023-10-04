@@ -101,7 +101,7 @@ NOTE: this is only needed if you intend to use whitelisting, allowances, and oau
 2. Run `redis-server --bind 127.0.0.1 --port 6379` - make sure the port matches the `redis_url` in the `config.toml`.
 3. Run `redis-cli -h 127.0.0.1 -p 6379`
 
-## Multiple Key Generation - OPTIONAL
+## Multiple Key Generation - OPTIONAL, but recommended for high throughput to prevent nonce race conditions
 1. [Install NEAR CLI](https://docs.near.org/tools/near-cli#installation)
 2. Make sure you're using the appropriate network: `echo $NEAR_ENV`. To change it, `export NEAR_ENV=testnet` 
 3. Make sure your keys you want to use for the relayer have a `'FullAccess'` access_key by running `near keys your_relayer_account.testnet`. This is required to create more keys. You need to have access to at least 1 `'FullAccess'` access_key 

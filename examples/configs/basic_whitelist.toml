@@ -10,6 +10,7 @@ port = 3030
 # replace with the account id of the public key you will use to sign relay transactions - this should match the account_id in your json file
 relayer_account_id = "nomnomnom.testnet"
 # replace with json files containing 3 entries: account_id (should match relayer_account_id), public_key, private_key
+# this is recommended for high throughput use cases to prevent nonce race conditions
 keys_filenames = ["./account_keys/nomnomnom.testnet.json", "./account_keys/37cb5b936de257d014e663663b186e58e4c3c4c9b4c7643e7b89821e789b0b4b.json", "./account_keys/b278b7752b844a0cc88f8dbdb053b860d6283fb353e7a317b3b82efe01396c3e.json", "./account_keys/d7adc371186bc2013ec5de36be27ed9a36022af1112f7c62530baf6042690f61.json", "./account_keys/df86e9701801e30cf0649b2ea43aeacef60e394e076709d4519880d5a9c7bc9e.json", "./account_keys/e4a6dd159d45d4104679e709d29d49a533e5df9467b311c9dbea7fb8f0077335.json"]
 # whitelisted contract ids (receiver_id)
 whitelisted_contracts = ["nomnomnom.testnet", "relayer_test0.testnet", "relayer_test1.testnet"]
