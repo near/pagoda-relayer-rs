@@ -96,6 +96,9 @@ static SHARED_STORAGE_KEYS_FILENAME: Lazy<String> = Lazy::new(|| {
 static WHITELISTED_CONTRACTS: Lazy<Vec<String>> = Lazy::new(|| {
     LOCAL_CONF.get("whitelisted_contracts").unwrap()
 });
+static USE_WHITELISTED_DELEGATE_ACTION_RECEIVER_IDS: Lazy<bool> = Lazy::new(|| {
+    LOCAL_CONF.get("use_whitelisted_delegate_action_receiver_ids").unwrap_or(false)
+});
 static WHITELISTED_DELEGATE_ACTION_RECEIVER_IDS: Lazy<Vec<String>> = Lazy::new(|| {
     LOCAL_CONF.get("whitelisted_delegate_action_receiver_ids").unwrap()
 });
@@ -678,6 +681,12 @@ async fn process_signed_delegate_action(
     let is_whitelisted_da_receiver = WHITELISTED_CONTRACTS.iter().any(
         |s| s == da_receiver_id.as_str()
     );
+    if USE_WHITELISTED_DELEGATE_ACTION_RECEIVER_IDS.clone() && !USE_FASTAUTH_FEATURES.clone() {
+        // check if the receiver_id (delegate action sender_id) if a whitelisted delegate action receiver
+        let is_whitelisted_sender = WHITELISTED_DELEGATE_ACTION_RECEIVER_IDS.iter().any(
+            |s| s == receiver_id.as_str()
+        );
+    }
     if !is_whitelisted_da_receiver && USE_FASTAUTH_FEATURES.clone() {
         // check if sender id and receiver id are the same AND (AddKey or DeleteKey action)
         let non_delegate_action = signed_delegate_action.delegate_action.actions.get(0).ok_or_else(|| {

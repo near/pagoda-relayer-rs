@@ -17,3 +17,5 @@ Please note that these are for reference only and you should be updating the val
   - and a whitelisted sender (whitelisted_delegate_action_receiver_ids)
 - `pay_with_ft.toml` 
   - This is a config for a relayer that ensures there's FTs sent to a burn address used to cover the equivalent amount of gas for user transactions to interact with a whitelisted set of contracts 
+- `whitelist_senders.toml` (whitelisted_delegate_action_receiver_ids)
+  - This is a config for a relayer that covers gas for a whitelisted set of users' transactions to interact with a whitelisted set of contracts
