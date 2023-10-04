@@ -1709,9 +1709,9 @@ dependencies = [
 
 [[package]]
 name = "near-fetch"
-version = "0.0.11"
+version = "0.0.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "acb665d1e8c054c05477322b7567a87c07a4703a239329095e8f4461368e3fe9"
+checksum = "d227650df31a89e5bd256f7a9b5ae85f6f9b855f7114b2a4e935d15372d77cab"
 dependencies = [
  "near-account-id",
  "near-crypto",
