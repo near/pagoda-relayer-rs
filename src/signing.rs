@@ -6,6 +6,7 @@ use near_primitives::types::AccountId;
 use near_primitives::views::QueryRequest;
 use serde::{Deserialize, Serialize};
 use std::str::FromStr;
+use tracing::{error, info};
 
 
 #[derive(Debug, Clone)]
@@ -57,7 +58,7 @@ pub async fn sign_transaction(
         })
         .await
         .map_err(|err| {
-            println!("\nYour transaction was not successfully signed.\n");
+            error!("\nYour transaction was not successfully signed.\n");
             color_eyre::eyre::eyre!(
                 "Failed to fetch public key information for nonce: {:?}",
                 err
@@ -69,6 +70,7 @@ pub async fn sign_transaction(
         {
             online_signer_access_key.nonce
         } else {
+            error!("Error current_nonce");
             return Err(color_eyre::eyre::eyre!("Error current_nonce"));
         };
 
@@ -80,6 +82,6 @@ pub async fn sign_transaction(
     };
     let signature = signer_secret_key.sign(unsigned_transaction.get_hash_and_size().0.as_ref());
     let signed_transaction = SignedTransaction::new(signature, unsigned_transaction);
-    println!("\nYour transaction was signed successfully.");
+    info!("\nYour transaction was signed successfully.");
     Ok(signed_transaction)
 }

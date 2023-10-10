@@ -14,6 +14,8 @@ pub async fn get_redis_cnxn() -> Result<PooledConnection<RedisConnectionManager>
     let conn: PooledConnection<RedisConnectionManager> = match conn_result {
         Ok(conn) => conn,
         Err(e) => {
+            let err_msg = format!("Error getting Relayer DB connection from the pool");
+            error!("{err_msg}");
             return Err(RedisError::from((IoError,
                 "Error getting Relayer DB connection from the pool",
                 e.to_string(),
@@ -95,7 +97,7 @@ pub async fn update_all_allowances_in_redis(allowance_in_gas: u64) -> Result<Str
     // Iterate through the keys and update their values to the provided allowance in gas
     for key in &keys {
         match redis_conn.set::<_, _, ()>(key, allowance_in_gas.to_string()) {
-            Ok(_) => debug!("Updated allowance for key {}", key),
+            Ok(_) => info!("Updated allowance for key {}", key),
             Err(e) => {
                 let err_msg = format!("Error updating allowance for key {}: {}", key, e);
                 error!("{err_msg}");
@@ -123,7 +125,7 @@ pub async fn get_remaining_allowance(
     let Some(remaining_allowance) = allowance else {
         return Ok(0);
     };
-    info!("get remaining allowance for account: {account_id}, {remaining_allowance}");
+    debug!("get remaining allowance for account: {account_id}, {remaining_allowance}");
     Ok(remaining_allowance)
 }
 
