@@ -45,7 +45,7 @@ use axum::response::Response;
 #[cfg(test)]
 use bytes::BytesMut;
 use tower_http::trace::TraceLayer;
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 use tracing::log::error;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 use utoipa::{OpenApi, ToSchema};
@@ -245,7 +245,9 @@ async fn main() {
     // initialize our shared storage pool manager if using fastauth features or using shared storage
     if USE_FASTAUTH_FEATURES.clone() || USE_SHARED_STORAGE.clone() {
         if let Err(err) = SHARED_STORAGE_POOL.check_and_spawn_pool().await {
-            tracing::error!("Error initializing shared storage pool: {err}");
+            let err_msg = format!("Error initializing shared storage pool: {err}");
+            error!("{err_msg}");
+            tracing::error!(err_msg);
             return;
         }
     }
@@ -349,7 +351,7 @@ async fn get_allowance(account_id_json: Json<AccountIdJson>) -> impl IntoRespons
                 "Error getting allowance for account_id {} in Relayer DB: {:?}",
                 account_id_val.clone().as_str(), err
             );
-            info!("{err_msg}");
+            error!("{err_msg}");
             (StatusCode::INTERNAL_SERVER_ERROR, err_msg).into_response()
         }
     }
@@ -406,7 +408,7 @@ async fn create_account_atomic(
                     "Error: oauth_token {oauth_token} has already been used to register an account. \
                     You can only register 1 account per oauth_token",
                 );
-                info!("{}", err_msg);
+                warn!("{err_msg}");
                 return (StatusCode::BAD_REQUEST, err_msg).into_response();
             }
         }
@@ -414,7 +416,7 @@ async fn create_account_atomic(
             let err_msg = format!(
                 "Error getting oauth_token for account_id {account_id}, oauth_token {oauth_token} in Relayer DB: {err:?}",
             );
-            info!("{}", err_msg);
+            error!("{err_msg}");
             return (StatusCode::INTERNAL_SERVER_ERROR, err_msg).into_response();
         }
     }
@@ -425,8 +427,9 @@ async fn create_account_atomic(
 
     let Ok(_) = redis_result else {
         let err_msg = format!(
-            "Error creating account_id {account_id} with allowance {allowance_in_gas} in Relayer DB:\n{redis_result:?}");
-        info!("{}", err_msg);
+            "Error creating account_id {account_id} with allowance {allowance_in_gas} in Relayer DB:\n{redis_result:?}"
+        );
+        error!("{err_msg}");
         return (StatusCode::INTERNAL_SERVER_ERROR, err_msg).into_response();
     };
 
@@ -442,34 +445,39 @@ async fn create_account_atomic(
         return (err.status_code, err.message).into_response();
     }
     let Ok(account_id) = account_id.parse::<AccountId>() else {
-        return (StatusCode::FORBIDDEN, format!("Invalid account_id: {}", account_id)).into_response();
+        let err_msg = format!("Invalid account_id: {account_id}");
+        warn!("{err_msg}");
+        return (StatusCode::BAD_REQUEST, err_msg).into_response();
     };
 
     // allocate shared storage for account_id if shared storage is being used
     if USE_FASTAUTH_FEATURES.clone() || USE_SHARED_STORAGE.clone() {
         if let Err(err) = SHARED_STORAGE_POOL.allocate_default(account_id.clone()).await {
-            let msg = format!("Error allocating storage for account {account_id}: {err:?}");
-            info!("{}", msg);
-            return (StatusCode::INTERNAL_SERVER_ERROR, msg).into_response();
+            let err_msg = format!("Error allocating storage for account {account_id}: {err:?}");
+            error!("{err_msg}");
+            return (StatusCode::INTERNAL_SERVER_ERROR, err_msg).into_response();
         }
     }
 
     // add oauth token to redis (key: oauth_token, val: true)
     match redis_fns::set_oauth_token_in_redis(oauth_token.clone()).await {
         Ok(_) => {
+            let ok_msg = format!(
+                "Added Oauth token {oauth_token:?} for account_id {account_id:?} \
+                with allowance (in Gas) {allowance_in_gas:?} to Relayer DB. \
+                Near onchain account creation response: {create_account_sda_result:?}"
+            );
+            info!("{ok_msg}");
             (
                 StatusCode::CREATED,
-                format!(
-                    "Added Oauth token {oauth_token:?} for account_id {account_id:?} \
-                    with allowance (in Gas) {allowance_in_gas:?} to Relayer DB. \
-                    Near onchain account creation response: {create_account_sda_result:?}")
+                ok_msg,
             ).into_response()
         }
         Err(err) => {
             let err_msg = format!(
                 "Error creating oauth token {oauth_token:?} in Relayer DB:\n{err:?}",
             );
-            info!("{}", err_msg);
+            error!("{err_msg}");
             (StatusCode::INTERNAL_SERVER_ERROR, err_msg).into_response()
         }
     }
@@ -502,11 +510,11 @@ async fn update_allowance(
             "Error updating account_id {account_id} with allowance {allowance_in_gas} in Relayer DB:\
             \n{redis_result:?}"
         );
-        info!("{err_msg}");
+        warn!("{err_msg}");
         return (StatusCode::INTERNAL_SERVER_ERROR, err_msg).into_response();
     };
     let success_msg: String = format!("Relayer DB updated for {account_id_allowance:?}");
-    info!("{}", success_msg);
+    info!("success_msg");
     (
         StatusCode::CREATED,
         success_msg
@@ -559,7 +567,7 @@ async fn register_account_and_allowance(
                     "Error: oauth_token {oauth_token} has already been used to register an account. \
                     You can only register 1 account per oauth_token",
                 );
-                info!("{err_msg}");
+                warn!("{err_msg}");
                 return (StatusCode::BAD_REQUEST, err_msg).into_response();
             }
         }
@@ -586,20 +594,24 @@ async fn register_account_and_allowance(
     };
 
     let Ok(account_id) = account_id.parse::<AccountId>() else {
-        return (StatusCode::FORBIDDEN, format!("Invalid account_id: {}", account_id)).into_response();
+        let err_msg = format!("Invalid account_id: {account_id}");
+        warn!("{err_msg}");
+        return (StatusCode::BAD_REQUEST, err_msg).into_response();
     };
     if let Err(err) = SHARED_STORAGE_POOL.allocate_default(account_id.clone()).await {
-        let msg = format!("Error allocating storage for account {account_id}: {err:?}");
-        error!("{msg}");
-        return (StatusCode::INTERNAL_SERVER_ERROR, msg).into_response();
+        let err_msg = format!("Error allocating storage for account {account_id}: {err:?}");
+        error!("{err_msg}");
+        return (StatusCode::INTERNAL_SERVER_ERROR, err_msg).into_response();
     }
 
     // add oauth token to redis (key: oauth_token, val: true)
     match redis_fns::set_oauth_token_in_redis(oauth_token.clone()).await {
         Ok(_) => {
+            let ok_msg = format!("Added Oauth token {account_id_allowance_oauth:?} to Relayer DB");
+            info!("{ok_msg}");
             (
                 StatusCode::CREATED,
-                format!("Added Oauth token {account_id_allowance_oauth:?} to Relayer DB")
+                ok_msg,
             ).into_response()
         }
         Err(err) => {
@@ -637,7 +649,7 @@ async fn relay(
             let err_msg = format!(
                 "{}: {:?}", "Error deserializing payload data object", e.to_string(),
             );
-            error!("{err_msg}");
+            warn!("{err_msg}");
             (StatusCode::BAD_REQUEST, err_msg).into_response()
         },
     }
@@ -693,7 +705,7 @@ async fn process_signed_delegate_action(
                 da_receiver_id.as_str(),
                 receiver_id.as_str(),
             );
-            info!("{err_msg}");
+            warn!("{err_msg}");
             return Err(RelayError {
                 status_code: StatusCode::BAD_REQUEST,
                 message: err_msg
@@ -703,9 +715,13 @@ async fn process_signed_delegate_action(
     if !is_whitelisted_da_receiver && USE_FASTAUTH_FEATURES.clone() {
         // check if sender id and receiver id are the same AND (AddKey or DeleteKey action)
         let non_delegate_action = signed_delegate_action.delegate_action.actions.get(0).ok_or_else(|| {
+            let err_msg = format!(
+                "DelegateAction must have at least one NonDelegateAction"
+            );
+            warn!("{err_msg}");
             RelayError {
                 status_code: StatusCode::BAD_REQUEST,
-                message: "DelegateAction must have at least one NonDelegateAction".to_string(),
+                message: err_msg,
             }
         })?;
         let contains_key_action = matches!(
@@ -722,7 +738,7 @@ async fn process_signed_delegate_action(
                 da_receiver_id.as_str(),
                 receiver_id.as_str(),
             );
-            info!("{err_msg}");
+            warn!("{err_msg}");
             return Err(RelayError {
                 status_code: StatusCode::BAD_REQUEST,
                 message: err_msg
@@ -743,6 +759,7 @@ async fn process_signed_delegate_action(
             .collect();
         if treasury_payments.is_empty() {
             let err_msg = format!("No treasury payment found in this transaction", );
+            warn!("{err_msg}");
             return Err(RelayError {
                 status_code: StatusCode::BAD_REQUEST,
                 message: err_msg,
@@ -759,7 +776,7 @@ async fn process_signed_delegate_action(
                 "AccountId {} does not have enough remaining gas allowance.",
                 end_user_account.as_str()
             );
-            info!("{err_msg}");
+            error!("{err_msg}");
             return Err(RelayError {
                 status_code: StatusCode::BAD_REQUEST,
                 message: err_msg,
