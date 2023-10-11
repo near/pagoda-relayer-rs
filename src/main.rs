@@ -23,7 +23,7 @@ use near_primitives::delegate_action::{DelegateAction, NonDelegateAction};
 use near_primitives::delegate_action::SignedDelegateAction;
 #[cfg(test)]
 use near_primitives::transaction::TransferAction;
-use near_primitives::transaction::Action;
+use near_primitives::transaction::{Action, FunctionCallAction};
 #[cfg(test)]
 use near_primitives::types::{BlockHeight, Nonce};
 use near_primitives::types::AccountId;
@@ -96,6 +96,9 @@ static SHARED_STORAGE_KEYS_FILENAME: Lazy<String> = Lazy::new(|| {
 static WHITELISTED_CONTRACTS: Lazy<Vec<String>> = Lazy::new(|| {
     LOCAL_CONF.get("whitelisted_contracts").unwrap()
 });
+static USE_WHITELISTED_DELEGATE_ACTION_RECEIVER_IDS: Lazy<bool> = Lazy::new(|| {
+    LOCAL_CONF.get("use_whitelisted_delegate_action_receiver_ids").unwrap_or(false)
+});
 static WHITELISTED_DELEGATE_ACTION_RECEIVER_IDS: Lazy<Vec<String>> = Lazy::new(|| {
     LOCAL_CONF.get("whitelisted_delegate_action_receiver_ids").unwrap()
 });
@@ -109,6 +112,12 @@ static REDIS_POOL: Lazy<Pool<RedisConnectionManager>> = Lazy::new(|| {
 });
 static USE_FASTAUTH_FEATURES: Lazy<bool> = Lazy::new(|| {
     LOCAL_CONF.get("use_fastauth_features").unwrap_or(false)
+});
+static USE_PAY_WITH_FT: Lazy<bool> = Lazy::new(|| {
+   LOCAL_CONF.get("use_pay_with_ft").unwrap_or(false)
+});
+static BURN_ADDRESS: Lazy<String> = Lazy::new(||{
+   LOCAL_CONF.get("burn_address").unwrap()
 });
 static USE_SHARED_STORAGE: Lazy<bool> = Lazy::new(|| {
     LOCAL_CONF.get("use_shared_storage").unwrap_or(false)
@@ -390,7 +399,7 @@ async fn create_account_atomic(
      */
 
     // check if the oauth_token has already been used and is a key in Redis
-    match redis_fns::get_oauth_token_in_redis(&oauth_token).await {
+    match redis_fns::get_oauth_token_in_redis(oauth_token).await {
         Ok(is_oauth_token_in_redis) => {
             if is_oauth_token_in_redis {
                 let err_msg = format!(
@@ -565,7 +574,7 @@ async fn register_account_and_allowance(
     }
     let redis_result = redis_fns::set_account_and_allowance_in_redis(
         account_id,
-        &allowance_in_gas,
+        allowance_in_gas,
     ).await;
 
     let Ok(_) = redis_result else {
@@ -672,6 +681,25 @@ async fn process_signed_delegate_action(
     let is_whitelisted_da_receiver = WHITELISTED_CONTRACTS.iter().any(
         |s| s == da_receiver_id.as_str()
     );
+    // check the sender_id in whitelist if applicable
+    if USE_WHITELISTED_DELEGATE_ACTION_RECEIVER_IDS.clone() && !USE_FASTAUTH_FEATURES.clone() {
+        // check if the delegate action receiver_id (account sender_id) if a whitelisted delegate action receiver
+        let is_whitelisted_sender = WHITELISTED_DELEGATE_ACTION_RECEIVER_IDS.iter().any(
+            |s| s == receiver_id.as_str()
+        );
+        if !is_whitelisted_sender {
+            let err_msg = format!(
+                "Delegate Action receiver_id {} or sender_id {} is not whitelisted",
+                da_receiver_id.as_str(),
+                receiver_id.as_str(),
+            );
+            info!("{err_msg}");
+            return Err(RelayError {
+                status_code: StatusCode::BAD_REQUEST,
+                message: err_msg
+            });
+        }
+    }
     if !is_whitelisted_da_receiver && USE_FASTAUTH_FEATURES.clone() {
         // check if sender id and receiver id are the same AND (AddKey or DeleteKey action)
         let non_delegate_action = signed_delegate_action.delegate_action.actions.get(0).ok_or_else(|| {
@@ -702,6 +730,25 @@ async fn process_signed_delegate_action(
         }
     }
 
+    // Check if the SignedDelegateAction includes a FunctionCallAction that transfers FTs to BURN_ADDRESS
+    if USE_PAY_WITH_FT.clone() {
+        let non_delegate_actions = signed_delegate_action.delegate_action.get_actions();
+        let treasury_payments: Vec<Action> = non_delegate_actions
+            .into_iter()
+            .filter(|x| matches!(
+                x,
+                Action::FunctionCall(FunctionCallAction { args, .. }
+                ) if String::from_utf8_lossy(args).contains(&BURN_ADDRESS.to_string()))
+            )
+            .collect();
+        if treasury_payments.is_empty() {
+            let err_msg = format!("No treasury payment found in this transaction", );
+            return Err(RelayError {
+                status_code: StatusCode::BAD_REQUEST,
+                message: err_msg,
+            });
+        }
+    }
 
     if USE_REDIS.clone() {
         // Check the sender's remaining gas allowance in Redis
@@ -741,7 +788,7 @@ async fn process_signed_delegate_action(
                 error!("{err_msg}");
                 RelayError {
                     status_code: StatusCode::INTERNAL_SERVER_ERROR,
-                    message: err_msg.into(),
+                    message: err_msg,
                 }
             })?;
 
@@ -822,7 +869,7 @@ async fn process_signed_delegate_action(
                 error!("{err_msg}");
                 RelayError {
                     status_code: StatusCode::INTERNAL_SERVER_ERROR,
-                    message: err_msg.into(),
+                    message: err_msg,
                 }
             })?;
 
