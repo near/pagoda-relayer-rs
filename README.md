@@ -16,15 +16,17 @@ The `SignedTransaction` is then sent to the network via RPC call and the result 
 3. As an enterprise or a large startup you want to seamlessly onboard your existing users onto NEAR without needing them to worry about gas costs and seed phrases
 4. As an enterprise or large startup you have a userbase that can generate large spikes of user activity that would congest the network. In this case, the relayer acts as a queue for low urgency transactions  
 5. In exchange for covering the gas fee costs, relayer operators can limit where users spend their assets while allowing users to have custody and ownership of their assets 
+6. Capital Efficiency: Without relayer if your business has 1M users they would have to be allocated 0.25 NEAR to cover their gas costs totalling 250k NEAR. However, only ~10% of the users would actually use the full allowance and a large amount of the 250k NEAR is just sitting there unused. So using the relayer, you can allocate 50k NEAR as a global pool of capital for your users, which can refilled on an as needed basis.
 
 ## Features 
-NOTE: These features can be mixed and matched "à la carte". Use of one feature does not preclude the use of any other feature unless specified.
+NOTE: These features can be mixed and matched "à la carte". Use of one feature does not preclude the use of any other feature unless specified. See the `/examples` directory for example configs corresponding to different use cases.
 1. Cover the gas costs of end users while allowing them to maintain custody of their funds and approve transactions (`/relay`, `/send_meta_tx`)
 2. Only pay for users interacting with certain contracts by whitelisting contracts addresses (`whitelisted_contracts` in `config.toml`) 
 3. Specify gas cost allowances for all accounts (`/update_all_allowances`) or on a per-user account basis (`/create_account_atomic`, `/register_account`, `/update_allowance`) and keep track of allowances (`/get_allowance`)
 4. Specify the accounts for which the relayer will cover gas fees (`whitelisted_delegate_action_receiver_ids` in `config.toml`)
 5. Only allow users to register if they have a unique Oauth Token (`/create_account_atomic`, `/register_account`)
 6. Relayer Key Rotation: `keys_filenames` in `config.toml`
+7. Integrate with [Fastauth SDK](https://docs.near.org/tools/fastauth-sdk). See `/examples/configs/fastauth.toml`
 
 ### Features - COMING SOON
 1. Allow users to pay for gas fees using Fungible Tokens they hold. This can be implemented by either:
@@ -100,7 +102,7 @@ NOTE: this is only needed if you intend to use whitelisting, allowances, and oau
 2. Run `redis-server --bind 127.0.0.1 --port 6379` - make sure the port matches the `redis_url` in the `config.toml`.
 3. Run `redis-cli -h 127.0.0.1 -p 6379`
 
-## Multiple Key Generation - OPTIONAL
+## Multiple Key Generation - OPTIONAL, but recommended for high throughput to prevent nonce race conditions
 1. [Install NEAR CLI](https://docs.near.org/tools/near-cli#installation)
 2. Make sure you're using the appropriate network: `echo $NEAR_ENV`. To change it, `export NEAR_ENV=testnet` 
 3. Make sure your keys you want to use for the relayer have a `'FullAccess'` access_key by running `near keys your_relayer_account.testnet`. This is required to create more keys. You need to have access to at least 1 `'FullAccess'` access_key 

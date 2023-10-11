@@ -1,0 +1,41 @@
+# Basic Whitelist config
+# This is a config for a basic relayer that covers gas for user transactions to interact with a whitelisted set of contracts
+
+# Please note this is for reference only and you should be updating the values in the `config.toml` file found in the `pagoda-relayer-rs` directory.
+
+# ip address to run server on, default to localhost
+ip_address = [0, 0, 0, 0]
+# port to expose
+port = 3030
+# replace with the account id of the public key you will use to sign relay transactions - this should match the account_id in your json file
+relayer_account_id = "nomnomnom.testnet"
+# replace with json files containing 3 entries: account_id (should match relayer_account_id), public_key, private_key
+# this is recommended for high throughput use cases to prevent nonce race conditions
+keys_filenames = ["./account_keys/nomnomnom.testnet.json", "./account_keys/37cb5b936de257d014e663663b186e58e4c3c4c9b4c7643e7b89821e789b0b4b.json", "./account_keys/b278b7752b844a0cc88f8dbdb053b860d6283fb353e7a317b3b82efe01396c3e.json", "./account_keys/d7adc371186bc2013ec5de36be27ed9a36022af1112f7c62530baf6042690f61.json", "./account_keys/df86e9701801e30cf0649b2ea43aeacef60e394e076709d4519880d5a9c7bc9e.json", "./account_keys/e4a6dd159d45d4104679e709d29d49a533e5df9467b311c9dbea7fb8f0077335.json"]
+# whitelisted contract ids (receiver_id)
+whitelisted_contracts = ["nomnomnom.testnet", "relayer_test0.testnet", "relayer_test1.testnet"]
+# if this is set to false, just call /send_meta_tx or /relay endpoints. All other endpoints are coupled with using redis
+# this needs to be set to true if use_fastauth_features = true
+use_redis = false
+
+# set use_fastauth_features to true if you're integrating with fastauth -
+# including check if sender id and receiver id are the same AND (AddKey or DeleteKey action) in process_signed_delegate_action fn
+# and you're using shared storage contract
+use_fastauth_features = false
+# you can still use shared storage without fastauth features if you desire,
+# but needs to be set to true if using fastauth or the contract you're sending transactions to requires a storage deposit
+use_shared_storage = false
+
+# Uncoment the network you want to use or add your own
+
+# mainnet
+# rpc_url = "https://rpc.mainnet.near.org"
+# wallet_url = "https://wallet.mainnet.near.org"
+# explorer_transaction_url = "https://explorer.mainnet.near.org/transactions/"
+# rpc_api_key = ""
+
+# testnet
+rpc_url = "https://archival-rpc.testnet.near.org"
+wallet_url = "https://wallet.testnet.near.org"
+explorer_transaction_url = "https://explorer.testnet.near.org/transactions/"
+rpc_api_key = ""
