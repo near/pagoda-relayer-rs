@@ -1,11 +1,9 @@
-use near_jsonrpc_client::JsonRpcClient;
+use anyhow::Context;
+use near_crypto::InMemorySigner;
 use near_primitives::transaction::{Action, FunctionCallAction};
 use near_primitives::types::{AccountId, Balance, Gas, StorageUsage};
-use serde::de::DeserializeOwned;
 use serde::Deserialize;
 use tracing::debug;
-
-use crate::rpc;
 
 /// Gas for transactions to shared storage pool.
 const MAX_GAS: Gas = 300_000_000_000_000;
@@ -30,21 +28,21 @@ const fn bytes_per_amount(amount: Balance) -> u64 {
 /// that implements the shared storage pool interface. This includes social DB for
 /// near social.
 pub struct SharedStoragePoolManager {
-    keys_filename: &'static str,
-    rpc_client: &'static JsonRpcClient,
+    signer: InMemorySigner,
+    rpc_client: &'static near_fetch::Client,
     pool_contract_id: AccountId,
     pool_owner_id: AccountId,
 }
 
 impl SharedStoragePoolManager {
     pub fn new(
-        keys_filename: &'static str,
-        rpc_client: &'static JsonRpcClient,
+        signer: InMemorySigner,
+        rpc_client: &'static near_fetch::Client,
         pool_contract_id: AccountId,
         pool_owner_id: AccountId,
     ) -> Self {
         Self {
-            keys_filename,
+            signer,
             rpc_client,
             pool_contract_id,
             pool_owner_id,
@@ -92,15 +90,10 @@ impl SharedStoragePoolManager {
             gas: MAX_GAS,
             deposit: STORAGE_UP_DEPOSIT,
         })];
-        rpc::send_tx(
-            self.rpc_client,
-            self.keys_filename,
-            &self.pool_owner_id,
-            &self.pool_contract_id,
-            actions,
-            "shared_storage_pool_deposit",
-        )
-        .await?;
+        self.rpc_client
+            .send_tx(&self.signer, &self.pool_contract_id, actions)
+            .await
+            .context("failed to send transaction for shared_storage_pool_deposit")?;
         Ok(())
     }
 
@@ -116,45 +109,38 @@ impl SharedStoragePoolManager {
             gas: MAX_GAS,
             deposit: 0,
         })];
-        rpc::send_tx(
-            self.rpc_client,
-            self.keys_filename,
-            &self.pool_owner_id,
-            &self.pool_contract_id,
-            actions,
-            "share_storage",
-        )
-        .await?;
+        self.rpc_client
+            .send_tx(&self.signer, &self.pool_contract_id, actions)
+            .await
+            .context("failed to send transaction for share_storage")?;
         Ok(())
     }
 
     #[allow(dead_code)]
     async fn get_account_storage(&self) -> anyhow::Result<Option<StorageView>> {
-        self.view(
-            "get_account_storage",
-            serde_json::json!({
-                "account_id": self.pool_owner_id.clone(),
-            }),
-        )
-        .await
+        self.rpc_client
+            .view(
+                &self.pool_contract_id,
+                "get_account_storage",
+                serde_json::json!({
+                    "account_id": self.pool_owner_id.clone(),
+                }),
+            )
+            .await
+            .map_err(Into::into)
     }
 
     async fn get_shared_storage_pool(&self) -> anyhow::Result<Option<SharedStoragePool>> {
-        self.view(
-            "get_shared_storage_pool",
-            serde_json::json!({
-                "owner_id": self.pool_owner_id.clone(),
-            }),
-        )
-        .await
-    }
-
-    async fn view<T: DeserializeOwned>(
-        &self,
-        method_name: &str,
-        args: serde_json::Value,
-    ) -> anyhow::Result<T> {
-        rpc::view(self.rpc_client, &self.pool_contract_id, method_name, args).await
+        self.rpc_client
+            .view(
+                &self.pool_contract_id,
+                "get_shared_storage_pool",
+                serde_json::json!({
+                    "owner_id": self.pool_owner_id.clone(),
+                }),
+            )
+            .await
+            .map_err(Into::into)
     }
 }
 

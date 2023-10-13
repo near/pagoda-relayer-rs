@@ -1,8 +1,6 @@
 mod error;
 mod rpc_conf;
 mod shared_storage;
-mod signing;
-mod rpc;
 mod redis_fns;
 
 use axum::{
@@ -13,8 +11,10 @@ use axum::{
     routing::{get, post}
 };
 use config::{Config, File};
+use near_crypto::InMemorySigner;
 #[cfg(test)]
 use near_crypto::{KeyType, PublicKey, Signature};
+use near_fetch::signer::KeyRotatingSigner;
 #[cfg(test)]
 use near_primitives::borsh::BorshSerialize;
 use near_primitives::borsh::BorshDeserialize;
@@ -32,12 +32,11 @@ use r2d2::Pool;
 use r2d2_redis::RedisConnectionManager;
 use serde::Deserialize;
 use serde_json::json;
-use std::fmt;
+use std::{fmt, path::Path};
 use std::fmt::{Debug, Display, Formatter};
 use std::net::SocketAddr;
 use std::str::FromStr;
 use std::string::ToString;
-use std::sync::{Arc, Mutex};
 #[cfg(test)]
 use axum::body::{BoxBody, HttpBody};
 #[cfg(test)]
@@ -69,14 +68,14 @@ static LOCAL_CONF: Lazy<Config> = Lazy::new(|| {
         .unwrap()
 });
 static NETWORK_ENV: Lazy<String> = Lazy::new(|| { LOCAL_CONF.get("network").unwrap() });
-static JSON_RPC_CLIENT: Lazy<near_jsonrpc_client::JsonRpcClient> = Lazy::new(|| {
+static RPC_CLIENT: Lazy<near_fetch::Client> = Lazy::new(|| {
     let network_config = NetworkConfig {
         rpc_url: LOCAL_CONF.get("rpc_url").unwrap(),
         rpc_api_key: LOCAL_CONF.get("rpc_api_key").unwrap(),
         wallet_url: LOCAL_CONF.get("wallet_url").unwrap(),
         explorer_transaction_url: LOCAL_CONF.get("explorer_transaction_url").unwrap(),
     };
-    network_config.json_rpc_client()
+    network_config.rpc_client()
 });
 static IP_ADDRESS: Lazy<[u8; 4]> = Lazy::new(|| { LOCAL_CONF.get("ip_address").unwrap() });
 static PORT: Lazy<u16> = Lazy::new(|| { LOCAL_CONF.get("port").unwrap() });
@@ -86,9 +85,13 @@ static RELAYER_ACCOUNT_ID: Lazy<String> = Lazy::new(|| {
 static SHARED_STORAGE_ACCOUNT_ID: Lazy<String> = Lazy::new(|| {
     LOCAL_CONF.get("shared_storage_account_id").unwrap()
 });
-static KEYS_FILENAMES: Lazy<Vec<String>> = Lazy::new(|| {
-    LOCAL_CONF.get::<Vec<String>>("keys_filenames")
-        .expect("Failed to read 'keys_filenames' from config")
+static SIGNER: Lazy<KeyRotatingSigner> = Lazy::new(|| {
+    let paths = LOCAL_CONF.get::<Vec<String>>("keys_filenames")
+        .expect("Failed to read 'keys_filenames' from config");
+    KeyRotatingSigner::from_signers(paths.iter().map(|path| {
+        InMemorySigner::from_file(Path::new(path))
+            .unwrap_or_else(|err| panic!("failed to read signing keys from {path}: {err:?}"))
+    }))
 });
 static SHARED_STORAGE_KEYS_FILENAME: Lazy<String> = Lazy::new(|| {
     LOCAL_CONF.get("shared_storage_keys_filename").unwrap()
@@ -124,36 +127,14 @@ static USE_SHARED_STORAGE: Lazy<bool> = Lazy::new(|| {
 });
 static SHARED_STORAGE_POOL: Lazy<SharedStoragePoolManager> = Lazy::new(|| {
     let social_db_id: String = LOCAL_CONF.get("social_db_contract_id").unwrap();
-
+    let signer = InMemorySigner::from_file(Path::new(SHARED_STORAGE_KEYS_FILENAME.as_str()))
+        .unwrap_or_else(|err| panic!("failed to get signing keys={SHARED_STORAGE_KEYS_FILENAME:?}: {err:?}"));
     SharedStoragePoolManager::new(
-        &SHARED_STORAGE_KEYS_FILENAME,
-        &JSON_RPC_CLIENT,
+        signer,
+        &RPC_CLIENT,
         social_db_id.parse().unwrap(),
         SHARED_STORAGE_ACCOUNT_ID.parse().unwrap(),
     )
-});
-struct IndexCounter {
-    idx: usize,
-    max_idx: usize,
-}
-// thread safe mutable index counter for round robin key usage
-impl IndexCounter {
-    fn new(max_idx: usize) -> IndexCounter {
-        IndexCounter { idx: 0, max_idx }
-    }
-    fn get_and_increment(&mut self) -> usize {
-        let cur = self.idx.clone();
-        self.idx += 1;
-        if self.idx >= self.max_idx {
-            self.idx = 0;
-        }
-        cur
-    }
-}
-static IDX_COUNTER: Lazy<Arc<Mutex<IndexCounter>>> = Lazy::new(|| {
-    let max_idx: usize = KEYS_FILENAMES.len();
-    let idx_counter: IndexCounter = IndexCounter::new(max_idx);
-    Arc::new(Mutex::new(idx_counter))
 });
 
 #[derive(Clone, Debug, Deserialize, ToSchema)]
@@ -767,24 +748,10 @@ async fn process_signed_delegate_action(
         }
 
         let actions = vec![Action::Delegate(signed_delegate_action)];
-        // round robin usage of keys to prevent nonce race condition
-        let tmp_str = "".to_string();
-        let mut keys_filename: &String = &tmp_str;
-        {
-            let idx: usize = IDX_COUNTER.lock().unwrap().get_and_increment();
-            keys_filename = &KEYS_FILENAMES[idx];
-        }  // lock is released when it goes out of scope here
-        let execution = rpc::send_tx(
-            &JSON_RPC_CLIENT,
-            keys_filename,
-            &signer_account_id,
-            &receiver_id,
-            actions,
-            "delegate_action",
-        )
+        let execution = RPC_CLIENT.send_tx(&*SIGNER, &receiver_id, actions)
             .await
-            .map_err(|_err| {
-                let err_msg: String = format!("Error signing transaction: {:?}", _err.to_string());
+            .map_err(|err| {
+                let err_msg = format!("Error signing transaction: {err:?}");
                 error!("{err_msg}");
                 RelayError {
                     status_code: StatusCode::INTERNAL_SERVER_ERROR,
@@ -848,24 +815,10 @@ async fn process_signed_delegate_action(
 
     } else {
         let actions = vec![Action::Delegate(signed_delegate_action)];
-        // round robin usage of keys to prevent nonce race condition
-        let tmp_str = "".to_string();
-        let mut keys_filename: &String = &tmp_str;
-        {
-            let idx: usize = IDX_COUNTER.lock().unwrap().get_and_increment();
-            keys_filename = &KEYS_FILENAMES[idx];
-        }  // lock is released when it goes out of scope here
-        let execution = rpc::send_tx(
-            &JSON_RPC_CLIENT,
-            keys_filename,
-            &signer_account_id,
-            &receiver_id,
-            actions,
-            "delegate_action",
-        )
+        let execution = RPC_CLIENT.send_tx(&*SIGNER, &receiver_id, actions)
             .await
-            .map_err(|_err| {
-                let err_msg: String = format!("Error signing transaction: {:?}", _err.to_string());
+            .map_err(|err| {
+                let err_msg = format!("Error signing transaction: {err:?}");
                 error!("{err_msg}");
                 RelayError {
                     status_code: StatusCode::INTERNAL_SERVER_ERROR,
