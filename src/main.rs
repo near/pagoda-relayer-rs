@@ -287,7 +287,7 @@ async fn main() {
         .route("/get_allowance", get(get_allowance))
         .route("/update_allowance", post(update_allowance))
         .route("/update_all_allowances", post(update_all_allowances))
-        .route("/register_account_and_allowance", post(register_account_and_allowance))
+        .route("/register_account", post(register_account_and_allowance))
         // See https://docs.rs/tower-http/0.1.1/tower_http/trace/index.html for more details.
         .layer(TraceLayer::new_for_http())
         .layer(cors_layer);
