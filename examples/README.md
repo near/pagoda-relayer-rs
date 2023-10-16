@@ -19,3 +19,6 @@ Please note that these are for reference only and you should be updating the val
   - This is a config for a relayer that ensures there's FTs sent to a burn address used to cover the equivalent amount of gas for user transactions to interact with a whitelisted set of contracts 
 - `whitelist_senders.toml` (whitelisted_delegate_action_receiver_ids)
   - This is a config for a relayer that covers gas for a whitelisted set of users' transactions to interact with a whitelisted set of contracts
+- `shared_storage.toml`
+  - This is a config for a relayer that covers BOTH gas AND storage fees for user transactions to interact with a whitelisted set of contracts
+  - be sure to include shared storage logic based on https://github.com/NearSocial/social-db/blob/master/contract/src/shared_storage.rs in your contract that is being whitelisted

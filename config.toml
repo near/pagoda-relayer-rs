@@ -37,6 +37,7 @@ use_fastauth_features = false
 # you can still use shared storage without fastauth features if you desire,
 # but needs to be set to true if using fastauth or the contract you're sending transactions to requires a storage deposit
 use_shared_storage = false
+# reference shared storage contract: https://github.com/NearSocial/social-db/blob/master/contract/src/shared_storage.rs
 social_db_contract_id = "v1.social08.testnet"
 
 # Uncoment the network you want to use or add your own

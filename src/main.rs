@@ -230,6 +230,8 @@ async fn main() {
             error!("{err_msg}");
             tracing::error!(err_msg);
             return;
+        } else {
+            info!("shared storage pool initialized")
         }
     }
 
