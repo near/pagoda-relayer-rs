@@ -11,11 +11,11 @@ relayer_account_id = "nomnomnom.testnet"   # "relayer.pagodaplatform.near"
 # this is recommended for high throughput use cases to prevent nonce race conditions
 keys_filenames = [
     "./account_keys/nomnomnom.testnet.json",
-    "./account_keys/50407f1203d1cc7eeaa3826838cf0aa77f5c5c656ae0d13d8c8ec6527681aee8.json",
-    "./account_keys/63554bb688a12342ba3bed2a586582ea41fcf028be0d5e10be0b86c8bcef123f.json",
-    "./account_keys/d298bea0d340a103aa9a33920443b6e4ece2788242dfe9425418921a5dba0a9a.json",
-    "./account_keys/d90313b513bd5470ca44205e486f38497c358e800a1a48445e4d2cc096ab163e.json",
-] # "relayer.pagodaplatform.json"
+    "./account_keys/e4a6dd159d45d4104679e709d29d49a533e5df9467b311c9dbea7fb8f0077335.json",
+    "./account_keys/df86e9701801e30cf0649b2ea43aeacef60e394e076709d4519880d5a9c7bc9e.json",
+    "./account_keys/37cb5b936de257d014e663663b186e58e4c3c4c9b4c7643e7b89821e789b0b4b.json",
+    "./account_keys/b278b7752b844a0cc88f8dbdb053b860d6283fb353e7a317b3b82efe01396c3e.json",
+]
 # replace with the account id of the public key you will use to sign shared_storage transactions - this should match the account_id in your json file
 shared_storage_account_id = "relayer-test.testnet"  # "social-storage.pagodaplatform.near"
 # replace with json file containing 3 entries: account_id (should match shared_storage_account_id), public_key, private_key
