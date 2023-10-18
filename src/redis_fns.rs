@@ -1,29 +1,8 @@
-use tracing::log::error;
-use axum::http::StatusCode;
-use tracing::{debug, info};
+use tracing::debug;
 use near_primitives::types::AccountId;
 use near_primitives::views::ExecutionOutcomeWithIdView;
-use r2d2::PooledConnection;
-use r2d2_redis::RedisConnectionManager;
-use r2d2_redis::redis::{Commands, ErrorKind::IoError, RedisError};
-use crate::error::RelayError;
-use crate::{NETWORK_ENV, REDIS_POOL, YN_TO_GAS};
-
-pub async fn get_redis_cnxn() -> Result<PooledConnection<RedisConnectionManager>, RedisError> {
-    let conn_result = REDIS_POOL.get();
-    let conn: PooledConnection<RedisConnectionManager> = match conn_result {
-        Ok(conn) => conn,
-        Err(e) => {
-            let err_msg = format!("Error getting Relayer DB connection from the pool");
-            error!("{err_msg}");
-            return Err(RedisError::from((IoError,
-                "Error getting Relayer DB connection from the pool",
-                e.to_string(),
-            )));
-        }
-    };
-    Ok(conn)
-}
+use r2d2_redis::redis::{Commands, RedisError};
+use crate::{get_redis_cnxn, YN_TO_GAS};
 
 pub async fn set_account_and_allowance_in_redis(
     account_id: &str,
@@ -59,61 +38,6 @@ pub async fn set_oauth_token_in_redis(
     // Save the allowance information to Relayer DB
     conn.set(&oauth_token, true)?;
     Ok(())
-}
-
-pub async fn update_all_allowances_in_redis(allowance_in_gas: u64) -> Result<String, RelayError> {
-    // Get a connection to Redis from the pool
-    let mut redis_conn = match get_redis_cnxn().await {
-        Ok(conn) => conn,
-        Err(e) => {
-            let err_msg = format!("Error getting Relayer DB connection from the pool: {}", e);
-            error!("{err_msg}");
-            return Err(RelayError {
-                status_code: StatusCode::INTERNAL_SERVER_ERROR,
-                message: err_msg
-            });
-        }
-    };
-
-    // Fetch all keys that match the network env (.near for mainnet, .testnet for testnet, etc)
-    let network: String = if NETWORK_ENV.clone() != "mainnet" {
-        NETWORK_ENV.clone()
-    } else {
-        "near".to_string()
-    };
-    let pattern = format!("*.{}", network);
-    let keys: Vec<String> = match redis_conn.keys(pattern) {
-        Ok(keys) => keys,
-        Err(e) => {
-            let err_msg = format!("Error fetching keys from Relayer DB: {}", e);
-            error!("{err_msg}");
-            return Err(RelayError {
-                status_code: StatusCode::INTERNAL_SERVER_ERROR,
-                message: err_msg
-            });
-        }
-    };
-
-    // Iterate through the keys and update their values to the provided allowance in gas
-    for key in &keys {
-        match redis_conn.set::<_, _, ()>(key, allowance_in_gas.to_string()) {
-            Ok(_) => info!("Updated allowance for key {}", key),
-            Err(e) => {
-                let err_msg = format!("Error updating allowance for key {}: {}", key, e);
-                error!("{err_msg}");
-                return Err(RelayError {
-                    status_code: StatusCode::INTERNAL_SERVER_ERROR,
-                    message: err_msg
-                });
-            }
-        }
-    }
-
-    // Return a success response
-    let num_keys = keys.len();
-    let success_msg: String = format!("Updated {num_keys:?} keys in Relayer DB");
-    info!("{success_msg}");
-    Ok(success_msg)
 }
 
 pub async fn get_remaining_allowance(

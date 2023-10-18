@@ -28,7 +28,8 @@ use near_primitives::transaction::{Action, FunctionCallAction};
 use near_primitives::types::{BlockHeight, Nonce};
 use near_primitives::types::AccountId;
 use once_cell::sync::Lazy;
-use r2d2::Pool;
+use r2d2::{Pool, PooledConnection};
+use r2d2_redis::redis::{Commands, ErrorKind::IoError, RedisError};
 use r2d2_redis::RedisConnectionManager;
 use serde::Deserialize;
 use serde_json::json;
@@ -230,6 +231,8 @@ async fn main() {
             error!("{err_msg}");
             tracing::error!(err_msg);
             return;
+        } else {
+            info!("shared storage pool initialized")
         }
     }
 
@@ -516,7 +519,7 @@ async fn update_all_allowances(
     Json(allowance_json): Json<AllowanceJson>,
 ) -> impl IntoResponse {
     let allowance_in_gas = allowance_json.allowance_in_gas;
-    let redis_response = redis_fns::update_all_allowances_in_redis(allowance_in_gas).await;
+    let redis_response = update_all_allowances_in_redis(allowance_in_gas).await;
     match redis_response {
         Ok(response) => response.into_response(),
         Err(err) => (err.status_code, err.message).into_response(),
@@ -874,6 +877,78 @@ async fn process_signed_delegate_action(
             }
         }
     }
+}
+
+pub async fn get_redis_cnxn() -> Result<PooledConnection<RedisConnectionManager>, RedisError> {
+    let conn_result = REDIS_POOL.get();
+    let conn: PooledConnection<RedisConnectionManager> = match conn_result {
+        Ok(conn) => conn,
+        Err(e) => {
+            let err_msg = format!("Error getting Relayer DB connection from the pool");
+            error!("{err_msg}");
+            return Err(RedisError::from((
+                IoError,
+                "Error getting Relayer DB connection from the pool",
+                e.to_string(),
+            )));
+        }
+    };
+    Ok(conn)
+}
+
+pub async fn update_all_allowances_in_redis(allowance_in_gas: u64) -> Result<String, RelayError> {
+    // Get a connection to Redis from the pool
+    let mut redis_conn = match get_redis_cnxn().await {
+        Ok(conn) => conn,
+        Err(e) => {
+            let err_msg = format!("Error getting Relayer DB connection from the pool: {}", e);
+            error!("{err_msg}");
+            return Err(RelayError {
+                status_code: StatusCode::INTERNAL_SERVER_ERROR,
+                message: err_msg
+            });
+        }
+    };
+
+    // Fetch all keys that match the network env (.near for mainnet, .testnet for testnet, etc)
+    let network: String = if NETWORK_ENV.clone() != "mainnet" {
+        NETWORK_ENV.clone()
+    } else {
+        "near".to_string()
+    };
+    let pattern = format!("*.{}", network);
+    let keys: Vec<String> = match redis_conn.keys(pattern) {
+        Ok(keys) => keys,
+        Err(e) => {
+            let err_msg = format!("Error fetching keys from Relayer DB: {}", e);
+            error!("{err_msg}");
+            return Err(RelayError {
+                status_code: StatusCode::INTERNAL_SERVER_ERROR,
+                message: err_msg
+            });
+        }
+    };
+
+    // Iterate through the keys and update their values to the provided allowance in gas
+    for key in &keys {
+        match redis_conn.set::<_, _, ()>(key, allowance_in_gas.to_string()) {
+            Ok(_) => info!("Updated allowance for key {}", key),
+            Err(e) => {
+                let err_msg = format!("Error updating allowance for key {}: {}", key, e);
+                error!("{err_msg}");
+                return Err(RelayError {
+                    status_code: StatusCode::INTERNAL_SERVER_ERROR,
+                    message: err_msg
+                });
+            }
+        }
+    }
+
+    // Return a success response
+    let num_keys = keys.len();
+    let success_msg: String = format!("Updated {num_keys:?} keys in Relayer DB");
+    info!("{success_msg}");
+    Ok(success_msg)
 }
 
 /**
