@@ -10,6 +10,8 @@ use axum::{
     Router,
     routing::{get, post}
 };
+#[cfg(test)]
+use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD as BASE64_ENGINE};
 use config::{Config, File};
 use near_crypto::InMemorySigner;
 #[cfg(test)]
@@ -32,7 +34,7 @@ use r2d2::{Pool, PooledConnection};
 use r2d2_redis::redis::{Commands, ErrorKind::IoError, RedisError};
 use r2d2_redis::RedisConnectionManager;
 use serde::Deserialize;
-use serde_json::json;
+use serde_json::{json, Value};
 use std::{fmt, path::Path};
 use std::fmt::{Debug, Display, Formatter};
 use std::net::SocketAddr;
@@ -137,6 +139,20 @@ static SHARED_STORAGE_POOL: Lazy<SharedStoragePoolManager> = Lazy::new(|| {
         SHARED_STORAGE_ACCOUNT_ID.parse().unwrap(),
     )
 });
+// static BASE64_ENGINE: Lazy<engine::GeneralPurpose> = Lazy::new(|| {
+//     // custom json base64 alphabet that only supports lowercase letters
+//     let alphabet =
+//         alphabet::Alphabet::new("abcdefghijklmnopqrstuvwxyz0123456789+-*/(){}[]:,")
+//             .unwrap();
+//
+//     // config that encodes with no padding or trailing bits
+//     let no_padding_config = engine::GeneralPurposeConfig::new()
+//         .with_decode_allow_trailing_bits(false)
+//         .with_encode_padding(false);
+//
+//     // return the custom engine
+//     engine::GeneralPurpose::new(&alphabet, no_padding_config)
+// });
 
 #[derive(Clone, Debug, Deserialize, ToSchema)]
 struct AccountIdAllowanceOauthSDAJson {
@@ -734,12 +750,37 @@ async fn process_signed_delegate_action(
     if USE_PAY_WITH_FT.clone() {
         let non_delegate_actions = signed_delegate_action.delegate_action.get_actions();
         let treasury_payments: Vec<Action> = non_delegate_actions
-            .into_iter()
-            .filter(|x| matches!(
-                x,
-                Action::FunctionCall(FunctionCallAction { args, .. }
-                ) if String::from_utf8_lossy(args).contains(&BURN_ADDRESS.to_string()))
-            )
+            .iter()
+            .filter_map(|action| {
+                if let Action::FunctionCall(FunctionCallAction { args, .. }) = action {
+                    debug!("args: {:?}", args);
+
+                    // convert to ascii lowercase
+                    let args_ascii = args.to_ascii_lowercase();
+                    debug!("args_ascii: {:?}", args_ascii);
+
+                    // Convert to UTF-8 string
+                    let args_str = String::from_utf8_lossy(&args_ascii);
+                    debug!("args_str: {:?}", args_str);
+
+                    // Parse to JSON (assuming args are serialized as JSON)
+                    let args_json: Value = serde_json::from_str(&args_str).expect("Failed to parse JSON");
+                    debug!("args_json: {:?}", args_json);
+
+                    // get the receiver_id from the json without the escape chars
+                    let receiver_id = args_json["receiver_id"].as_str().unwrap_or_default();
+                    debug!("receiver_id: {receiver_id}");
+                    debug!("BURN_ADDRESS.to_string(): {:?}", BURN_ADDRESS.to_string());
+
+                    // Check if receiver_id in args contain BURN_ADDRESS
+                    if receiver_id == BURN_ADDRESS.to_string() {
+                        debug!("SignedDelegateAction contains the BURN_ADDRESS MATCH");
+                        return Some(action.clone());
+                    }
+
+                }
+                None
+            })
             .collect();
         if treasury_payments.is_empty() {
             let err_msg = format!("No treasury payment found in this transaction", );
@@ -989,6 +1030,22 @@ async fn read_body_to_string(mut body: BoxBody) -> Result<String, Box<dyn std::e
         bytes.extend_from_slice(&chunk?);
     }
     Ok(String::from_utf8(bytes.to_vec())?)
+}
+
+#[tokio::test]
+async fn test_base64_encode_args() {
+    // NOTE this is how you encode the "args" in a function call
+    // replace with your own "args" to base64 encode
+    let ft_transfer_args_json = json!(
+        {"receiver_id":"guest-book.testnet","amount":"10"}
+    );
+    let add_message_args_json = json!(
+        {"text":"funny_joke"}
+    );
+    let ft_transfer_args_b64 = BASE64_ENGINE.encode(ft_transfer_args_json.to_string());
+    let add_message_args_b64 = BASE64_ENGINE.encode(add_message_args_json.to_string());
+    println!("ft_transfer_args_b64: {ft_transfer_args_b64}");
+    println!("add_message_args_b64: {add_message_args_b64}");
 }
 
 #[tokio::test]
