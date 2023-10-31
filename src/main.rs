@@ -223,6 +223,30 @@ impl Display for AllowanceJson {
     }
 }
 
+async fn init_senders_infinite_allowance_fastauth() {
+    let max_allowance = u64::MAX;
+    for whitelisted_sender in WHITELISTED_DELEGATE_ACTION_RECEIVER_IDS.clone() {
+        let redis_result =
+            set_account_and_allowance_in_redis(&whitelisted_sender, &max_allowance).await;
+        if redis_result.is_err() {
+            let err_msg = format!(
+                "Error setting allowance for account_id {} with allowance {} in Relayer DB: {:?}",
+                whitelisted_sender.clone().as_str(),
+                max_allowance,
+                redis_result.err().unwrap(),
+            );
+            error!("{err_msg}");
+        } else {
+            let info_msg = format!(
+                "Set allowance for account_id {} with allowance {} in Relayer DB",
+                whitelisted_sender.clone().as_str(),
+                max_allowance,
+            );
+            info!("{info_msg}");
+        }
+    }
+}
+
 #[tokio::main]
 async fn main() {
     // initialize tracing (aka logging)
@@ -284,27 +308,7 @@ async fn main() {
 
     // if fastauth enabled, initialize whitelisted senders with "infinite" allowance in relayer DB
     if *USE_FASTAUTH_FEATURES {
-        let max_allowance = u64::MAX;
-        for whitelisted_sender in WHITELISTED_DELEGATE_ACTION_RECEIVER_IDS.clone() {
-            let redis_result =
-                set_account_and_allowance_in_redis(&whitelisted_sender, &max_allowance).await;
-            if redis_result.is_err() {
-                let err_msg = format!(
-                    "Error setting allowance for account_id {} with allowance {} in Relayer DB: {:?}",
-                    whitelisted_sender.clone().as_str(),
-                    max_allowance,
-                    redis_result.err().unwrap(),
-                );
-                error!("{err_msg}");
-            } else {
-                let info_msg = format!(
-                    "Set allowance for account_id {} with allowance {} in Relayer DB",
-                    whitelisted_sender.clone().as_str(),
-                    max_allowance,
-                );
-                info!("{info_msg}");
-            }
-        }
+        init_senders_infinite_allowance_fastauth().await;
     }
 
     // build our application with a route
