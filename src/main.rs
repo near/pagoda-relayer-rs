@@ -55,6 +55,7 @@ use utoipa_rapidoc::RapiDoc;
 use utoipa_swagger_ui::SwaggerUi;
 
 use crate::error::RelayError;
+use crate::redis_fns::set_account_and_allowance_in_redis;
 use crate::rpc_conf::NetworkConfig;
 use crate::shared_storage::SharedStoragePoolManager;
 
@@ -280,6 +281,31 @@ async fn main() {
         )),
     )]
     struct ApiDoc;
+
+    // if fastauth enabled, initialize whitelisted senders with "infinite" allowance in relayer DB
+    if *USE_FASTAUTH_FEATURES {
+        let max_allowance = u64::MAX;
+        for whitelisted_sender in WHITELISTED_DELEGATE_ACTION_RECEIVER_IDS.clone() {
+            let redis_result =
+                set_account_and_allowance_in_redis(&whitelisted_sender, &max_allowance).await;
+            if redis_result.is_err() {
+                let err_msg = format!(
+                    "Error setting allowance for account_id {} with allowance {} in Relayer DB: {:?}",
+                    whitelisted_sender.clone().as_str(),
+                    max_allowance,
+                    redis_result.err().unwrap(),
+                );
+                error!("{err_msg}");
+            } else {
+                let info_msg = format!(
+                    "Set allowance for account_id {} with allowance {} in Relayer DB",
+                    whitelisted_sender.clone().as_str(),
+                    max_allowance,
+                );
+                info!("{info_msg}");
+            }
+        }
+    }
 
     // build our application with a route
     let app = Router::new()
