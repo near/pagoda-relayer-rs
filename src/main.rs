@@ -55,7 +55,10 @@ use utoipa_rapidoc::RapiDoc;
 use utoipa_swagger_ui::SwaggerUi;
 
 use crate::error::RelayError;
-use crate::redis_fns::set_account_and_allowance_in_redis;
+use crate::redis_fns::{
+    calculate_total_gas_burned, get_oauth_token_in_redis, get_remaining_allowance,
+    set_account_and_allowance_in_redis, set_oauth_token_in_redis, update_remaining_allowance,
+};
 use crate::rpc_conf::NetworkConfig;
 use crate::shared_storage::SharedStoragePoolManager;
 
@@ -119,7 +122,7 @@ static USE_FASTAUTH_FEATURES: Lazy<bool> =
     Lazy::new(|| LOCAL_CONF.get("use_fastauth_features").unwrap_or(false));
 static USE_PAY_WITH_FT: Lazy<bool> =
     Lazy::new(|| LOCAL_CONF.get("use_pay_with_ft").unwrap_or(false));
-static BURN_ADDRESS: Lazy<String> = Lazy::new(|| LOCAL_CONF.get("burn_address").unwrap());
+static BURN_ADDRESS: Lazy<AccountId> = Lazy::new(|| LOCAL_CONF.get("burn_address").unwrap());
 static USE_SHARED_STORAGE: Lazy<bool> =
     Lazy::new(|| LOCAL_CONF.get("use_shared_storage").unwrap_or(false));
 static SHARED_STORAGE_POOL: Lazy<SharedStoragePoolManager> = Lazy::new(|| {
@@ -228,21 +231,17 @@ async fn init_senders_infinite_allowance_fastauth() {
     for whitelisted_sender in WHITELISTED_DELEGATE_ACTION_RECEIVER_IDS.clone() {
         let redis_result =
             set_account_and_allowance_in_redis(&whitelisted_sender, &max_allowance).await;
-        if redis_result.is_err() {
-            let err_msg = format!(
+        if let Err(err) = redis_result {
+            error!(
                 "Error setting allowance for account_id {} with allowance {} in Relayer DB: {:?}",
-                whitelisted_sender.clone().as_str(),
-                max_allowance,
-                redis_result.err().unwrap(),
+                whitelisted_sender, max_allowance, err,
             );
-            error!("{err_msg}");
         } else {
-            let info_msg = format!(
+            info!(
                 "Set allowance for account_id {} with allowance {} in Relayer DB",
                 whitelisted_sender.clone().as_str(),
                 max_allowance,
             );
-            info!("{info_msg}");
         }
     }
 }
@@ -360,7 +359,7 @@ async fn get_allowance(account_id_json: Json<AccountIdJson>) -> impl IntoRespons
         )
             .into_response();
     };
-    match redis_fns::get_remaining_allowance(&account_id_val).await {
+    match get_remaining_allowance(&account_id_val).await {
         Ok(allowance) => (
             StatusCode::OK,
             allowance.to_string(), // TODO: LP return in json format
@@ -372,8 +371,7 @@ async fn get_allowance(account_id_json: Json<AccountIdJson>) -> impl IntoRespons
         Err(err) => {
             let err_msg = format!(
                 "Error getting allowance for account_id {} in Relayer DB: {:?}",
-                account_id_val.clone().as_str(),
-                err
+                account_id_val, err
             );
             error!("{err_msg}");
             (StatusCode::INTERNAL_SERVER_ERROR, err_msg).into_response()
@@ -426,7 +424,7 @@ async fn create_account_atomic(
     */
 
     // check if the oauth_token has already been used and is a key in Redis
-    match redis_fns::get_oauth_token_in_redis(oauth_token).await {
+    match get_oauth_token_in_redis(oauth_token).await {
         Ok(is_oauth_token_in_redis) => {
             if is_oauth_token_in_redis {
                 let err_msg = format!(
@@ -445,8 +443,7 @@ async fn create_account_atomic(
             return (StatusCode::INTERNAL_SERVER_ERROR, err_msg).into_response();
         }
     }
-    let redis_result =
-        redis_fns::set_account_and_allowance_in_redis(account_id, allowance_in_gas).await;
+    let redis_result = set_account_and_allowance_in_redis(account_id, allowance_in_gas).await;
 
     let Ok(_) = redis_result else {
         let err_msg = format!(
@@ -486,7 +483,7 @@ async fn create_account_atomic(
     }
 
     // add oauth token to redis (key: oauth_token, val: true)
-    match redis_fns::set_oauth_token_in_redis(oauth_token.clone()).await {
+    match set_oauth_token_in_redis(oauth_token.clone()).await {
         Ok(_) => {
             let ok_msg = format!(
                 "Added Oauth token {oauth_token:?} for account_id {account_id:?} \
@@ -519,8 +516,7 @@ async fn update_allowance(account_id_allowance: Json<AccountIdAllowanceJson>) ->
     let account_id: &String = &account_id_allowance.account_id;
     let allowance_in_gas: &u64 = &account_id_allowance.allowance;
 
-    let redis_result =
-        redis_fns::set_account_and_allowance_in_redis(account_id, allowance_in_gas).await;
+    let redis_result = set_account_and_allowance_in_redis(account_id, allowance_in_gas).await;
 
     let Ok(_) = redis_result else {
         let err_msg = format!(
@@ -570,7 +566,7 @@ async fn register_account_and_allowance(
     let allowance_in_gas: &u64 = &account_id_allowance_oauth.allowance;
     let oauth_token: &String = &account_id_allowance_oauth.oauth_token;
     // check if the oauth_token has already been used and is a key in Relayer DB
-    match redis_fns::get_oauth_token_in_redis(oauth_token).await {
+    match get_oauth_token_in_redis(oauth_token).await {
         Ok(is_oauth_token_in_redis) => {
             if is_oauth_token_in_redis {
                 let err_msg = format!(
@@ -590,8 +586,7 @@ async fn register_account_and_allowance(
             return (StatusCode::INTERNAL_SERVER_ERROR, err_msg).into_response();
         }
     }
-    let redis_result =
-        redis_fns::set_account_and_allowance_in_redis(account_id, allowance_in_gas).await;
+    let redis_result = set_account_and_allowance_in_redis(account_id, allowance_in_gas).await;
 
     let Ok(_) = redis_result else {
         let err_msg = format!(
@@ -616,7 +611,7 @@ async fn register_account_and_allowance(
     }
 
     // add oauth token to redis (key: oauth_token, val: true)
-    match redis_fns::set_oauth_token_in_redis(oauth_token.clone()).await {
+    match set_oauth_token_in_redis(oauth_token.clone()).await {
         Ok(_) => {
             let ok_msg = format!("Added Oauth token {account_id_allowance_oauth:?} to Relayer DB");
             info!("{ok_msg}");
@@ -776,8 +771,11 @@ async fn process_signed_delegate_action(
                     debug!("args_str: {:?}", args_str);
 
                     // Parse to JSON (assuming args are serialized as JSON)
-                    let args_json: Value =
-                        serde_json::from_str(&args_str).expect("Failed to parse JSON");
+                    let args_json: Value = serde_json::from_str(&args_str).unwrap_or_else(|err| {
+                        error!("Failed to parse JSON: {}", err);
+                        // Provide a default Value
+                        Value::Null
+                    });
                     debug!("args_json: {:?}", args_json);
 
                     // get the receiver_id from the json without the escape chars
@@ -807,9 +805,7 @@ async fn process_signed_delegate_action(
     if USE_REDIS.clone() {
         // Check the sender's remaining gas allowance in Redis
         let end_user_account: &AccountId = &signed_delegate_action.delegate_action.sender_id;
-        let remaining_allowance: u64 = redis_fns::get_remaining_allowance(end_user_account)
-            .await
-            .unwrap_or(0);
+        let remaining_allowance: u64 = get_remaining_allowance(end_user_account).await.unwrap_or(0);
         if remaining_allowance < TXN_GAS_ALLOWANCE {
             let err_msg = format!(
                 "AccountId {} does not have enough remaining gas allowance.",
@@ -852,25 +848,21 @@ async fn process_signed_delegate_action(
             "Receipts Outcome": &execution.receipts_outcome,
         });
 
-        let gas_used_in_yn = redis_fns::calculate_total_gas_burned(
-            execution.transaction_outcome,
-            execution.receipts_outcome,
-        );
+        let gas_used_in_yn =
+            calculate_total_gas_burned(execution.transaction_outcome, execution.receipts_outcome);
         debug!("total gas burnt in yN: {}", gas_used_in_yn);
-        let new_allowance = redis_fns::update_remaining_allowance(
-            &signer_account_id,
-            gas_used_in_yn,
-            remaining_allowance,
-        )
-        .await
-        .map_err(|err| {
-            let err_msg = format!("Updating redis remaining allowance errored out: {err:?}");
-            error!("{err_msg}");
-            RelayError {
-                status_code: StatusCode::INTERNAL_SERVER_ERROR,
-                message: err_msg,
-            }
-        })?;
+        let new_allowance =
+            update_remaining_allowance(&signer_account_id, gas_used_in_yn, remaining_allowance)
+                .await
+                .map_err(|err| {
+                    let err_msg =
+                        format!("Updating redis remaining allowance errored out: {err:?}");
+                    error!("{err_msg}");
+                    RelayError {
+                        status_code: StatusCode::INTERNAL_SERVER_ERROR,
+                        message: err_msg,
+                    }
+                })?;
         info!("Updated remaining allowance for account {signer_account_id}: {new_allowance}",);
 
         match status {
@@ -1077,7 +1069,7 @@ async fn test_send_meta_tx() {
 
     // simulate calling the '/update_allowance' function with sender_id & allowance
     let allowance_in_gas: u64 = u64::MAX;
-    redis_fns::set_account_and_allowance_in_redis(&sender_id, &allowance_in_gas)
+    set_account_and_allowance_in_redis(&sender_id, &allowance_in_gas)
         .await
         .expect("Failed to update account and allowance in redis");
 
