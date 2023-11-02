@@ -130,6 +130,9 @@ NOTE: this is only needed if you intend to use whitelisting, allowances, and oau
 5. Test the endpoints. See [API Spec](#api_spec)
 
 ## Cloud Deployment
+
+Terraform scripts are located in this repo: https://github.com/near/terraform-near-relayer
+
 The Relayer is best deployed in a serverless environment, such as AWS Lambda or GCP Cloud Run, to optimally manage automatic scalability and optimize cost. 
 
 Alternatively, the relayer can be deployed on a VM instance if the expected traffic to the relayer (and thus the CPU, RAM requirements) is well known ahead of time.
