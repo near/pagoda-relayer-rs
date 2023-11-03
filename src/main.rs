@@ -697,6 +697,17 @@ async fn process_signed_delegate_action(
     let is_whitelisted_da_receiver = WHITELISTED_CONTRACTS
         .iter()
         .any(|s| s == da_receiver_id.as_str());
+    if !is_whitelisted_da_receiver {
+        let err_msg = format!(
+            "Delegate Action receiver_id {} is not whitelisted",
+            da_receiver_id.as_str(),
+        );
+        warn!("{err_msg}");
+        return Err(RelayError {
+            status_code: StatusCode::BAD_REQUEST,
+            message: err_msg,
+        });
+    }
     // check the sender_id in whitelist if applicable
     if USE_WHITELISTED_DELEGATE_ACTION_RECEIVER_IDS.clone() && !USE_FASTAUTH_FEATURES.clone() {
         // check if the delegate action receiver_id (account sender_id) if a whitelisted delegate action receiver
@@ -716,7 +727,7 @@ async fn process_signed_delegate_action(
             });
         }
     }
-    if !is_whitelisted_da_receiver && USE_FASTAUTH_FEATURES.clone() {
+    if !is_whitelisted_da_receiver.clone() && USE_FASTAUTH_FEATURES.clone() {
         // check if sender id and receiver id are the same AND (AddKey or DeleteKey action)
         let non_delegate_action = signed_delegate_action
             .delegate_action
@@ -1150,11 +1161,11 @@ async fn test_relay_with_load() {
     // fire off all post requests in rapid succession and save the response status codes
     for i in 0..num_tests {
         if i % 2 == 0 {
-            sender_id.push_str(&*account_id0.clone());
-            receiver_id.push_str(&*account_id1.clone());
+            sender_id.push_str(&account_id0.clone());
+            receiver_id.push_str(&account_id1.clone());
         } else {
-            sender_id.push_str(&*account_id1.clone());
-            receiver_id.push_str(&*account_id0.clone());
+            sender_id.push_str(&account_id1.clone());
+            receiver_id.push_str(&account_id0.clone());
         }
         // Call the `relay` function happy path
         let signed_delegate_action = create_signed_delegate_action(
