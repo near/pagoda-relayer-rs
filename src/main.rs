@@ -90,13 +90,14 @@ static RELAYER_ACCOUNT_ID: Lazy<String> =
 static SHARED_STORAGE_ACCOUNT_ID: Lazy<String> =
     Lazy::new(|| LOCAL_CONF.get("shared_storage_account_id").unwrap());
 static SIGNER: Lazy<KeyRotatingSigner> = Lazy::new(|| {
-    let paths = LOCAL_CONF
-        .get::<Vec<String>>("keys_filenames")
-        .expect("Failed to read 'keys_filenames' from config");
-    KeyRotatingSigner::from_signers(paths.iter().map(|path| {
-        InMemorySigner::from_file(Path::new(path))
-            .unwrap_or_else(|err| panic!("failed to read signing keys from {path}: {err:?}"))
-    }))
+    let path = LOCAL_CONF
+        .get::<String>("keys_filename")
+        .expect("Failed to read 'keys_filename' from config");
+    let keys_file = std::fs::File::open(path).expect("Failed to open keys file");
+    let signers: Vec<InMemorySigner> =
+        serde_json::from_reader(keys_file).expect("Failed to parse keys file");
+
+    KeyRotatingSigner::from_signers(signers)
 });
 static SHARED_STORAGE_KEYS_FILENAME: Lazy<String> =
     Lazy::new(|| LOCAL_CONF.get("shared_storage_keys_filename").unwrap());
