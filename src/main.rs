@@ -697,7 +697,7 @@ async fn process_signed_delegate_action(
     let is_whitelisted_da_receiver = WHITELISTED_CONTRACTS
         .iter()
         .any(|s| s == da_receiver_id.as_str());
-    if !is_whitelisted_da_receiver {
+    if !USE_FASTAUTH_FEATURES.clone() && !is_whitelisted_da_receiver {
         let err_msg = format!(
             "Delegate Action receiver_id {} is not whitelisted",
             da_receiver_id.as_str(),
