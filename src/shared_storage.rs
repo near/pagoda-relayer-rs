@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use anyhow::Context;
 use near_crypto::InMemorySigner;
 use near_primitives::transaction::{Action, FunctionCallAction};
@@ -29,7 +31,7 @@ const fn bytes_per_amount(amount: Balance) -> u64 {
 /// near social.
 pub struct SharedStoragePoolManager {
     signer: InMemorySigner,
-    rpc_client: &'static near_fetch::Client,
+    rpc_client: Arc<near_fetch::Client>,
     pool_contract_id: AccountId,
     pool_owner_id: AccountId,
 }
@@ -37,7 +39,7 @@ pub struct SharedStoragePoolManager {
 impl SharedStoragePoolManager {
     pub fn new(
         signer: InMemorySigner,
-        rpc_client: &'static near_fetch::Client,
+        rpc_client: Arc<near_fetch::Client>,
         pool_contract_id: AccountId,
         pool_owner_id: AccountId,
     ) -> Self {
