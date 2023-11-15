@@ -40,6 +40,9 @@ use_shared_storage = false
 # reference shared storage contract: https://github.com/NearSocial/social-db/blob/master/contract/src/shared_storage.rs
 social_db_contract_id = "v1.social08.testnet"
 
+# flametrace is used for generating flame graphs for performance inspection using the tracing-flame crate https://crates.io/crates/tracing-flame
+flametrace_performance = true
+
 # Uncoment the network you want to use or add your own
 
 # mainnet

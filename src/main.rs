@@ -46,9 +46,13 @@ use std::net::SocketAddr;
 use std::str::FromStr;
 use std::string::ToString;
 use std::{fmt, path::Path};
+use std::{fs::File as StdFsFile, io::BufWriter};
 use tower_http::trace::TraceLayer;
 use tracing::{debug, error, info, instrument, warn};
-use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
+use tracing_flame::FlameLayer;
+use tracing_subscriber::{
+    layer::SubscriberExt, prelude::*, registry::Registry, util::SubscriberInitExt,
+};
 use utoipa::{OpenApi, ToSchema};
 use utoipa_rapidoc::RapiDoc;
 use utoipa_swagger_ui::SwaggerUi;
@@ -137,6 +141,8 @@ static SHARED_STORAGE_POOL: Lazy<SharedStoragePoolManager> = Lazy::new(|| {
         SHARED_STORAGE_ACCOUNT_ID.parse().unwrap(),
     )
 });
+static FLAMETRACE_PERFORMANCE: Lazy<bool> =
+    Lazy::new(|| LOCAL_CONF.get("flametrace_performance").unwrap_or(false));
 
 #[derive(Clone, Debug, Deserialize, ToSchema)]
 struct AccountIdAllowanceOauthSDAJson {
@@ -225,32 +231,18 @@ impl Display for AllowanceJson {
     }
 }
 
-async fn init_senders_infinite_allowance_fastauth() {
-    let max_allowance = u64::MAX;
-    for whitelisted_sender in WHITELISTED_DELEGATE_ACTION_RECEIVER_IDS.clone() {
-        let redis_result =
-            set_account_and_allowance_in_redis(&whitelisted_sender, &max_allowance).await;
-        if let Err(err) = redis_result {
-            error!(
-                "Error setting allowance for account_id {} with allowance {} in Relayer DB: {:?}",
-                whitelisted_sender, max_allowance, err,
-            );
-        } else {
-            info!(
-                "Set allowance for account_id {} with allowance {} in Relayer DB",
-                whitelisted_sender.clone().as_str(),
-                max_allowance,
-            );
-        }
-    }
-}
-
 #[tokio::main]
 async fn main() {
     // initialize tracing (aka logging)
-    tracing_subscriber::registry()
-        .with(tracing_subscriber::fmt::layer())
-        .init();
+    if *FLAMETRACE_PERFORMANCE {
+        setup_global_subscriber();
+        info!("default tracing setup with flametrace performance ENABLED");
+    } else {
+        tracing_subscriber::registry()
+            .with(tracing_subscriber::fmt::layer())
+            .init();
+        info!("default tracing setup with flametrace performance DISABLED");
+    }
 
     // initialize our shared storage pool manager if using fastauth features or using shared storage
     if USE_FASTAUTH_FEATURES.clone() || USE_SHARED_STORAGE.clone() {
@@ -337,6 +329,38 @@ async fn main() {
         .serve(app.into_make_service())
         .await
         .unwrap();
+}
+
+fn setup_global_subscriber() -> impl Drop {
+    let fmt_layer = tracing_subscriber::fmt::Layer::default();
+
+    let (flame_layer, _guard) = FlameLayer::with_file("./tracing.folded").unwrap();
+
+    tracing_subscriber::registry()
+        .with(fmt_layer)
+        .with(flame_layer)
+        .init();
+    _guard
+}
+
+async fn init_senders_infinite_allowance_fastauth() {
+    let max_allowance = u64::MAX;
+    for whitelisted_sender in WHITELISTED_DELEGATE_ACTION_RECEIVER_IDS.clone() {
+        let redis_result =
+            set_account_and_allowance_in_redis(&whitelisted_sender, &max_allowance).await;
+        if let Err(err) = redis_result {
+            error!(
+                "Error setting allowance for account_id {} with allowance {} in Relayer DB: {:?}",
+                whitelisted_sender, max_allowance, err,
+            );
+        } else {
+            info!(
+                "Set allowance for account_id {} with allowance {} in Relayer DB",
+                whitelisted_sender.clone().as_str(),
+                max_allowance,
+            );
+        }
+    }
 }
 
 // NOTE: error in swagger-ui TypeError: Failed to execute 'fetch' on 'Window': Request with GET/HEAD method cannot have body.
