@@ -47,8 +47,7 @@ use std::str::FromStr;
 use std::string::ToString;
 use std::{fmt, path::Path};
 use tower_http::trace::TraceLayer;
-use tracing::log::error;
-use tracing::{debug, info, warn};
+use tracing::{debug, error, info, instrument, warn};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 use utoipa::{OpenApi, ToSchema};
 use utoipa_rapidoc::RapiDoc;
@@ -350,6 +349,7 @@ async fn main() {
         (status = 500, description = "Error getting allowance for account_id example.near in Relayer DB: err_msg", body = String)
     )
 )]
+#[instrument]
 async fn get_allowance(account_id_json: Json<AccountIdJson>) -> impl IntoResponse {
     // convert str account_id val from json to AccountId so I can reuse get_remaining_allowance fn
     let Ok(account_id_val) = AccountId::from_str(&account_id_json.account_id) else {
@@ -396,6 +396,7 @@ async fn get_allowance(account_id_json: Json<AccountIdJson>) -> impl IntoRespons
         (status = 500, description = "Error creating oauth token https://securetoken.google.com/pagoda-oboarding-dev:Op4h13AQozM4CikngfHiFVC2xhf2 in Relayer DB:\n{err:?}", body = String),
     ),
 )]
+#[instrument]
 async fn create_account_atomic(
     account_id_allowance_oauth_sda: Json<AccountIdAllowanceOauthSDAJson>,
 ) -> impl IntoResponse {
@@ -512,6 +513,7 @@ post,
                     \n{db_result:?}", body = String),
     ),
 )]
+#[instrument]
 async fn update_allowance(account_id_allowance: Json<AccountIdAllowanceJson>) -> impl IntoResponse {
     let account_id: &String = &account_id_allowance.account_id;
     let allowance_in_gas: &u64 = &account_id_allowance.allowance;
@@ -540,6 +542,7 @@ async fn update_allowance(account_id_allowance: Json<AccountIdAllowanceJson>) ->
         (status = 500, description = "Error updating allowance for key example.near: err_msg", body = String),
     ),
 )]
+#[instrument]
 async fn update_all_allowances(Json(allowance_json): Json<AllowanceJson>) -> impl IntoResponse {
     let allowance_in_gas = allowance_json.allowance_in_gas;
     let redis_response = update_all_allowances_in_redis(allowance_in_gas).await;
@@ -559,6 +562,7 @@ async fn update_all_allowances(Json(allowance_json): Json<AllowanceJson>) -> imp
                             You can only register 1 account per oauth_token", body = String),
     ),
 )]
+#[instrument]
 async fn register_account_and_allowance(
     account_id_allowance_oauth: Json<AccountIdAllowanceOauthJson>,
 ) -> impl IntoResponse {
@@ -636,6 +640,7 @@ async fn register_account_and_allowance(
         (status = 500, description = "Error signing transaction: ...", body = String),
     ),
 )]
+#[instrument]
 async fn relay(data: Json<Vec<u8>>) -> impl IntoResponse {
     // deserialize SignedDelegateAction using borsh
     match SignedDelegateAction::try_from_slice(&data.0) {
@@ -667,6 +672,7 @@ async fn relay(data: Json<Vec<u8>>) -> impl IntoResponse {
         (status = 500, description = "Error signing transaction: ...", body = String),
     ),
 )]
+#[instrument]
 async fn send_meta_tx(data: Json<SignedDelegateAction>) -> impl IntoResponse {
     let relayer_response = process_signed_delegate_action(
         // deserialize SignedDelegateAction using serde json
@@ -679,6 +685,7 @@ async fn send_meta_tx(data: Json<SignedDelegateAction>) -> impl IntoResponse {
     }
 }
 
+#[instrument]
 async fn process_signed_delegate_action(
     signed_delegate_action: SignedDelegateAction,
 ) -> Result<String, RelayError> {
