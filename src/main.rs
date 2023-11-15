@@ -18,7 +18,7 @@ use axum::{
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD as BASE64_ENGINE, Engine as _};
 #[cfg(test)]
 use bytes::BytesMut;
-use config::{Config, File};
+use config::{Config, File as ConfigFile};
 use near_crypto::InMemorySigner;
 #[cfg(test)]
 use near_crypto::{KeyType, PublicKey, Signature};
@@ -46,13 +46,10 @@ use std::net::SocketAddr;
 use std::str::FromStr;
 use std::string::ToString;
 use std::{fmt, path::Path};
-use std::{fs::File as StdFsFile, io::BufWriter};
 use tower_http::trace::TraceLayer;
 use tracing::{debug, error, info, instrument, warn};
 use tracing_flame::FlameLayer;
-use tracing_subscriber::{
-    layer::SubscriberExt, prelude::*, registry::Registry, util::SubscriberInitExt,
-};
+use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 use utoipa::{OpenApi, ToSchema};
 use utoipa_rapidoc::RapiDoc;
 use utoipa_swagger_ui::SwaggerUi;
@@ -72,7 +69,7 @@ const YN_TO_GAS: u128 = 1_000_000_000;
 // load config from toml and setup json rpc client
 static LOCAL_CONF: Lazy<Config> = Lazy::new(|| {
     Config::builder()
-        .add_source(File::with_name("config.toml"))
+        .add_source(ConfigFile::with_name("config.toml"))
         .build()
         .unwrap()
 });
