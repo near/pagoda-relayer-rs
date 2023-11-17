@@ -19,7 +19,6 @@ use axum::{
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD as BASE64_ENGINE, Engine as _};
 #[cfg(test)]
 use bytes::BytesMut;
-use config::{Config, File};
 use near_crypto::InMemorySigner;
 #[cfg(test)]
 use near_crypto::{KeyType, PublicKey, Signature};
@@ -39,14 +38,18 @@ use near_primitives::types::{BlockHeight, Nonce};
 use r2d2::{Pool, PooledConnection};
 use r2d2_redis::redis::{Commands, ErrorKind::IoError, RedisError};
 use r2d2_redis::RedisConnectionManager;
+use rpc_conf::ApiKey;
 use serde::Deserialize;
 use serde_json::{json, Value};
-use std::fmt::{Debug, Display, Formatter};
 use std::net::SocketAddr;
 use std::str::FromStr;
 use std::string::ToString;
 use std::sync::Arc;
 use std::{fmt, path::Path};
+use std::{
+    fmt::{Debug, Display, Formatter},
+    fs,
+};
 use tower_http::trace::TraceLayer;
 use tracing::log::error;
 use tracing::{debug, info, warn};
@@ -67,125 +70,188 @@ use crate::shared_storage::SharedStoragePoolManager;
 const TXN_GAS_ALLOWANCE: u64 = 10_000_000_000_000;
 const YN_TO_GAS: u128 = 1_000_000_000;
 
+// Silly workaround for this ancient bug
+// https://github.com/serde-rs/serde/issues/368
+const fn bool<const V: bool>() -> bool {
+    V
+}
+
+#[derive(Deserialize, Debug)]
+struct ConfigFile {
+    network: String,
+    rpc_url: url::Url,
+    rpc_api_key: Option<ApiKey>,
+    wallet_url: url::Url,
+    explorer_transaction_url: url::Url,
+    ip_address: [u8; 4],
+    port: u16,
+    relayer_account_id: String,
+    shared_storage_account_id: Option<AccountId>,
+    keys_filenames: Vec<String>,
+    shared_storage_keys_filename: String,
+    whitelisted_contracts: Vec<String>,
+    #[serde(default = "bool::<false>")]
+    use_whitelisted_delegate_action_receiver_ids: bool,
+    whitelisted_delegate_action_receiver_ids: Vec<String>,
+    #[serde(default = "bool::<false>")]
+    use_redis: bool,
+    redis_url: String,
+    #[serde(default = "bool::<false>")]
+    use_fastauth_features: bool,
+    #[serde(default = "bool::<false>")]
+    use_pay_with_ft: bool,
+    burn_address: Option<AccountId>,
+    #[serde(default = "bool::<false>")]
+    use_shared_storage: bool,
+    social_db_contract_id: Option<AccountId>,
+}
+
+impl ConfigFile {
+    pub fn from_file(path: &Path) -> Result<Self, String> {
+        let p = path.display();
+        let contents =
+            fs::read_to_string(path).map_err(|e| format!("failed to read path, {}", e))?;
+        toml::from_str(&contents).map_err(|e| format!("failed to parse file, {}", e))
+    }
+}
+
+#[derive(Clone, Debug)]
+struct PayWithFT {
+    burn_address: AccountId,
+}
+
 pub struct DConfig {
     port: u16,
     ip_address: [u8; 4],
     relayer_account_id: String,
-    shared_storage_pool: SharedStoragePoolManager,
-    use_shared_storage: bool,
+    shared_storage_pool: Option<SharedStoragePoolManager>,
     use_fastauth_features: bool,
     whitelisted_delegate_action_receiver_ids: Vec<String>,
-    network_env: String,
+    network: String,
     redis_pool: Pool<RedisConnectionManager>,
     rpc_client: Arc<near_fetch::Client>,
-    use_pay_with_ft: bool,
+    pay_with_ft: Option<PayWithFT>,
     use_whitelisted_delegate_action_receiver_ids: bool,
     use_redis: bool,
     whitelisted_contracts: Vec<String>,
-    burn_address: AccountId,
     signer: KeyRotatingSigner,
 }
 
 impl DConfig {
-    fn prod_config() -> DConfig {
-        // load config from toml and setup json rpc client
-        let local_conf: Config = {
-            Config::builder()
-                .add_source(File::with_name("config.toml"))
-                .build()
-                .unwrap()
-        };
+    pub fn production() -> Result<DConfig, String> {
+        Self::parse_file(Path::new("config.toml"))
+    }
 
-        let network_env: String = local_conf.get("network").unwrap();
+    /// Parse a raw config file
+    pub fn parse_file(file: &Path) -> Result<DConfig, String> {
+        Self::parse_file_internal(file).map_err(|e| format!("In file {}: {}", file.display(), e))
+    }
+
+    /// Does the work of parsing the raw config, but doesn't attach a filename
+    fn parse_file_internal(file: &Path) -> Result<DConfig, String> {
+        let ConfigFile {
+            network,
+            rpc_url,
+            rpc_api_key,
+            wallet_url,
+            explorer_transaction_url,
+            ip_address,
+            port,
+            relayer_account_id,
+            shared_storage_account_id,
+            keys_filenames,
+            shared_storage_keys_filename,
+            whitelisted_contracts,
+            use_whitelisted_delegate_action_receiver_ids,
+            whitelisted_delegate_action_receiver_ids,
+            use_redis,
+            redis_url,
+            use_fastauth_features,
+            use_pay_with_ft,
+            burn_address,
+            use_shared_storage,
+            social_db_contract_id,
+        } = ConfigFile::from_file(file)?;
 
         let rpc_client: Arc<near_fetch::Client> = Arc::new({
             let network_config = NetworkConfig {
-                rpc_url: local_conf.get("rpc_url").unwrap(),
-                rpc_api_key: local_conf.get("rpc_api_key").unwrap(),
-                wallet_url: local_conf.get("wallet_url").unwrap(),
-                explorer_transaction_url: local_conf.get("explorer_transaction_url").unwrap(),
+                rpc_url,
+                rpc_api_key,
+                wallet_url,
+                explorer_transaction_url,
             };
             network_config.rpc_client()
         });
 
-        let ip_address: [u8; 4] = local_conf.get("ip_address").unwrap();
-
-        let port: u16 = local_conf.get("port").unwrap();
-
-        let relayer_account_id: String = local_conf.get("relayer_account_id").unwrap();
-
-        let shared_storage_account_id: String =
-            local_conf.get("shared_storage_account_id").unwrap();
-
         let signer: KeyRotatingSigner = {
-            let paths = local_conf
-                .get::<Vec<String>>("keys_filenames")
-                .expect("Failed to read 'keys_filenames' from config");
-            KeyRotatingSigner::from_signers(paths.iter().map(|path| {
+            KeyRotatingSigner::from_signers(keys_filenames.iter().map(|path| {
                 InMemorySigner::from_file(Path::new(path)).unwrap_or_else(|err| {
                     panic!("failed to read signing keys from {path}: {err:?}")
                 })
             }))
         };
 
-        let shared_storage_keys_filename: String =
-            local_conf.get("shared_storage_keys_filename").unwrap();
-        let whitelisted_contracts: Vec<String> = local_conf.get("whitelisted_contracts").unwrap();
-        let use_whitelisted_delegate_action_receiver_ids: bool = {
-            local_conf
-                .get("use_whitelisted_delegate_action_receiver_ids")
-                .unwrap_or(false)
-        };
-        let whitelisted_delegate_action_receiver_ids: Vec<String> = {
-            local_conf
-                .get("whitelisted_delegate_action_receiver_ids")
-                .unwrap()
-        };
-        let use_redis: bool = local_conf.get("use_redis").unwrap_or(false);
         let redis_pool: Pool<RedisConnectionManager> = {
-            let redis_cnxn_url: String = local_conf.get("redis_url").unwrap();
-            let manager = RedisConnectionManager::new(redis_cnxn_url).unwrap();
+            let manager = RedisConnectionManager::new(redis_url).unwrap();
             Pool::builder().build(manager).unwrap()
         };
-        let use_fastauth_features: bool = local_conf.get("use_fastauth_features").unwrap_or(false);
-        let use_pay_with_ft: bool = local_conf.get("use_pay_with_ft").unwrap_or(false);
-        let burn_address: AccountId = local_conf.get("burn_address").unwrap();
-        let use_shared_storage: bool = local_conf.get("use_shared_storage").unwrap_or(false);
-        let shared_storage_pool: SharedStoragePoolManager = {
-            let social_db_id: String = local_conf.get("social_db_contract_id").unwrap();
-            let signer =
-                InMemorySigner::from_file(Path::new(shared_storage_keys_filename.as_str()))
-                    .unwrap_or_else(|err| {
-                        panic!(
+
+        let shared_storage_pool = match (
+            use_shared_storage,
+            social_db_contract_id,
+            shared_storage_account_id,
+        ) {
+            (true, Some(social_db_contract_id), Some(shared_storage_account_id)) => {
+                let signer =
+                    InMemorySigner::from_file(Path::new(shared_storage_keys_filename.as_str()))
+                        .map_err(|err| {
+                            format!(
                             "failed to get signing keys={shared_storage_keys_filename:?}: {err:?}"
                         )
-                    });
-            SharedStoragePoolManager::new(
-                signer,
-                rpc_client.clone(),
-                social_db_id.parse().unwrap(),
-                shared_storage_account_id.parse().unwrap(),
-            )
-        };
+                        })?;
+                Ok(Some(SharedStoragePoolManager::new(
+                    signer,
+                    rpc_client.clone(),
+                    social_db_contract_id,
+                    shared_storage_account_id,
+                )))
+            }
+            (false, None, None) => Ok(None),
+            (true, _, _) => {
+                Err("field use_pay_with_ft is true so expected 'social_db_contract_id' and 'shared_storage_account_id'".to_string())
+            }
+            (false, _, _) => Err(
+                "field use_pay_with_ft is false so didn't expect field 'social_db_contract_id' or 'shared_storage_account_id'".to_string(),
+            ),
+        }?;
 
-        DConfig {
+        let pay_with_ft = match (use_pay_with_ft, burn_address) {
+            (true, Some(burn_address)) => Ok(Some(PayWithFT { burn_address })),
+            (false, None) => Ok(None),
+            (true, None) => {
+                Err("field use_pay_with_ft is true so expected a burn_address".to_string())
+            }
+            (false, Some(_)) => Err(
+                "field use_pay_with ft is false so didn't expect field burn_address".to_string(),
+            ),
+        }?;
+
+        Ok(DConfig {
             whitelisted_delegate_action_receiver_ids,
             use_fastauth_features,
-            use_shared_storage,
             shared_storage_pool,
             relayer_account_id,
             ip_address,
             port,
-            network_env,
+            network,
             redis_pool,
             rpc_client,
-            use_pay_with_ft,
+            pay_with_ft,
             use_whitelisted_delegate_action_receiver_ids,
             use_redis,
             whitelisted_contracts,
-            burn_address,
             signer,
-        }
+        })
     }
 }
 
@@ -298,7 +364,8 @@ async fn init_senders_infinite_allowance_fastauth(config: &DConfig) {
 
 #[tokio::main]
 async fn main() {
-    let config = Arc::new(DConfig::prod_config());
+    // TODO Handle this error better
+    let config = Arc::new(DConfig::production().unwrap());
 
     // initialize tracing (aka logging)
     tracing_subscriber::registry()
@@ -306,14 +373,16 @@ async fn main() {
         .init();
 
     // initialize our shared storage pool manager if using fastauth features or using shared storage
-    if config.use_fastauth_features.clone() || config.use_shared_storage.clone() {
-        if let Err(err) = config.shared_storage_pool.check_and_spawn_pool().await {
-            let err_msg = format!("Error initializing shared storage pool: {err}");
-            error!("{err_msg}");
-            tracing::error!(err_msg);
-            return;
-        } else {
-            info!("shared storage pool initialized")
+    if config.use_fastauth_features.clone() {
+        if let Some(shared_storage_pool) = &config.shared_storage_pool {
+            if let Err(err) = shared_storage_pool.check_and_spawn_pool().await {
+                let err_msg = format!("Error initializing shared storage pool: {err}");
+                error!("{err_msg}");
+                tracing::error!(err_msg);
+                return;
+            } else {
+                info!("shared storage pool initialized")
+            }
         }
     }
 
@@ -529,15 +598,16 @@ async fn create_account_atomic(
     };
 
     // allocate shared storage for account_id if shared storage is being used
-    if config.use_fastauth_features.clone() || config.use_shared_storage.clone() {
-        if let Err(err) = config
-            .shared_storage_pool
-            .allocate_default(account_id.clone())
-            .await
-        {
-            let err_msg = format!("Error allocating storage for account {account_id}: {err:?}");
-            error!("{err_msg}");
-            return (StatusCode::INTERNAL_SERVER_ERROR, err_msg).into_response();
+    if let Some(shared_storage_pool) = &config.shared_storage_pool {
+        if config.use_fastauth_features.clone() {
+            if let Err(err) = shared_storage_pool
+                .allocate_default(account_id.clone())
+                .await
+            {
+                let err_msg = format!("Error allocating storage for account {account_id}: {err:?}");
+                error!("{err_msg}");
+                return (StatusCode::INTERNAL_SERVER_ERROR, err_msg).into_response();
+            }
         }
     }
 
@@ -669,14 +739,16 @@ async fn register_account_and_allowance(
         warn!("{err_msg}");
         return (StatusCode::BAD_REQUEST, err_msg).into_response();
     };
-    if let Err(err) = config
-        .shared_storage_pool
-        .allocate_default(account_id.clone())
-        .await
-    {
-        let err_msg = format!("Error allocating storage for account {account_id}: {err:?}");
-        error!("{err_msg}");
-        return (StatusCode::INTERNAL_SERVER_ERROR, err_msg).into_response();
+
+    if let Some(shared_storage_pool) = &config.shared_storage_pool {
+        if let Err(err) = shared_storage_pool
+            .allocate_default(account_id.clone())
+            .await
+        {
+            let err_msg = format!("Error allocating storage for account {account_id}: {err:?}");
+            error!("{err_msg}");
+            return (StatusCode::INTERNAL_SERVER_ERROR, err_msg).into_response();
+        }
     }
 
     // add oauth token to redis (key: oauth_token, val: true)
@@ -843,7 +915,7 @@ async fn process_signed_delegate_action(
     }
 
     // Check if the SignedDelegateAction includes a FunctionCallAction that transfers FTs to BURN_ADDRESS
-    if config.use_pay_with_ft.clone() {
+    if let Some(PayWithFT { burn_address }) = config.pay_with_ft.clone() {
         let non_delegate_actions = signed_delegate_action.delegate_action.get_actions();
         let treasury_payments: Vec<Action> = non_delegate_actions
             .iter()
@@ -870,13 +942,10 @@ async fn process_signed_delegate_action(
                     // get the receiver_id from the json without the escape chars
                     let receiver_id = args_json["receiver_id"].as_str().unwrap_or_default();
                     debug!("receiver_id: {receiver_id}");
-                    debug!(
-                        "BURN_ADDRESS.to_string(): {:?}",
-                        config.burn_address.to_string()
-                    );
+                    debug!("BURN_ADDRESS.to_string(): {:?}", burn_address.to_string());
 
                     // Check if receiver_id in args contain BURN_ADDRESS
-                    if receiver_id == config.burn_address.to_string() {
+                    if receiver_id == burn_address.to_string() {
                         debug!("SignedDelegateAction contains the BURN_ADDRESS MATCH");
                         return Some(action.clone());
                     }
@@ -1061,8 +1130,8 @@ pub async fn update_all_allowances_in_redis(
     };
 
     // Fetch all keys that match the network env (.near for mainnet, .testnet for testnet, etc)
-    let network: String = if config.network_env.clone() != "mainnet" {
-        config.network_env.clone()
+    let network: String = if config.network.clone() != "mainnet" {
+        config.network.clone()
     } else {
         "near".to_string()
     };
@@ -1163,6 +1232,9 @@ async fn test_base64_encode_args() {
 // NOTE: uncomment ignore locally to run test bc redis doesn't work in github action build env
 #[ignore]
 async fn test_send_meta_tx() {
+    // TODO make this a test config
+    let config = Arc::new(DConfig::production().unwrap());
+
     // tests assume testnet in config
     // Test Transfer Action
     let actions = vec![Action::Transfer(TransferAction { deposit: 1 })];
@@ -1173,7 +1245,7 @@ async fn test_send_meta_tx() {
 
     // simulate calling the '/update_allowance' function with sender_id & allowance
     let allowance_in_gas: u64 = u64::MAX;
-    set_account_and_allowance_in_redis(&sender_id, &allowance_in_gas)
+    set_account_and_allowance_in_redis(&config, &sender_id, &allowance_in_gas)
         .await
         .expect("Failed to update account and allowance in redis");
 
@@ -1190,7 +1262,9 @@ async fn test_send_meta_tx() {
         "SignedDelegateAction Json Serialized (no borsh): {:?}",
         json_payload
     );
-    let response: Response = send_meta_tx(json_payload).await.into_response();
+    let response: Response = send_meta_tx(State(config), json_payload)
+        .await
+        .into_response();
     let response_status: StatusCode = response.status();
     let body: BoxBody = response.into_body();
     let body_str: String = read_body_to_string(body).await.unwrap();
@@ -1200,6 +1274,7 @@ async fn test_send_meta_tx() {
 
 #[tokio::test]
 async fn test_send_meta_tx_no_gas_allowance() {
+    let config = Arc::new(DConfig::production().unwrap());
     let actions = vec![Action::Transfer(TransferAction { deposit: 1 })];
     let sender_id: String = String::from("relayer_test0.testnet");
     let receiver_id: String = String::from("arrr_me_not_in_whitelist");
@@ -1220,7 +1295,7 @@ async fn test_send_meta_tx_no_gas_allowance() {
         "SignedDelegateAction Json Serialized (no borsh) receiver_id not in whitelist: {:?}",
         non_whitelist_json_payload
     );
-    let err_response = send_meta_tx(non_whitelist_json_payload)
+    let err_response = send_meta_tx(State(config), non_whitelist_json_payload)
         .await
         .into_response();
     let err_response_status = err_response.status();
@@ -1239,6 +1314,7 @@ async fn test_relay_with_load() {
     // tests assume testnet in config
     // Test Transfer Action
 
+    let config = Arc::new(DConfig::production().unwrap());
     let actions = vec![Action::Transfer(TransferAction { deposit: 1 })];
     let account_id0: String = "nomnomnom.testnet".to_string();
     let account_id1: String = "relayer_test0.testnet".to_string();
@@ -1269,7 +1345,9 @@ async fn test_relay_with_load() {
             max_block_height.clone(),
         );
         let json_payload = signed_delegate_action.try_to_vec().unwrap();
-        let response = relay(Json(Vec::from(json_payload))).await.into_response();
+        let response = relay(State(config.clone()), Json(Vec::from(json_payload)))
+            .await
+            .into_response();
         response_statuses.push(response.status());
         let body: BoxBody = response.into_body();
         let body_str: String = read_body_to_string(body).await.unwrap();
@@ -1287,5 +1365,24 @@ async fn test_relay_with_load() {
         println!("{}", response_status);
         println!("{}", response_bodies[i]);
         assert_eq!(response_status, StatusCode::OK);
+    }
+}
+
+#[test]
+fn parse_configs() {
+    let configs = [
+        "config.toml",
+        "examples/configs/basic_whitelist.toml",
+        "examples/configs/fastauth.toml",
+        "examples/configs/pay_with_ft.toml",
+        "examples/configs/redis.toml",
+        "examples/configs/shared_storage.toml",
+        "examples/configs/whitelist_senders.toml",
+    ];
+
+    for c in configs {
+        if let Err(e) = DConfig::parse_file(Path::new(c)) {
+            println!("{}, {}", e, c)
+        }
     }
 }
