@@ -1,16 +1,20 @@
-use crate::{get_redis_cnxn, DConfig, YN_TO_GAS};
+use crate::{get_redis_cnxn, Allowances, YN_TO_GAS};
 use near_primitives::types::AccountId;
 use near_primitives::views::ExecutionOutcomeWithIdView;
-use r2d2_redis::redis::{Commands, RedisError};
+use r2d2::Pool;
+use r2d2_redis::{
+    redis::{Commands, RedisError},
+    RedisConnectionManager,
+};
 use tracing::debug;
 
 pub async fn set_account_and_allowance_in_redis(
-    config: &DConfig,
+    redis_pool: &Pool<RedisConnectionManager>,
     account_id: &str,
     allowance_in_gas: &u64,
 ) -> Result<(), RedisError> {
     // Get a connection from the REDIS_POOL
-    let mut conn = get_redis_cnxn(config).await?;
+    let mut conn = get_redis_cnxn(redis_pool).await?;
 
     // Save the allowance information to Redis
     conn.set(account_id, allowance_in_gas.clone())?;
@@ -18,11 +22,11 @@ pub async fn set_account_and_allowance_in_redis(
 }
 
 pub async fn get_oauth_token_in_redis(
-    config: &DConfig,
+    redis_pool: &Pool<RedisConnectionManager>,
     oauth_token: &str,
 ) -> Result<bool, RedisError> {
     // Get a connection from the REDIS_POOL
-    let mut conn = get_redis_cnxn(config).await?;
+    let mut conn = get_redis_cnxn(redis_pool).await?;
     let is_already_used_option: Option<bool> = conn.get(oauth_token.to_owned())?;
 
     match is_already_used_option {
@@ -32,23 +36,23 @@ pub async fn get_oauth_token_in_redis(
 }
 
 pub async fn set_oauth_token_in_redis(
-    config: &DConfig,
+    redis_pool: &Pool<RedisConnectionManager>,
     oauth_token: String,
-) -> Result<(), RedisError> {
+) -> Result<bool, RedisError> {
     // Get a connection from the REDIS_POOL
-    let mut conn = get_redis_cnxn(config).await?;
+    let mut conn = get_redis_cnxn(redis_pool).await?;
 
     // Save the allowance information to Relayer DB
-    conn.set(&oauth_token, true)?;
-    Ok(())
+    let old_value: Option<bool> = conn.getset(&oauth_token, true)?;
+    Ok(old_value.unwrap_or(false))
 }
 
 pub async fn get_remaining_allowance(
-    config: &DConfig,
+    redis_pool: &Pool<RedisConnectionManager>,
     account_id: &AccountId,
 ) -> Result<u64, RedisError> {
     // Destructure the Extension and get a connection from the connection manager
-    let mut conn = get_redis_cnxn(config).await?;
+    let mut conn = get_redis_cnxn(redis_pool).await?;
     let allowance: Option<u64> = conn.get(account_id.as_str())?;
     let Some(remaining_allowance) = allowance else {
         return Ok(0);
@@ -58,17 +62,18 @@ pub async fn get_remaining_allowance(
 }
 
 // fn to update allowance in redis when getting the receipts back and deduct the gas used
+// Migrate to Allowances and use redis's decr function
 pub async fn update_remaining_allowance(
-    config: &DConfig,
+    allowances: &Allowances,
     account_id: &AccountId,
     gas_used_in_yn: u128,
     allowance: u64,
 ) -> Result<u64, RedisError> {
-    let mut conn = get_redis_cnxn(config).await?;
-    let key = account_id.clone().to_string();
     let gas_used: u64 = (gas_used_in_yn / YN_TO_GAS) as u64;
     let remaining_allowance = allowance - gas_used;
-    conn.set(key, remaining_allowance)?;
+    allowances
+        .set(account_id.clone(), remaining_allowance)
+        .await?;
     Ok(remaining_allowance.clone())
 }
 
