@@ -246,7 +246,7 @@ impl OauthTokens {
     }
 }
 
-pub struct DConfig {
+pub struct Environment {
     port: u16,
     ip_address: [u8; 4],
     relayer_account_id: AccountId,
@@ -263,8 +263,8 @@ pub struct DConfig {
     signer: KeyRotatingSigner,
 }
 
-impl DConfig {
-    pub fn production() -> Result<DConfig, String> {
+impl Environment {
+    pub fn production() -> Result<Environment, String> {
         Self::validate_configuration(Path::new("config.toml"))
     }
 
@@ -273,13 +273,13 @@ impl DConfig {
     /// Validates the config file matches the types.
     /// Checks that the flags match the keys present.
     /// Checks all referenced files and urls exist.
-    pub fn validate_configuration(file: &Path) -> Result<DConfig, String> {
+    pub fn validate_configuration(file: &Path) -> Result<Environment, String> {
         Self::validate_configuration_internal(file)
             .map_err(|e| format!("In file {}: {}", file.display(), e))
     }
 
     /// Does the work of parsing the raw config, but doesn't attach a filename
-    fn validate_configuration_internal(file: &Path) -> Result<DConfig, String> {
+    fn validate_configuration_internal(file: &Path) -> Result<Environment, String> {
         let ConfigFile {
             network,
             rpc_url,
@@ -408,7 +408,7 @@ impl DConfig {
 
         let pay_with_ft = burn_address.map(|burn_address| (PayWithFT { burn_address }));
 
-        Ok(DConfig {
+        Ok(Environment {
             whitelisted_delegate_action_receiver_ids,
             use_fastauth_features,
             shared_storage_pool,
@@ -543,7 +543,7 @@ async fn init_senders_infinite_allowance_fastauth(
 #[tokio::main]
 async fn main() {
     // TODO Handle this error better
-    let config = Arc::new(DConfig::production().unwrap());
+    let config = Arc::new(Environment::production().unwrap());
 
     // initialize tracing (aka logging)
     tracing_subscriber::registry()
@@ -655,7 +655,7 @@ async fn main() {
     )
 )]
 async fn get_allowance(
-    State(config): State<Arc<DConfig>>,
+    State(config): State<Arc<Environment>>,
     account_id_json: Json<AccountIdJson>,
 ) -> impl IntoResponse {
     // convert str account_id val from json to AccountId so I can reuse get_remaining_allowance fn
@@ -704,7 +704,7 @@ async fn get_allowance(
     ),
 )]
 async fn create_account_atomic(
-    config: State<Arc<DConfig>>,
+    config: State<Arc<Environment>>,
     account_id_allowance_oauth_sda: Json<AccountIdAllowanceOauthSDAJson>,
 ) -> impl IntoResponse {
     /*
@@ -826,7 +826,7 @@ post,
     ),
 )]
 async fn update_allowance(
-    State(config): State<Arc<DConfig>>,
+    State(config): State<Arc<Environment>>,
     account_id_allowance: Json<AccountIdAllowanceJson>,
 ) -> impl IntoResponse {
     let account_id = &account_id_allowance.account_id;
@@ -860,7 +860,7 @@ async fn update_allowance(
     ),
 )]
 async fn update_all_allowances(
-    State(config): State<Arc<DConfig>>,
+    State(config): State<Arc<Environment>>,
     Json(allowance_json): Json<AllowanceJson>,
 ) -> impl IntoResponse {
     let allowance_in_gas = allowance_json.allowance_in_gas;
@@ -882,7 +882,7 @@ async fn update_all_allowances(
     ),
 )]
 async fn register_account_and_allowance(
-    State(config): State<Arc<DConfig>>,
+    State(config): State<Arc<Environment>>,
     account_id_allowance_oauth: Json<AccountIdAllowanceOauthJson>,
 ) -> impl IntoResponse {
     let account_id = &account_id_allowance_oauth.account_id;
@@ -965,7 +965,7 @@ async fn register_account_and_allowance(
         (status = 500, description = "Error signing transaction: ...", body = String),
     ),
 )]
-async fn relay(State(config): State<Arc<DConfig>>, data: Json<Vec<u8>>) -> impl IntoResponse {
+async fn relay(State(config): State<Arc<Environment>>, data: Json<Vec<u8>>) -> impl IntoResponse {
     // deserialize SignedDelegateAction using borsh
     match SignedDelegateAction::try_from_slice(&data.0) {
         Ok(signed_delegate_action) => {
@@ -997,7 +997,7 @@ async fn relay(State(config): State<Arc<DConfig>>, data: Json<Vec<u8>>) -> impl 
     ),
 )]
 async fn send_meta_tx(
-    config: State<Arc<DConfig>>,
+    config: State<Arc<Environment>>,
     data: Json<SignedDelegateAction>,
 ) -> impl IntoResponse {
     let relayer_response = process_signed_delegate_action(
@@ -1012,7 +1012,7 @@ async fn send_meta_tx(
 }
 
 async fn process_signed_delegate_action(
-    config: &DConfig,
+    config: &Environment,
     signed_delegate_action: SignedDelegateAction,
 ) -> Result<String, RelayError> {
     debug!(
@@ -1247,7 +1247,7 @@ pub async fn get_redis_cnxn(
 }
 
 pub async fn update_all_allowances_in_redis(
-    config: &DConfig,
+    config: &Environment,
     allowance_in_gas: u64,
 ) -> Result<String, RelayError> {
     // Fetch all the keys associated with the network
@@ -1346,7 +1346,7 @@ async fn test_base64_encode_args() {
 #[ignore]
 async fn test_send_meta_tx() {
     // TODO make this a test config
-    let config = Arc::new(DConfig::production().unwrap());
+    let config = Arc::new(Environment::production().unwrap());
 
     // tests assume testnet in config
     // Test Transfer Action
@@ -1389,7 +1389,7 @@ async fn test_send_meta_tx() {
 
 #[tokio::test]
 async fn test_send_meta_tx_no_gas_allowance() {
-    let config = Arc::new(DConfig::production().unwrap());
+    let config = Arc::new(Environment::production().unwrap());
     let actions = vec![Action::Transfer(TransferAction { deposit: 1 })];
     let sender_id = AccountId::from_str("relayer_test0.testnet").unwrap();
     let receiver_id = AccountId::from_str("arrr_me_not_in_whitelist").unwrap();
@@ -1429,7 +1429,7 @@ async fn test_relay_with_load() {
     // tests assume testnet in config
     // Test Transfer Action
 
-    let config = Arc::new(DConfig::production().unwrap());
+    let config = Arc::new(Environment::production().unwrap());
     let actions = vec![Action::Transfer(TransferAction { deposit: 1 })];
     let mut sender_id = AccountId::from_str("nomnomnom.testnet").unwrap();
     let mut receiver_id = AccountId::from_str("relayer_test0.testnet").unwrap();
@@ -1485,7 +1485,7 @@ fn parse_configs() {
 
     for c in configs {
         println!("Parsing {c}");
-        if let Err(e) = DConfig::validate_configuration(Path::new(c)) {
+        if let Err(e) = Environment::validate_configuration(Path::new(c)) {
             println!("{}, {}", e, c)
         }
     }
