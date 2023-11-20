@@ -116,8 +116,18 @@ NOTE: this is only needed if you intend to use whitelisting, allowances, and oau
 9. Change all the `"account_id"`s of the keyfiles in the relayer directory from the implicit account_id (i.e. `e05185d0de0d6e4897555a386fdd3f48508ad1cdeaebcbd1cac81c72116cc5ab`) to the relayer account_id `your_relayer_account.testnet`
 10. Add the key filenames (i.e. `"e05185d0de0d6e4897555a386fdd3f48508ad1cdeaebcbd1cac81c72116cc5ab.json"`) to the `keys_filenames` list in `config.toml`
 
-## Testing
+## Unit Testing
 1. Run unit tests with `cargo test`
+
+## Performance Testing
+1. Remove the `#[ignore]` attribute above `test_relay_with_load()` testing function and run the test
+2. Flame Tracing https://crates.io/crates/tracing-flame
+   - Set `flametrace_performance = true` in `config.toml` 
+   - run `cargo run`, while sending requests to the endpoints of the functions you want to examine the performance of. 
+   - Stop the execution of the `cargo run` process. 
+   - Install inferno `cargo install inferno` 
+   - Generate the flamegraph from the `tracing.folded` file generated while running the relayer: `cat tracing.folded | inferno-flamegraph > tracing-flamegraph.svg`
+   - Generate a flamechart: `cat tracing.folded | inferno-flamegraph --flamechart > tracing-flamechart.svg`
 
 ## Docker Deployment
 1. Update `config.toml` as per your requirements.

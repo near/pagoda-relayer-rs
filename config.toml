@@ -40,6 +40,9 @@ use_shared_storage = false
 # reference shared storage contract: https://github.com/NearSocial/social-db/blob/master/contract/src/shared_storage.rs
 social_db_contract_id = "v1.social08.testnet"
 
+# flametrace is used for generating flame graphs for performance inspection using the tracing-flame crate https://crates.io/crates/tracing-flame
+flametrace_performance = false
+
 # Uncoment the network you want to use or add your own
 
 # mainnet
@@ -51,7 +54,7 @@ social_db_contract_id = "v1.social08.testnet"
 
 # testnet
 network = "testnet"
-rpc_url = "https://archival-rpc.testnet.near.org"
+rpc_url = "https://rpc.testnet.near.org"
 wallet_url = "https://wallet.testnet.near.org"
 explorer_transaction_url = "https://explorer.testnet.near.org/transactions/"
 rpc_api_key = ""

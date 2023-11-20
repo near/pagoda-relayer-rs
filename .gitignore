@@ -12,6 +12,10 @@ target/
 # jetbrains ide files
 *.idea
 
+# tracing flamegraph for performance benchmarking
+*.svg
+tracing.folded
+
 # where account and keys are stored
 *.json
 # except for example json file used for testing

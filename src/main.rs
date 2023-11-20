@@ -18,7 +18,7 @@ use axum::{
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD as BASE64_ENGINE, Engine as _};
 #[cfg(test)]
 use bytes::BytesMut;
-use config::{Config, File};
+use config::{Config, File as ConfigFile};
 use near_crypto::InMemorySigner;
 #[cfg(test)]
 use near_crypto::{KeyType, PublicKey, Signature};
@@ -47,8 +47,8 @@ use std::str::FromStr;
 use std::string::ToString;
 use std::{fmt, path::Path};
 use tower_http::trace::TraceLayer;
-use tracing::log::error;
-use tracing::{debug, info, warn};
+use tracing::{debug, error, info, instrument, warn};
+use tracing_flame::FlameLayer;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 use utoipa::{OpenApi, ToSchema};
 use utoipa_rapidoc::RapiDoc;
@@ -69,7 +69,7 @@ const YN_TO_GAS: u128 = 1_000_000_000;
 // load config from toml and setup json rpc client
 static LOCAL_CONF: Lazy<Config> = Lazy::new(|| {
     Config::builder()
-        .add_source(File::with_name("config.toml"))
+        .add_source(ConfigFile::with_name("config.toml"))
         .build()
         .unwrap()
 });
@@ -138,6 +138,8 @@ static SHARED_STORAGE_POOL: Lazy<SharedStoragePoolManager> = Lazy::new(|| {
         SHARED_STORAGE_ACCOUNT_ID.parse().unwrap(),
     )
 });
+static FLAMETRACE_PERFORMANCE: Lazy<bool> =
+    Lazy::new(|| LOCAL_CONF.get("flametrace_performance").unwrap_or(false));
 
 #[derive(Clone, Debug, Deserialize, ToSchema)]
 struct AccountIdAllowanceOauthSDAJson {
@@ -226,32 +228,18 @@ impl Display for AllowanceJson {
     }
 }
 
-async fn init_senders_infinite_allowance_fastauth() {
-    let max_allowance = u64::MAX;
-    for whitelisted_sender in WHITELISTED_DELEGATE_ACTION_RECEIVER_IDS.clone() {
-        let redis_result =
-            set_account_and_allowance_in_redis(&whitelisted_sender, &max_allowance).await;
-        if let Err(err) = redis_result {
-            error!(
-                "Error setting allowance for account_id {} with allowance {} in Relayer DB: {:?}",
-                whitelisted_sender, max_allowance, err,
-            );
-        } else {
-            info!(
-                "Set allowance for account_id {} with allowance {} in Relayer DB",
-                whitelisted_sender.clone().as_str(),
-                max_allowance,
-            );
-        }
-    }
-}
-
 #[tokio::main]
 async fn main() {
     // initialize tracing (aka logging)
-    tracing_subscriber::registry()
-        .with(tracing_subscriber::fmt::layer())
-        .init();
+    if *FLAMETRACE_PERFORMANCE {
+        setup_global_subscriber();
+        info!("default tracing setup with flametrace performance ENABLED");
+    } else {
+        tracing_subscriber::registry()
+            .with(tracing_subscriber::fmt::layer())
+            .init();
+        info!("default tracing setup with flametrace performance DISABLED");
+    }
 
     // initialize our shared storage pool manager if using fastauth features or using shared storage
     if USE_FASTAUTH_FEATURES.clone() || USE_SHARED_STORAGE.clone() {
@@ -340,6 +328,38 @@ async fn main() {
         .unwrap();
 }
 
+fn setup_global_subscriber() -> impl Drop {
+    let fmt_layer = tracing_subscriber::fmt::Layer::default();
+
+    let (flame_layer, _guard) = FlameLayer::with_file("./tracing.folded").unwrap();
+
+    tracing_subscriber::registry()
+        .with(fmt_layer)
+        .with(flame_layer)
+        .init();
+    _guard
+}
+
+async fn init_senders_infinite_allowance_fastauth() {
+    let max_allowance = u64::MAX;
+    for whitelisted_sender in WHITELISTED_DELEGATE_ACTION_RECEIVER_IDS.clone() {
+        let redis_result =
+            set_account_and_allowance_in_redis(&whitelisted_sender, &max_allowance).await;
+        if let Err(err) = redis_result {
+            error!(
+                "Error setting allowance for account_id {} with allowance {} in Relayer DB: {:?}",
+                whitelisted_sender, max_allowance, err,
+            );
+        } else {
+            info!(
+                "Set allowance for account_id {} with allowance {} in Relayer DB",
+                whitelisted_sender.clone().as_str(),
+                max_allowance,
+            );
+        }
+    }
+}
+
 // NOTE: error in swagger-ui TypeError: Failed to execute 'fetch' on 'Window': Request with GET/HEAD method cannot have body.
 #[utoipa::path(
     get,
@@ -350,6 +370,7 @@ async fn main() {
         (status = 500, description = "Error getting allowance for account_id example.near in Relayer DB: err_msg", body = String)
     )
 )]
+#[instrument]
 async fn get_allowance(account_id_json: Json<AccountIdJson>) -> impl IntoResponse {
     // convert str account_id val from json to AccountId so I can reuse get_remaining_allowance fn
     let Ok(account_id_val) = AccountId::from_str(&account_id_json.account_id) else {
@@ -396,6 +417,7 @@ async fn get_allowance(account_id_json: Json<AccountIdJson>) -> impl IntoRespons
         (status = 500, description = "Error creating oauth token https://securetoken.google.com/pagoda-oboarding-dev:Op4h13AQozM4CikngfHiFVC2xhf2 in Relayer DB:\n{err:?}", body = String),
     ),
 )]
+#[instrument]
 async fn create_account_atomic(
     account_id_allowance_oauth_sda: Json<AccountIdAllowanceOauthSDAJson>,
 ) -> impl IntoResponse {
@@ -512,6 +534,7 @@ post,
                     \n{db_result:?}", body = String),
     ),
 )]
+#[instrument]
 async fn update_allowance(account_id_allowance: Json<AccountIdAllowanceJson>) -> impl IntoResponse {
     let account_id: &String = &account_id_allowance.account_id;
     let allowance_in_gas: &u64 = &account_id_allowance.allowance;
@@ -540,6 +563,7 @@ async fn update_allowance(account_id_allowance: Json<AccountIdAllowanceJson>) ->
         (status = 500, description = "Error updating allowance for key example.near: err_msg", body = String),
     ),
 )]
+#[instrument]
 async fn update_all_allowances(Json(allowance_json): Json<AllowanceJson>) -> impl IntoResponse {
     let allowance_in_gas = allowance_json.allowance_in_gas;
     let redis_response = update_all_allowances_in_redis(allowance_in_gas).await;
@@ -559,6 +583,7 @@ async fn update_all_allowances(Json(allowance_json): Json<AllowanceJson>) -> imp
                             You can only register 1 account per oauth_token", body = String),
     ),
 )]
+#[instrument]
 async fn register_account_and_allowance(
     account_id_allowance_oauth: Json<AccountIdAllowanceOauthJson>,
 ) -> impl IntoResponse {
@@ -636,6 +661,7 @@ async fn register_account_and_allowance(
         (status = 500, description = "Error signing transaction: ...", body = String),
     ),
 )]
+#[instrument]
 async fn relay(data: Json<Vec<u8>>) -> impl IntoResponse {
     // deserialize SignedDelegateAction using borsh
     match SignedDelegateAction::try_from_slice(&data.0) {
@@ -667,6 +693,7 @@ async fn relay(data: Json<Vec<u8>>) -> impl IntoResponse {
         (status = 500, description = "Error signing transaction: ...", body = String),
     ),
 )]
+#[instrument]
 async fn send_meta_tx(data: Json<SignedDelegateAction>) -> impl IntoResponse {
     let relayer_response = process_signed_delegate_action(
         // deserialize SignedDelegateAction using serde json
@@ -679,6 +706,7 @@ async fn send_meta_tx(data: Json<SignedDelegateAction>) -> impl IntoResponse {
     }
 }
 
+#[instrument]
 async fn process_signed_delegate_action(
     signed_delegate_action: SignedDelegateAction,
 ) -> Result<String, RelayError> {
@@ -697,7 +725,7 @@ async fn process_signed_delegate_action(
     let is_whitelisted_da_receiver = WHITELISTED_CONTRACTS
         .iter()
         .any(|s| s == da_receiver_id.as_str());
-    if !is_whitelisted_da_receiver {
+    if !USE_FASTAUTH_FEATURES.clone() && !is_whitelisted_da_receiver {
         let err_msg = format!(
             "Delegate Action receiver_id {} is not whitelisted",
             da_receiver_id.as_str(),
