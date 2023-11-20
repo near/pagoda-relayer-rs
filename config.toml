@@ -28,7 +28,7 @@ whitelisted_delegate_action_receiver_ids = ["account_creator.near", "relayer_tes
 # this needs to be set to true if use_fastauth_features = true
 use_redis = false
 # redis url for storing and retrieving allowance for an account_id and seeing if an oauth_token has been used before
-redis_url = "redis://127.0.0.1:6379"
+# redis_url = "redis://127.0.0.1:6379"
 
 # set use_fastauth_features to true if you're integrating with fastauth -
 # including check if sender id and receiver id are the same AND (AddKey or DeleteKey action) in process_signed_delegate_action fn
