@@ -23,7 +23,6 @@ use near_crypto::InMemorySigner;
 #[cfg(test)]
 use near_crypto::{KeyType, PublicKey, Signature};
 use near_fetch::signer::KeyRotatingSigner;
-use near_primitives::borsh::BorshDeserialize;
 #[cfg(test)]
 use near_primitives::borsh::BorshSerialize;
 use near_primitives::delegate_action::SignedDelegateAction;
@@ -35,6 +34,7 @@ use near_primitives::transaction::{Action, FunctionCallAction};
 use near_primitives::types::AccountId;
 #[cfg(test)]
 use near_primitives::types::{BlockHeight, Nonce};
+use near_primitives::{borsh::BorshDeserialize, views::FinalExecutionStatus};
 use r2d2::{Pool, PooledConnection};
 use r2d2_redis::redis::{Commands, ErrorKind::IoError, RedisError};
 use r2d2_redis::RedisConnectionManager;
@@ -95,7 +95,7 @@ struct ConfigFile {
     whitelisted_contracts: Vec<AccountId>,
     #[serde(default = "bool::<false>")]
     use_whitelisted_delegate_action_receiver_ids: bool,
-    whitelisted_delegate_action_receiver_ids: Vec<AccountId>,
+    whitelisted_delegate_action_receiver_ids: Option<Vec<AccountId>>,
     #[serde(default = "bool::<false>")]
     use_redis: bool,
     redis_url: Option<String>,
@@ -246,19 +246,26 @@ impl OauthTokens {
     }
 }
 
+enum AllowedSenders {
+    WhiteList {
+        whitelisted_delegate_action_receiver_ids: Vec<AccountId>,
+    },
+    FastAuth {
+        oauth_tokens: OauthTokens,
+    },
+}
+
+/// We represent togglable features with Option types, if someone tries to use a feature that is disabled, we should respond with a 405
 pub struct Environment {
     port: u16,
     ip_address: [u8; 4],
     relayer_account_id: AccountId,
     shared_storage_pool: Option<SharedStoragePoolManager>,
-    use_fastauth_features: bool,
-    whitelisted_delegate_action_receiver_ids: Vec<AccountId>,
     network: String,
     allowances: Allowances,
-    oauth_tokens: OauthTokens,
     rpc_client: Arc<near_fetch::Client>,
     pay_with_ft: Option<PayWithFT>,
-    use_whitelisted_delegate_action_receiver_ids: bool,
+    allowed_senders: AllowedSenders,
     whitelisted_contracts: Vec<AccountId>,
     signer: KeyRotatingSigner,
 }
@@ -273,6 +280,18 @@ impl Environment {
     /// Validates the config file matches the types.
     /// Checks that the flags match the keys present.
     /// Checks all referenced files and urls exist.
+    /// We assume that all non existant boolean flags are false.
+    ///
+    /// Beyond the config being correctly typed there are the following rules which are enforced:
+    /// 1. exists whitelisted_delegate_action_receiver_ids <=> not use_fastauth_features
+    /// 2. use_fastauth_features => use_shared_storage
+    /// 3. use_fastauth_features => use_redis
+    /// 4. use_redis <=> exists redis_url
+    /// 5. use_shared_storage <=> exists social_db_contract_id
+    /// 6. use_shared_storage <=> exists shared_storage_account_id
+    /// 7. use_shared_storage <=> exists shared_storage_keys_filename
+    /// 8. use_pay_with_ft <=> exists burn_address
+    /// 9. use_whitelisted_delegate_action_receiver_ids <=> exists whitelisted_delegate_action_receiver_ids
     pub fn validate_configuration(file: &Path) -> Result<Environment, String> {
         Self::validate_configuration_internal(file)
             .map_err(|e| format!("In file {}: {}", file.display(), e))
@@ -329,11 +348,11 @@ impl Environment {
             use_flag_name: &str,
             use_flag: bool,
             config_key_name: &str,
-            config_key: Option<A>,
-        ) -> Result<Option<A>, String> {
+            config_key: &Option<A>,
+        ) -> Result<(), String> {
             match (use_flag, config_key) {
-                (true, Some(a)) => Ok(Some(a)),
-                (false, None) => Ok(None),
+                (true, Some(_)) => Ok(()),
+                (false, None) => Ok(()),
                 (true, None) => Err(format!(
                     "field '{}' is true so expected field '{}'",
                     use_flag_name, config_key_name
@@ -345,8 +364,18 @@ impl Environment {
             }
         }
 
+        // Parse FastAuth options
+        // 9. use_whitelisted_delegate_action_receiver_ids <=> exists whitelisted_delegate_action_receiver_ids
+        flagged_so_expect(
+            "use_whitelisted_delegate_action_receiver_ids",
+            use_whitelisted_delegate_action_receiver_ids,
+            "whitelisted_delegate_action_receiver_ids",
+            &whitelisted_delegate_action_receiver_ids,
+        )?;
+
         // Parse redis options
-        let redis_url = flagged_so_expect("use_redis", use_redis, "redis_url", redis_url)?;
+        // 4. use_redis <=> exists redis_url
+        flagged_so_expect("use_redis", use_redis, "redis_url", &redis_url)?;
 
         let redis_pool: Option<Pool<RedisConnectionManager>> = redis_url.map(|redis_url| {
             let manager = RedisConnectionManager::new(redis_url).unwrap();
@@ -355,19 +384,47 @@ impl Environment {
 
         let allowances = Allowances::new(redis_pool.clone());
         let oauth_tokens = OauthTokens::new(redis_pool.clone());
+
+        // 1. exists whitelisted_delegate_action_receiver_ids <=> not use_fastauth_features
+        // 2. use_fastauth_features => use_shared_storage
+        // 3. use_fastauth_features => use_redis
+        let allowed_senders = match (
+            use_fastauth_features,
+            whitelisted_delegate_action_receiver_ids,
+        ) {
+            // This is a FastAuth config
+            (true, None) => match (use_shared_storage, use_redis) {
+                (true, true) => Ok(AllowedSenders::FastAuth {oauth_tokens}),
+                (uss, ur) => Err(format!("use_shared_storage is {uss}, use_redis is {ur}. Both must be true when use_fastauth_features is true."))
+            },
+            // This is a whitelised account config
+            (false, Some(whitelisted_delegate_action_receiver_ids)) => Ok(AllowedSenders::WhiteList { whitelisted_delegate_action_receiver_ids }),
+            (faf, wda) => Err(format!("use_fastauth_features flag is {faf}, use_whitelisted_delegate_action_receiver_ids is {}. Excactly one of them must be true.", wda.is_some())),
+        }?;
+
         // Parse shared_storage options
-        let shared_storage_account_id = flagged_so_expect(
+        // 6. use_shared_storage <=> exists shared_storage_account_id
+        flagged_so_expect(
             "use_shared_storage",
             use_shared_storage,
             "shared_storage_account_id",
-            shared_storage_account_id,
+            &shared_storage_account_id,
         )?;
 
-        let shared_storage_keys_filename = flagged_so_expect(
+        // 7. use_shared_storage <=> exists shared_storage_keys_filename
+        flagged_so_expect(
             "use_shared_storage",
             use_shared_storage,
             "shared_storage_keys_filename",
-            shared_storage_keys_filename,
+            &shared_storage_keys_filename,
+        )?;
+
+        // 5. use_shared_storage <=> exists social_db_contract_id
+        flagged_so_expect(
+            "use_shared_storage",
+            use_shared_storage,
+            "social_db_contract_id",
+            &social_db_contract_id,
         )?;
 
         let shared_storage_pool = match (
@@ -399,28 +456,36 @@ impl Environment {
         };
 
         // Parse pay with FT options
-        let burn_address = flagged_so_expect(
+        // 8. use_pay_with_ft <=> exists burn_address
+        flagged_so_expect(
             "use_pay_with_ft",
             use_pay_with_ft,
             "burn_address",
-            burn_address,
+            &burn_address,
         )?;
 
         let pay_with_ft = burn_address.map(|burn_address| (PayWithFT { burn_address }));
 
+        // if fastauth enabled, initialize whitelisted senders with "infinite" allowance in relayer DB
+        // TODO check that is actually is unused
+        // if use_fastauth_features {
+        //     init_senders_infinite_allowance_fastauth(
+        //         &allowances,
+        //         &whitelisted_delegate_action_receiver_ids,
+        //     )
+        //     .await;
+        // }
+
         Ok(Environment {
-            whitelisted_delegate_action_receiver_ids,
-            use_fastauth_features,
             shared_storage_pool,
             relayer_account_id,
             ip_address,
             port,
             network,
             allowances,
-            oauth_tokens,
+            allowed_senders,
             rpc_client,
             pay_with_ft,
-            use_whitelisted_delegate_action_receiver_ids,
             whitelisted_contracts,
             signer,
         })
@@ -516,30 +581,6 @@ impl Display for AllowanceJson {
     }
 }
 
-async fn init_senders_infinite_allowance_fastauth(
-    allowances: &Allowances,
-    whitelisted_delegate_action_receiver_ids: &[AccountId],
-) {
-    let max_allowance = u64::MAX;
-    for whitelisted_sender in whitelisted_delegate_action_receiver_ids.iter() {
-        let redis_result = allowances
-            .set(whitelisted_sender.clone(), max_allowance)
-            .await;
-        if let Err(err) = redis_result {
-            error!(
-                "Error setting allowance for account_id {} with allowance {} in Relayer DB: {:?}",
-                whitelisted_sender, max_allowance, err,
-            );
-        } else {
-            info!(
-                "Set allowance for account_id {} with allowance {} in Relayer DB",
-                whitelisted_sender.clone().as_str(),
-                max_allowance,
-            );
-        }
-    }
-}
-
 #[tokio::main]
 async fn main() {
     // TODO Handle this error better
@@ -550,17 +591,14 @@ async fn main() {
         .with(tracing_subscriber::fmt::layer())
         .init();
 
-    // initialize our shared storage pool manager if using fastauth features or using shared storage
-    if config.use_fastauth_features.clone() {
-        if let Some(shared_storage_pool) = &config.shared_storage_pool {
-            if let Err(err) = shared_storage_pool.check_and_spawn_pool().await {
-                let err_msg = format!("Error initializing shared storage pool: {err}");
-                error!("{err_msg}");
-                tracing::error!(err_msg);
-                return;
-            } else {
-                info!("shared storage pool initialized")
-            }
+    if let Some(shared_storage_pool) = &config.shared_storage_pool {
+        if let Err(err) = shared_storage_pool.check_and_spawn_pool().await {
+            let err_msg = format!("Error initializing shared storage pool: {err}");
+            error!("{err_msg}");
+            tracing::error!(err_msg);
+            return;
+        } else {
+            info!("shared storage pool initialized")
         }
     }
 
@@ -603,15 +641,6 @@ async fn main() {
         )),
     )]
     struct ApiDoc;
-
-    // if fastauth enabled, initialize whitelisted senders with "infinite" allowance in relayer DB
-    if config.use_fastauth_features {
-        init_senders_infinite_allowance_fastauth(
-            &config.allowances,
-            &config.whitelisted_delegate_action_receiver_ids,
-        )
-        .await;
-    }
 
     // build our application with a route
     let app: Router = Router::new()
@@ -716,6 +745,15 @@ async fn create_account_atomic(
     unable to use the relayer without manual intervention deleting the record from redis
      */
 
+    let oauth_tokens = match &config.allowed_senders {
+        AllowedSenders::WhiteList { .. } => {
+            let err_msg = "This endpoint is disabled by this relayers configuration";
+            warn!("{err_msg}");
+            return (StatusCode::BAD_REQUEST, err_msg).into_response();
+        }
+        AllowedSenders::FastAuth { oauth_tokens } => oauth_tokens,
+    };
+
     // get individual vars from json object
     let account_id = &account_id_allowance_oauth_sda.account_id;
     let allowance_in_gas: u64 = account_id_allowance_oauth_sda.allowance;
@@ -732,7 +770,7 @@ async fn create_account_atomic(
     */
 
     // check if the oauth_token has already been used and is a key in Redis
-    match config.oauth_tokens.contains(oauth_token).await {
+    match oauth_tokens.contains(oauth_token).await {
         Ok(is_oauth_token_in_redis) => {
             if is_oauth_token_in_redis {
                 let err_msg = format!(
@@ -783,20 +821,18 @@ async fn create_account_atomic(
 
     // allocate shared storage for account_id if shared storage is being used
     if let Some(shared_storage_pool) = &config.shared_storage_pool {
-        if config.use_fastauth_features.clone() {
-            if let Err(err) = shared_storage_pool
-                .allocate_default(account_id.clone())
-                .await
-            {
-                let err_msg = format!("Error allocating storage for account {account_id}: {err:?}");
-                error!("{err_msg}");
-                return (StatusCode::INTERNAL_SERVER_ERROR, err_msg).into_response();
-            }
+        if let Err(err) = shared_storage_pool
+            .allocate_default(account_id.clone())
+            .await
+        {
+            let err_msg = format!("Error allocating storage for account {account_id}: {err:?}");
+            error!("{err_msg}");
+            return (StatusCode::INTERNAL_SERVER_ERROR, err_msg).into_response();
         }
     }
 
     // add oauth token to redis (key: oauth_token, val: true)
-    match &config.oauth_tokens.insert(oauth_token.clone()).await {
+    match &oauth_tokens.insert(oauth_token.clone()).await {
         Ok(_) => {
             let ok_msg = format!(
                 "Added Oauth token {oauth_token:?} for account_id {account_id:?} \
@@ -885,11 +921,23 @@ async fn register_account_and_allowance(
     State(config): State<Arc<Environment>>,
     account_id_allowance_oauth: Json<AccountIdAllowanceOauthJson>,
 ) -> impl IntoResponse {
-    let account_id = &account_id_allowance_oauth.account_id;
-    let allowance_in_gas: &u64 = &account_id_allowance_oauth.allowance;
-    let oauth_token: &String = &account_id_allowance_oauth.oauth_token;
+    let AccountIdAllowanceOauthJson {
+        account_id,
+        allowance,
+        oauth_token,
+    } = &account_id_allowance_oauth.0;
+
+    let oauth_tokens = match &config.allowed_senders {
+        AllowedSenders::WhiteList { .. } => {
+            let err_msg = "This endpoint is disabled by this relayers configuration";
+            warn!("{err_msg}");
+            return (StatusCode::BAD_REQUEST, err_msg).into_response();
+        }
+        AllowedSenders::FastAuth { oauth_tokens } => oauth_tokens,
+    };
+
     // check if the oauth_token has already been used and is a key in Relayer DB
-    match config.oauth_tokens.insert(oauth_token.clone()).await {
+    match oauth_tokens.insert(oauth_token.clone()).await {
         Ok(is_oauth_token_in_redis) => {
             if is_oauth_token_in_redis {
                 let err_msg = format!(
@@ -909,15 +957,13 @@ async fn register_account_and_allowance(
             return (StatusCode::INTERNAL_SERVER_ERROR, err_msg).into_response();
         }
     }
-    let redis_result = config
-        .allowances
-        .set(account_id.clone(), *allowance_in_gas)
-        .await;
+    let redis_result = config.allowances.set(account_id.clone(), *allowance).await;
 
     let Ok(_) = redis_result else {
         let err_msg = format!(
-            "Error creating account_id {account_id} with allowance {allowance_in_gas} in Relayer DB:\
-            \n{redis_result:?}");
+            "Error creating account_id {account_id} with allowance {allowance} in Relayer DB:\
+            \n{redis_result:?}"
+        );
         error!("{err_msg}");
         return (StatusCode::INTERNAL_SERVER_ERROR, err_msg).into_response();
     };
@@ -940,7 +986,7 @@ async fn register_account_and_allowance(
     }
 
     // add oauth token to redis (key: oauth_token, val: true)
-    match config.oauth_tokens.insert(oauth_token.clone()).await {
+    match oauth_tokens.insert(oauth_token.clone()).await {
         Ok(_) => {
             let ok_msg = format!("Added Oauth token {account_id_allowance_oauth:?} to Relayer DB");
             info!("{ok_msg}");
@@ -1021,147 +1067,160 @@ async fn process_signed_delegate_action(
     );
 
     // create Transaction from SignedDelegateAction
-    let signer_account_id = &config.relayer_account_id;
+    let relayer_account_id = &config.relayer_account_id;
     // the receiver of the txn is the sender of the signed delegate action
-    let receiver_id = signed_delegate_action.delegate_action.sender_id.clone();
-    let da_receiver_id = signed_delegate_action.delegate_action.receiver_id.clone();
+    let sender_id = signed_delegate_action.delegate_action.sender_id.clone();
+    let receiver_id = signed_delegate_action.delegate_action.receiver_id.clone();
 
-    // check that the delegate action receiver_id is in the whitelisted_contracts
-    let is_whitelisted_da_receiver = config
-        .whitelisted_contracts
-        .iter()
-        .any(|s| s == &da_receiver_id);
-    if !is_whitelisted_da_receiver {
-        let err_msg = format!(
-            "Delegate Action receiver_id {} is not whitelisted",
-            da_receiver_id.as_str(),
-        );
+    fn bad_request(err_msg: String) -> RelayError {
         warn!("{err_msg}");
-        return Err(RelayError {
+        RelayError {
             status_code: StatusCode::BAD_REQUEST,
             message: err_msg,
-        });
-    }
-    // check the sender_id in whitelist if applicable
-    if config.use_whitelisted_delegate_action_receiver_ids.clone()
-        && !config.use_fastauth_features.clone()
-    {
-        // check if the delegate action receiver_id (account sender_id) if a whitelisted delegate action receiver
-        let is_whitelisted_sender = config
-            .whitelisted_delegate_action_receiver_ids
-            .iter()
-            .any(|s| s == &receiver_id);
-        if !is_whitelisted_sender {
-            let err_msg = format!(
-                "Delegate Action receiver_id {} or sender_id {} is not whitelisted",
-                da_receiver_id.as_str(),
-                receiver_id.as_str(),
-            );
-            warn!("{err_msg}");
-            return Err(RelayError {
-                status_code: StatusCode::BAD_REQUEST,
-                message: err_msg,
-            });
         }
     }
-    if !is_whitelisted_da_receiver.clone() && config.use_fastauth_features.clone() {
-        // check if sender id and receiver id are the same AND (AddKey or DeleteKey action)
-        let non_delegate_action = signed_delegate_action
-            .delegate_action
-            .actions
-            .get(0)
-            .ok_or_else(|| {
-                let err_msg = format!("DelegateAction must have at least one NonDelegateAction");
-                warn!("{err_msg}");
-                RelayError {
-                    status_code: StatusCode::BAD_REQUEST,
-                    message: err_msg,
-                }
+
+    let is_whitelisted_sender =
+        |whitelisted_delegate_action_receiver_ids: &[AccountId]| -> Result<(), String> {
+            // check if the delegate action receiver_id (account sender_id) if a whitelisted delegate action receiver
+            let is_whitelisted_sender =
+                whitelisted_delegate_action_receiver_ids.contains(&sender_id);
+            if !is_whitelisted_sender {
+                Err(format!(
+                    "Delegate Action sender_id {} is not whitelisted",
+                    sender_id.as_str(),
+                ))
+            } else {
+                Ok(())
+            }
+        };
+
+    let is_key_action = |action: &Action| {
+        if matches!(action, Action::AddKey(_) | Action::DeleteKey(_)) {
+            if &sender_id == &receiver_id {
+                Ok(())
+            } else {
+                Err(format!("AddKey or DeleteKey actions must have the same sender ({sender_id}) and receiver IDs ({receiver_id})"))
+            }
+        } else {
+            Err(format!("{action:?} must be of type AddKey or DeleteKey"))
+        }
+    };
+
+    let is_ft_transfer = |burn_address: &AccountId, action: &Action| -> Result<(), String> {
+        if let Action::FunctionCall(FunctionCallAction { args, .. }) = action {
+            debug!("args: {:?}", args);
+
+            // convert to ascii lowercase
+            let args_ascii = args.to_ascii_lowercase();
+            debug!("args_ascii: {:?}", args_ascii);
+
+            // Convert to UTF-8 string
+            let args_str = String::from_utf8_lossy(&args_ascii);
+            debug!("args_str: {:?}", args_str);
+
+            // Parse to JSON (assuming args are serialized as JSON)
+            let args_json: Value = serde_json::from_str(&args_str).map_err(|err| {
+                format!("Failed to parse JSON: {args_str}, {}", err)
+                // Provide a default Value
             })?;
-        let contains_key_action = matches!(
-            (*non_delegate_action).clone().into(),
-            Action::AddKey(_) | Action::DeleteKey(_)
-        );
-        // check if the receiver_id (delegate action sender_id) if a whitelisted delegate action receiver
-        let is_whitelisted_sender = config
-            .whitelisted_delegate_action_receiver_ids
-            .iter()
-            .any(|s| s == &receiver_id);
-        if (receiver_id != da_receiver_id || !contains_key_action) && !is_whitelisted_sender {
-            let err_msg = format!(
-                "Delegate Action receiver_id {} or sender_id {} is not whitelisted OR \
-                (they do not match AND the NonDelegateAction is not AddKey or DeleteKey)",
-                da_receiver_id.as_str(),
-                receiver_id.as_str(),
-            );
-            warn!("{err_msg}");
-            return Err(RelayError {
-                status_code: StatusCode::BAD_REQUEST,
-                message: err_msg,
-            });
+            debug!("args_json: {:?}", args_json);
+
+            // get the receiver_id from the json without the escape chars
+            let receiver_id = &args_json["receiver_id"];
+            let receiver_id = receiver_id
+                .as_str()
+                .ok_or_else(|| format!("Couldn't parse receiver_id {receiver_id}"))?;
+
+            debug!("receiver_id: {receiver_id}");
+            debug!("BURN_ADDRESS.to_string(): {:?}", burn_address.to_string());
+
+            // Check if receiver_id in args contain BURN_ADDRESS
+            if receiver_id == burn_address.to_string() {
+                debug!("SignedDelegateAction contains the BURN_ADDRESS MATCH");
+                return Ok(());
+            } else {
+                Err(format!(
+                    "Tried to send tokens to {receiver_id}, but can only send tokens to the burn address ({burn_address})"
+                ))
+            }
+        } else {
+            Err(format!(
+                "Expected a FunctionCallAction buf found {action:?}"
+            ))
         }
-    }
+    };
 
-    // Check if the SignedDelegateAction includes a FunctionCallAction that transfers FTs to BURN_ADDRESS
-    if let Some(PayWithFT { burn_address }) = &config.pay_with_ft {
-        let non_delegate_actions = signed_delegate_action.delegate_action.get_actions();
-        let treasury_payments: Vec<Action> = non_delegate_actions
-            .iter()
-            .filter_map(|action| {
-                if let Action::FunctionCall(FunctionCallAction { args, .. }) = action {
-                    debug!("args: {:?}", args);
+    // check that the action is being sent to a whitelisted contract
+    if !config.whitelisted_contracts.contains(&receiver_id) {
+        return Err(bad_request(format!(
+            "Calling contract {} is not supported by this relayer",
+            receiver_id.as_str(),
+        )));
+    };
 
-                    // convert to ascii lowercase
-                    let args_ascii = args.to_ascii_lowercase();
-                    debug!("args_ascii: {:?}", args_ascii);
+    let actions = signed_delegate_action.delegate_action.get_actions();
+    for (i, action) in actions.iter().enumerate() {
+        // There are lots of ways that an action can be valid, only one of them needs to be true.
+        // This loop continues as soon as we find a rule that is followed
+        //
+        // We collect the results of failed validiations here.
+        let mut failed_checks: Vec<String> = Vec::new();
 
-                    // Convert to UTF-8 string
-                    let args_str = String::from_utf8_lossy(&args_ascii);
-                    debug!("args_str: {:?}", args_str);
+        let sender_check = match &config.allowed_senders {
+            // Check if a user is whitelisted in the config
+            AllowedSenders::WhiteList {
+                whitelisted_delegate_action_receiver_ids,
+            } => is_whitelisted_sender(whitelisted_delegate_action_receiver_ids),
+            // Check if a FastAuth user is doing a recovery
+            AllowedSenders::FastAuth { .. } => is_key_action(action),
+        };
 
-                    // Parse to JSON (assuming args are serialized as JSON)
-                    let args_json: Value = serde_json::from_str(&args_str).unwrap_or_else(|err| {
-                        error!("Failed to parse JSON: {}", err);
-                        // Provide a default Value
-                        Value::Null
-                    });
-                    debug!("args_json: {:?}", args_json);
+        match sender_check {
+            Ok(()) => continue,
+            Err(e) => failed_checks.push(e),
+        }
 
-                    // get the receiver_id from the json without the escape chars
-                    let receiver_id = args_json["receiver_id"].as_str().unwrap_or_default();
-                    debug!("receiver_id: {receiver_id}");
-                    debug!("BURN_ADDRESS.to_string(): {:?}", burn_address.to_string());
+        // Check if the transaction is a supported Fungible Token transfer
+        if let Some(PayWithFT { burn_address }) = &config.pay_with_ft {
+            match is_ft_transfer(burn_address, action) {
+                Ok(()) => continue,
+                Err(e) => failed_checks.push(e),
+            }
+        }
 
-                    // Check if receiver_id in args contain BURN_ADDRESS
-                    if receiver_id == burn_address.to_string() {
-                        debug!("SignedDelegateAction contains the BURN_ADDRESS MATCH");
-                        return Some(action.clone());
-                    }
+        // Combine the failed validations into a user interpretable message
+        // This is probably overkill right now, but will be good as we add more rules
+        let error_message = match failed_checks.as_slice() {
+            [] => {
+                unreachable!("There should always be at least failure one condition at this point")
+            }
+            // Special case when only one rule validation fails
+            [msg] => msg.clone(),
+            results => {
+                let mut response = format!("must pass at least one of the following checks:");
+                for e in results {
+                    response.push_str(&format!("\n  {e}"));
                 }
-                None
-            })
-            .collect();
-        if treasury_payments.is_empty() {
-            let err_msg = format!("No treasury payment found in this transaction",);
-            warn!("{err_msg}");
-            return Err(RelayError {
-                status_code: StatusCode::BAD_REQUEST,
-                message: err_msg,
-            });
-        }
+                response
+            }
+        };
+        return Err(bad_request(format!(
+            "At action index {i} ({action:?}) {error_message}"
+        )));
+        // Every action has passed validation on at least one rule
     }
 
-    // Check the sender's remaining gas allowance in Redis
-    let end_user_account: &AccountId = &signed_delegate_action.delegate_action.sender_id;
-    let remaining_allowance: u64 = config.allowances.get(end_user_account).await.unwrap_or(0);
+    // Check the sender's remaining gas allowance
+    let remaining_allowance: u64 = config.allowances.get(&sender_id).await.unwrap_or(0);
     if remaining_allowance < TXN_GAS_ALLOWANCE {
         let err_msg = format!(
             "AccountId {} does not have enough remaining gas allowance.",
-            end_user_account.as_str()
+            sender_id.as_str()
         );
         error!("{err_msg}");
         return Err(RelayError {
-            status_code: StatusCode::BAD_REQUEST,
+            status_code: StatusCode::PAYMENT_REQUIRED,
             message: err_msg,
         });
     }
@@ -1169,7 +1228,7 @@ async fn process_signed_delegate_action(
     let actions = vec![Action::Delegate(signed_delegate_action)];
     let execution = config
         .rpc_client
-        .send_tx(&config.signer, &receiver_id, actions)
+        .send_tx(&config.signer, &sender_id, actions)
         .await
         .map_err(|err| {
             let err_msg = format!("Error signing transaction: {err:?}");
@@ -1182,8 +1241,8 @@ async fn process_signed_delegate_action(
 
     let status = &execution.status;
     let response_msg = match status {
-        near_primitives::views::FinalExecutionStatus::Failure(_) => "Error sending transaction",
-        _ => "Relayed and sent transaction",
+        FinalExecutionStatus::SuccessValue(_) => "Relayed and sent transaction",
+        _ => "Error sending transaction",
     };
     let status_msg = json!({
         "message": response_msg,
@@ -1197,7 +1256,7 @@ async fn process_signed_delegate_action(
     debug!("total gas burnt in yN: {}", gas_used_in_yn);
     let new_allowance = update_remaining_allowance(
         &config.allowances,
-        &signer_account_id,
+        &relayer_account_id,
         gas_used_in_yn,
         remaining_allowance,
     )
@@ -1210,10 +1269,10 @@ async fn process_signed_delegate_action(
             message: err_msg,
         }
     })?;
-    info!("Updated remaining allowance for account {signer_account_id}: {new_allowance}",);
+    info!("Updated remaining allowance for account {relayer_account_id}: {new_allowance}",);
 
     match status {
-        near_primitives::views::FinalExecutionStatus::Failure(_) => {
+        FinalExecutionStatus::Failure(_) => {
             error!("Error message: \n{status_msg:?}");
             Err(RelayError {
                 status_code: StatusCode::INTERNAL_SERVER_ERROR,
