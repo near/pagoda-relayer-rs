@@ -1,6 +1,6 @@
 /*
- For ApiKey data structure
- */
+For ApiKey data structure
+*/
 
 use std::fmt::Debug;
 
@@ -70,8 +70,7 @@ impl NetworkConfig {
         let mut json_rpc_client =
             near_jsonrpc_client::JsonRpcClient::connect(self.rpc_url.as_ref());
         if let Some(rpc_api_key) = &self.rpc_api_key {
-            json_rpc_client =
-                json_rpc_client.header(near_jsonrpc_client::auth::ApiKey::from(rpc_api_key.clone()))
+            json_rpc_client = json_rpc_client.header(rpc_api_key.0.clone());
         };
         near_fetch::Client::from_client(json_rpc_client)
     }

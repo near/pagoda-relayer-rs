@@ -1,3 +1,5 @@
+#![warn(clippy::pedantic)]
+
 mod error;
 mod redis_fns;
 mod rpc_conf;
@@ -125,7 +127,7 @@ static SHARED_STORAGE_POOL: Lazy<SharedStoragePoolManager> = Lazy::new(|| {
 struct AccountIdAllowanceOauthSDAJson {
     #[schema(example = "example.near")]
     account_id: String,
-    #[schema(example = 900000000)]
+    #[schema(example = 900_000_000)]
     allowance: u64,
     #[schema(
         example = "https://securetoken.google.com/pagoda-oboarding-dev:Op4h13AQozM4CikngfHiFVC2xhf2"
@@ -151,7 +153,7 @@ impl Display for AccountIdAllowanceOauthSDAJson {
 struct AccountIdAllowanceOauthJson {
     #[schema(example = "example.near")]
     account_id: String,
-    #[schema(example = 900000000)]
+    #[schema(example = 900_000_000)]
     allowance: u64,
     #[schema(
         example = "https://securetoken.google.com/pagoda-oboarding-dev:Op4h13AQozM4CikngfHiFVC2xhf2"
@@ -172,7 +174,7 @@ impl Display for AccountIdAllowanceOauthJson {
 struct AccountIdAllowanceJson {
     #[schema(example = "example.near")]
     account_id: String,
-    #[schema(example = 900000000)]
+    #[schema(example = 900_000_000)]
     allowance: u64,
 }
 impl Display for AccountIdAllowanceJson {
@@ -199,7 +201,7 @@ impl Display for AccountIdJson {
 #[derive(Clone, Debug, Deserialize, ToSchema)]
 struct AllowanceJson {
     // TODO: LP use for return type of GET get_allowance
-    #[schema(example = 900000000)]
+    #[schema(example = 900_000_000)]
     allowance_in_gas: u64,
 }
 impl Display for AllowanceJson {
@@ -242,7 +244,7 @@ async fn main() {
             tracing::error!(err_msg);
             return;
         } else {
-            info!("shared storage pool initialized")
+            info!("shared storage pool initialized");
         }
     }
 
@@ -351,8 +353,7 @@ async fn get_allowance(account_id_json: Json<AccountIdJson>) -> impl IntoRespons
             .into_response(),
         Err(err) => {
             let err_msg = format!(
-                "Error getting allowance for account_id {} in Relayer DB: {:?}",
-                account_id_val, err
+                "Error getting allowance for account_id {account_id_val} in Relayer DB: {err:?}"
             );
             error!("{err_msg}");
             (StatusCode::INTERNAL_SERVER_ERROR, err_msg).into_response()
@@ -619,11 +620,7 @@ async fn relay(data: Json<Vec<u8>>) -> impl IntoResponse {
             }
         }
         Err(e) => {
-            let err_msg = format!(
-                "{}: {:?}",
-                "Error deserializing payload data object",
-                e.to_string(),
-            );
+            let err_msg = format!("Error deserializing payload data object: {e:?}");
             warn!("{err_msg}");
             (StatusCode::BAD_REQUEST, err_msg).into_response()
         }
@@ -671,10 +668,7 @@ async fn process_signed_delegate_action(
         .iter()
         .any(|s| s == da_receiver_id.as_str());
     if !is_whitelisted_da_receiver {
-        let err_msg = format!(
-            "Delegate Action receiver_id {} is not whitelisted",
-            da_receiver_id,
-        );
+        let err_msg = format!("Delegate Action receiver_id {da_receiver_id} is not whitelisted",);
         warn!("{err_msg}");
         return Err(RelayError {
             status_code: StatusCode::BAD_REQUEST,
@@ -689,8 +683,7 @@ async fn process_signed_delegate_action(
             .any(|s| s == receiver_id.as_str());
         if !is_whitelisted_sender {
             let err_msg = format!(
-                "Delegate Action receiver_id {} or sender_id {} is not whitelisted",
-                da_receiver_id, receiver_id,
+                "Delegate Action receiver_id {da_receiver_id} or sender_id {receiver_id} is not whitelisted",
             );
             warn!("{err_msg}");
             return Err(RelayError {
@@ -706,13 +699,14 @@ async fn process_signed_delegate_action(
             .actions
             .get(0)
             .ok_or_else(|| {
-                let err_msg = "DelegateAction must have at least one NonDelegateAction".to_string();
+                let err_msg = "DelegateAction must have at least one NonDelegateAction";
                 warn!("{err_msg}");
                 RelayError {
                     status_code: StatusCode::BAD_REQUEST,
-                    message: err_msg,
+                    message: err_msg.to_string(),
                 }
             })?;
+
         let contains_key_action = matches!(
             (*non_delegate_action).clone().into(),
             Action::AddKey(_) | Action::DeleteKey(_)
@@ -723,9 +717,8 @@ async fn process_signed_delegate_action(
             .any(|s| s == receiver_id.as_str());
         if (receiver_id != da_receiver_id || !contains_key_action) && !is_whitelisted_sender {
             let err_msg = format!(
-                "Delegate Action receiver_id {} or sender_id {} is not whitelisted OR \
+                "Delegate Action receiver_id {da_receiver_id} or sender_id {receiver_id} is not whitelisted OR \
                 (they do not match AND the NonDelegateAction is not AddKey or DeleteKey)",
-                da_receiver_id, receiver_id,
             );
             warn!("{err_msg}");
             return Err(RelayError {
@@ -777,11 +770,11 @@ async fn process_signed_delegate_action(
             })
             .collect();
         if treasury_payments.is_empty() {
-            let err_msg = "No treasury payment found in this transaction".to_string();
+            let err_msg = "No treasury payment found in this transaction";
             warn!("{err_msg}");
             return Err(RelayError {
                 status_code: StatusCode::BAD_REQUEST,
-                message: err_msg,
+                message: err_msg.to_string(),
             });
         }
     }
@@ -829,7 +822,7 @@ async fn process_signed_delegate_action(
         });
 
         let gas_used_in_yn =
-            calculate_total_gas_burned(execution.transaction_outcome, execution.receipts_outcome);
+            calculate_total_gas_burned(&execution.transaction_outcome, &execution.receipts_outcome);
         debug!("total gas burnt in yN: {}", gas_used_in_yn);
         let new_allowance =
             update_remaining_allowance(&signer_account_id, gas_used_in_yn, remaining_allowance)
@@ -906,13 +899,9 @@ pub async fn get_redis_cnxn() -> Result<PooledConnection<RedisConnectionManager>
     let conn: PooledConnection<RedisConnectionManager> = match conn_result {
         Ok(conn) => conn,
         Err(e) => {
-            let err_msg = "Error getting Relayer DB connection from the pool".to_string();
+            let err_msg = "Error getting Relayer DB connection from the pool";
             error!("{err_msg}");
-            return Err(RedisError::from((
-                IoError,
-                "Error getting Relayer DB connection from the pool",
-                e.to_string(),
-            )));
+            return Err(RedisError::from((IoError, err_msg, e.to_string())));
         }
     };
     Ok(conn)
@@ -923,7 +912,7 @@ pub async fn update_all_allowances_in_redis(allowance_in_gas: u64) -> Result<Str
     let mut redis_conn = match get_redis_cnxn().await {
         Ok(conn) => conn,
         Err(e) => {
-            let err_msg = format!("Error getting Relayer DB connection from the pool: {}", e);
+            let err_msg = format!("Error getting Relayer DB connection from the pool: {e}");
             error!("{err_msg}");
             return Err(RelayError {
                 status_code: StatusCode::INTERNAL_SERVER_ERROR,
@@ -937,11 +926,11 @@ pub async fn update_all_allowances_in_redis(allowance_in_gas: u64) -> Result<Str
         "mainnet" => "near",
         a => a,
     };
-    let pattern = format!("*.{}", network);
+    let pattern = format!("*.{network}");
     let keys: Vec<String> = match redis_conn.keys(pattern) {
         Ok(keys) => keys,
         Err(e) => {
-            let err_msg = format!("Error fetching keys from Relayer DB: {}", e);
+            let err_msg = format!("Error fetching keys from Relayer DB: {e}");
             error!("{err_msg}");
             return Err(RelayError {
                 status_code: StatusCode::INTERNAL_SERVER_ERROR,
@@ -952,10 +941,10 @@ pub async fn update_all_allowances_in_redis(allowance_in_gas: u64) -> Result<Str
 
     // Iterate through the keys and update their values to the provided allowance in gas
     for key in &keys {
-        match redis_conn.set::<_, _, ()>(key, allowance_in_gas.to_string()) {
+        match redis_conn.set::<_, _, ()>(key, allowance_in_gas) {
             Ok(_) => info!("Updated allowance for key {}", key),
             Err(e) => {
-                let err_msg = format!("Error updating allowance for key {}: {}", key, e);
+                let err_msg = format!("Error updating allowance for key {key}: {e}");
                 error!("{err_msg}");
                 return Err(RelayError {
                     status_code: StatusCode::INTERNAL_SERVER_ERROR,
@@ -1055,7 +1044,7 @@ mod test {
         let sender_id: String = String::from("relayer_test0.testnet");
         let receiver_id: String = String::from("relayer_test1.testnet");
         let nonce: i32 = 1;
-        let max_block_height = 2000000000;
+        let max_block_height = 2_000_000_000;
 
         // simulate calling the '/update_allowance' function with sender_id & allowance
         let allowance_in_gas: u64 = u64::MAX;
@@ -1072,10 +1061,7 @@ mod test {
             max_block_height,
         );
         let json_payload = Json(signed_delegate_action);
-        println!(
-            "SignedDelegateAction Json Serialized (no borsh): {:?}",
-            json_payload
-        );
+        println!("SignedDelegateAction Json Serialized (no borsh): {json_payload:?}");
         let response: Response = send_meta_tx(json_payload).await.into_response();
         let response_status: StatusCode = response.status();
         let body: BoxBody = response.into_body();
@@ -1090,7 +1076,7 @@ mod test {
         let sender_id: String = String::from("relayer_test0.testnet");
         let receiver_id: String = String::from("arrr_me_not_in_whitelist");
         let nonce: i32 = 54321;
-        let max_block_height = 2000000123;
+        let max_block_height = 2_000_000_123;
 
         // Call the `send_meta_tx` function with a sender that has no gas allowance
         // (and a receiver_id that isn't in whitelist)
@@ -1103,8 +1089,7 @@ mod test {
         );
         let non_whitelist_json_payload = Json(sda2);
         println!(
-            "SignedDelegateAction Json Serialized (no borsh) receiver_id not in whitelist: {:?}",
-            non_whitelist_json_payload
+            "SignedDelegateAction Json Serialized (no borsh) receiver_id not in whitelist: {non_whitelist_json_payload:?}"
         );
         let err_response = send_meta_tx(non_whitelist_json_payload)
             .await
@@ -1131,7 +1116,7 @@ mod test {
         let mut sender_id: String = String::new();
         let mut receiver_id: String = String::new();
         let mut nonce: i32 = 1;
-        let max_block_height = 2000000000;
+        let max_block_height = 2_000_000_000;
 
         let num_tests = 100;
         let mut response_statuses = vec![];
@@ -1170,7 +1155,7 @@ mod test {
         // all responses should be successful
         for i in 0..response_statuses.len() {
             let response_status = response_statuses[i];
-            println!("{}", response_status);
+            println!("{response_status}");
             println!("{}", response_bodies[i]);
             assert_eq!(response_status, StatusCode::OK);
         }

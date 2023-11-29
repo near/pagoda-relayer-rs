@@ -145,7 +145,7 @@ impl SharedStoragePoolManager {
 }
 
 /// Taken directly from near.social contract to deserialize into when calling
-/// get_account_storage.
+/// `get_account_storage`.
 #[derive(Debug, Deserialize)]
 pub struct StorageView {
     pub used_bytes: StorageUsage,
@@ -153,7 +153,7 @@ pub struct StorageView {
 }
 
 /// Taken directly from near.social contract to deserialize into when calling
-/// get_shared_storage_pool
+/// `get_shared_storage_pool`
 // JSON deserialization trick. no need to understand what actual structure is.
 #[derive(Debug, Deserialize)]
 pub struct SharedStoragePool(serde_json::Map<String, serde_json::Value>);

@@ -60,8 +60,8 @@ pub async fn update_remaining_allowance(
 }
 
 pub fn calculate_total_gas_burned(
-    transaction_outcome: ExecutionOutcomeWithIdView,
-    execution_outcome: Vec<ExecutionOutcomeWithIdView>,
+    transaction_outcome: &ExecutionOutcomeWithIdView,
+    execution_outcome: &[ExecutionOutcomeWithIdView],
 ) -> u128 {
     let exec_outcome_sum: u128 = execution_outcome
         .iter()
