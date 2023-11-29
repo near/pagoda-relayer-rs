@@ -51,7 +51,8 @@ pub async fn update_remaining_allowance(
     allowance: u64,
 ) -> Result<u64, RedisError> {
     let mut conn = get_redis_cnxn().await?;
-    let gas_used: u64 = (gas_used_in_yn / YN_TO_GAS) as u64;
+    let gas_used: u64 =
+        u64::try_from(gas_used_in_yn / YN_TO_GAS).expect("Gas value must always fit in u64"); // possible truncation
     let remaining_allowance = allowance - gas_used;
 
     conn.set(account_id.as_str(), remaining_allowance)?;

@@ -1,5 +1,3 @@
-#![warn(clippy::pedantic)]
-
 mod error;
 mod redis_fns;
 mod rpc_conf;
@@ -440,8 +438,7 @@ async fn create_account_atomic(
        after updated redis and adding shared storage, finally return success msg
     */
     let create_account_sda_result = process_signed_delegate_action(sda).await;
-    if create_account_sda_result.is_err() {
-        let err: RelayError = create_account_sda_result.err().unwrap();
+    if let Err(err) = create_account_sda_result {
         return (err.status_code, err.message).into_response();
     }
     let Ok(account_id) = account_id.parse::<AccountId>() else {
@@ -838,18 +835,15 @@ async fn process_signed_delegate_action(
                 })?;
         info!("Updated remaining allowance for account {signer_account_id}: {new_allowance}",);
 
-        match status {
-            near_primitives::views::FinalExecutionStatus::Failure(_) => {
-                error!("Error message: \n{status_msg:?}");
-                Err(RelayError {
-                    status_code: StatusCode::INTERNAL_SERVER_ERROR,
-                    message: status_msg.to_string(),
-                })
-            }
-            _ => {
-                info!("Success message: \n{status_msg:?}");
-                Ok(status_msg.to_string())
-            }
+        if let near_primitives::views::FinalExecutionStatus::Failure(_) = status {
+            error!("Error message: \n{status_msg:?}");
+            Err(RelayError {
+                status_code: StatusCode::INTERNAL_SERVER_ERROR,
+                message: status_msg.to_string(),
+            })
+        } else {
+            info!("Success message: \n{status_msg:?}");
+            Ok(status_msg.to_string())
         }
     } else {
         // FIXME: duplicate with above branch
@@ -878,18 +872,15 @@ async fn process_signed_delegate_action(
             "Receipts Outcome": &execution.receipts_outcome,
         });
 
-        match status {
-            near_primitives::views::FinalExecutionStatus::Failure(_) => {
-                error!("Error message: \n{status_msg:?}");
-                Err(RelayError {
-                    status_code: StatusCode::INTERNAL_SERVER_ERROR,
-                    message: status_msg.to_string(),
-                })
-            }
-            _ => {
-                info!("Success message: \n{status_msg:?}");
-                Ok(status_msg.to_string())
-            }
+        if let near_primitives::views::FinalExecutionStatus::Failure(_) = status {
+            error!("Error message: \n{status_msg:?}");
+            Err(RelayError {
+                status_code: StatusCode::INTERNAL_SERVER_ERROR,
+                message: status_msg.to_string(),
+            })
+        } else {
+            info!("Success message: \n{status_msg:?}");
+            Ok(status_msg.to_string())
         }
     }
 }
