@@ -44,15 +44,28 @@ pub async fn get_remaining_allowance(account_id: &AccountId) -> Result<u64, Redi
     Ok(remaining_allowance)
 }
 
+#[derive(Debug)]
+pub enum UpdateRemainingAllowancError {
+    Redis(RedisError),
+    /// Gas value must always fit in u64
+    GasValueOverflowU64,
+}
+
+impl From<RedisError> for UpdateRemainingAllowancError {
+    fn from(err: RedisError) -> Self {
+        Self::Redis(err)
+    }
+}
+
 // fn to update allowance in redis when getting the receipts back and deduct the gas used
 pub async fn update_remaining_allowance(
     account_id: &AccountId,
     gas_used_in_yn: u128,
     allowance: u64,
-) -> Result<u64, RedisError> {
+) -> Result<u64, UpdateRemainingAllowancError> {
     let mut conn = get_redis_cnxn().await?;
-    let gas_used: u64 =
-        u64::try_from(gas_used_in_yn / YN_TO_GAS).expect("Gas value must always fit in u64"); // possible truncation
+    let gas_used: u64 = u64::try_from(gas_used_in_yn / YN_TO_GAS)
+        .or(Err(UpdateRemainingAllowancError::GasValueOverflowU64))?; // possible truncation
     let remaining_allowance = allowance - gas_used;
 
     conn.set(account_id.as_str(), remaining_allowance)?;
