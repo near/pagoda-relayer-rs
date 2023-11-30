@@ -823,7 +823,6 @@ async fn process_signed_delegate_action(
             });
         }
 
-        // FIXME: duplicate code with other branch below
         let actions = vec![Action::Delegate(signed_delegate_action.clone())];
         let execution = RPC_CLIENT
             .send_tx(&*SIGNER, receiver_id, actions)
@@ -877,7 +876,6 @@ async fn process_signed_delegate_action(
             Ok(status_msg.to_string())
         }
     } else {
-        // FIXME: duplicate with above branch
         let actions = vec![Action::Delegate(signed_delegate_action.clone())];
         let execution = RPC_CLIENT
             .send_tx(&*SIGNER, receiver_id, actions)
