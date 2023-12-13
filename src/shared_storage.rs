@@ -1,5 +1,6 @@
-use anyhow::Context;
+use anyhow::{anyhow, Context};
 use near_crypto::InMemorySigner;
+use near_fetch::Client;
 use near_primitives::transaction::{Action, FunctionCallAction};
 use near_primitives::types::{AccountId, Balance, Gas, StorageUsage};
 use serde::Deserialize;
@@ -29,7 +30,7 @@ const fn bytes_per_amount(amount: Balance) -> u64 {
 /// near social.
 pub struct SharedStoragePoolManager {
     signer: InMemorySigner,
-    rpc_client: &'static near_fetch::Client,
+    rpc_client: &'static Client,
     pool_contract_id: AccountId,
     pool_owner_id: AccountId,
 }
@@ -37,7 +38,7 @@ pub struct SharedStoragePoolManager {
 impl SharedStoragePoolManager {
     pub fn new(
         signer: InMemorySigner,
-        rpc_client: &'static near_fetch::Client,
+        rpc_client: &'static Client,
         pool_contract_id: AccountId,
         pool_owner_id: AccountId,
     ) -> Self {
@@ -64,7 +65,7 @@ impl SharedStoragePoolManager {
     }
 
     /// Allocate default number of bytes per account in the shared pool.
-    pub async fn allocate_default(&self, id: &AccountId) -> anyhow::Result<()> {
+    pub async fn allocate_default(&self, id: AccountId) -> anyhow::Result<()> {
         // NOTE: Allocating default amount of bytes is idempotent since calling into
         // share_storage will only set the max bytes and not increase it. Thus calling
         // with the same amount of bytes will not increase the amount of bytes allocated.
@@ -72,7 +73,7 @@ impl SharedStoragePoolManager {
     }
 
     /// Allocate a set number of bytes for an account in the shared pool.
-    pub async fn allocate(&self, id: &AccountId, max_bytes: u64) -> anyhow::Result<()> {
+    pub async fn allocate(&self, id: AccountId, max_bytes: u64) -> anyhow::Result<()> {
         // TODO: figure out why get_account_storage doesn't work for an account like:
         // `social-storage.pagodaplatform.near`
         self.share_storage(id, max_bytes).await?;
@@ -83,7 +84,7 @@ impl SharedStoragePoolManager {
         let actions = vec![Action::FunctionCall(FunctionCallAction {
             method_name: "shared_storage_pool_deposit".into(),
             args: serde_json::json!({
-                "owner_id": self.pool_owner_id,
+                "owner_id": self.pool_owner_id.clone(),
             })
             .to_string()
             .into_bytes(),
@@ -97,7 +98,7 @@ impl SharedStoragePoolManager {
         Ok(())
     }
 
-    async fn share_storage(&self, id: &AccountId, max_bytes: StorageUsage) -> anyhow::Result<()> {
+    async fn share_storage(&self, id: AccountId, max_bytes: StorageUsage) -> anyhow::Result<()> {
         let actions = vec![Action::FunctionCall(FunctionCallAction {
             method_name: "share_storage".into(),
             args: serde_json::json!({
@@ -116,36 +117,34 @@ impl SharedStoragePoolManager {
         Ok(())
     }
 
-    #[allow(dead_code)]
-    async fn get_account_storage(&self) -> anyhow::Result<Option<StorageView>> {
-        self.rpc_client
-            .view(
-                &self.pool_contract_id,
-                "get_account_storage",
-                serde_json::json!({
-                    "account_id": self.pool_owner_id,
-                }),
-            )
-            .await
-            .map_err(Into::into)
-    }
+    // #[allow(dead_code)]
+    // async fn get_account_storage(&self) -> anyhow::Result<Option<StorageView>> {
+    //     self.rpc_client
+    //         .view(&self.pool_contract_id, "get_account_storage")
+    //         .args_json(serde_json::json!({
+    //             "account_id": self.pool_owner_id.clone(),
+    //         }))
+    //         .await
+    //         .map_err(Into::into)
+    // }
 
     async fn get_shared_storage_pool(&self) -> anyhow::Result<Option<SharedStoragePool>> {
-        self.rpc_client
-            .view(
-                &self.pool_contract_id,
-                "get_shared_storage_pool",
-                serde_json::json!({
-                    "owner_id": self.pool_owner_id,
-                }),
-            )
-            .await
-            .map_err(Into::into)
+        let res = self
+            .rpc_client
+            .view(&self.pool_contract_id, "get_shared_storage_pool")
+            .args_json(serde_json::json!({
+                "owner_id": self.pool_owner_id.clone(),
+            }))
+            .await;
+        match res {
+            Ok(res) => serde_json::from_slice(&res.result).map_err(|e| anyhow!(e)),
+            Err(e) => Err(anyhow!(e)),
+        }
     }
 }
 
 /// Taken directly from near.social contract to deserialize into when calling
-/// `get_account_storage`.
+/// get_account_storage.
 #[derive(Debug, Deserialize)]
 pub struct StorageView {
     pub used_bytes: StorageUsage,
@@ -153,7 +152,7 @@ pub struct StorageView {
 }
 
 /// Taken directly from near.social contract to deserialize into when calling
-/// `get_shared_storage_pool`
+/// get_shared_storage_pool
 // JSON deserialization trick. no need to understand what actual structure is.
 #[derive(Debug, Deserialize)]
 pub struct SharedStoragePool(serde_json::Map<String, serde_json::Value>);
