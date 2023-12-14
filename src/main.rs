@@ -23,11 +23,13 @@ use r2d2_redis::redis::{Commands, ErrorKind::IoError, RedisError};
 use r2d2_redis::RedisConnectionManager;
 use serde::Deserialize;
 use serde_json::{json, Value};
+use std::fmt;
 use std::fmt::{Debug, Display, Formatter};
 use std::net::SocketAddr;
+#[cfg(feature = "shared_storage")]
+use std::path::Path;
 use std::str::FromStr;
 use std::string::ToString;
-use std::{fmt, path::Path};
 use tower_http::trace::TraceLayer;
 use tracing::{debug, error, info, instrument, warn};
 use tracing_flame::FlameLayer;
@@ -42,6 +44,7 @@ use crate::redis_fns::{
     set_account_and_allowance_in_redis, set_oauth_token_in_redis, update_remaining_allowance,
 };
 use crate::rpc_conf::NetworkConfig;
+#[cfg(feature = "shared_storage")]
 use crate::shared_storage::SharedStoragePoolManager;
 
 // transaction cost in Gas (10^21yN or 10Tgas or 0.001N)
@@ -69,6 +72,7 @@ static IP_ADDRESS: Lazy<[u8; 4]> = Lazy::new(|| LOCAL_CONF.get("ip_address").unw
 static PORT: Lazy<u16> = Lazy::new(|| LOCAL_CONF.get("port").unwrap());
 static RELAYER_ACCOUNT_ID: Lazy<String> =
     Lazy::new(|| LOCAL_CONF.get("relayer_account_id").unwrap());
+#[cfg(feature = "shared_storage")]
 static SHARED_STORAGE_ACCOUNT_ID: Lazy<String> =
     Lazy::new(|| LOCAL_CONF.get("shared_storage_account_id").unwrap());
 static SIGNER: Lazy<KeyRotatingSigner> = Lazy::new(|| {
@@ -81,6 +85,7 @@ static SIGNER: Lazy<KeyRotatingSigner> = Lazy::new(|| {
 
     KeyRotatingSigner::from_signers(signers)
 });
+#[cfg(feature = "shared_storage")]
 static SHARED_STORAGE_KEYS_FILENAME: Lazy<String> =
     Lazy::new(|| LOCAL_CONF.get("shared_storage_keys_filename").unwrap());
 static WHITELISTED_CONTRACTS: Lazy<Vec<String>> =
@@ -108,6 +113,7 @@ static USE_PAY_WITH_FT: Lazy<bool> =
 static BURN_ADDRESS: Lazy<AccountId> = Lazy::new(|| LOCAL_CONF.get("burn_address").unwrap());
 static USE_SHARED_STORAGE: Lazy<bool> =
     Lazy::new(|| LOCAL_CONF.get("use_shared_storage").unwrap_or(false));
+#[cfg(feature = "shared_storage")]
 static SHARED_STORAGE_POOL: Lazy<SharedStoragePoolManager> = Lazy::new(|| {
     let social_db_id: String = LOCAL_CONF.get("social_db_contract_id").unwrap();
     let signer = InMemorySigner::from_file(Path::new(SHARED_STORAGE_KEYS_FILENAME.as_str()))
@@ -226,6 +232,7 @@ async fn main() {
 
     // initialize our shared storage pool manager if using fastauth features or using shared storage
     if *USE_FASTAUTH_FEATURES || *USE_SHARED_STORAGE {
+        #[cfg(any(feature = "fastauth_features", feature = "shared_storage"))]
         if let Err(err) = SHARED_STORAGE_POOL.check_and_spawn_pool().await {
             let err_msg = format!("Error initializing shared storage pool: {err}");
             error!("{err_msg}");
@@ -278,6 +285,7 @@ async fn main() {
 
     // if fastauth enabled, initialize whitelisted senders with "infinite" allowance in relayer DB
     if *USE_FASTAUTH_FEATURES {
+        #[cfg(feature = "fastauth_features")]
         init_senders_infinite_allowance_fastauth().await;
     }
 
@@ -323,6 +331,7 @@ fn setup_global_subscriber() -> impl Drop {
     _guard
 }
 
+#[cfg(feature = "fastauth_features")]
 async fn init_senders_infinite_allowance_fastauth() {
     let max_allowance = u64::MAX;
     for whitelisted_sender in WHITELISTED_DELEGATE_ACTION_RECEIVER_IDS.iter() {
@@ -471,6 +480,7 @@ async fn create_account_atomic(
 
     // allocate shared storage for account_id if shared storage is being used
     if *USE_FASTAUTH_FEATURES || *USE_SHARED_STORAGE {
+        #[cfg(any(feature = "fastauth_features", feature = "shared_storage"))]
         if let Err(err) = SHARED_STORAGE_POOL
             .allocate_default(account_id.clone())
             .await
@@ -603,6 +613,7 @@ async fn register_account_and_allowance(
         warn!("{err_msg}");
         return (StatusCode::BAD_REQUEST, err_msg).into_response();
     };
+    #[cfg(feature = "shared_storage")]
     if let Err(err) = SHARED_STORAGE_POOL
         .allocate_default(account_id.clone())
         .await

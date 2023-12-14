@@ -19,7 +19,11 @@ The `SignedTransaction` is then sent to the network via RPC call and the result 
 6. Capital Efficiency: Without relayer if your business has 1M users they would have to be allocated 0.25 NEAR to cover their gas costs totalling 250k NEAR. However, only ~10% of the users would actually use the full allowance and a large amount of the 250k NEAR is just sitting there unused. So using the relayer, you can allocate 50k NEAR as a global pool of capital for your users, which can refilled on an as needed basis.
 
 ## Features 
-NOTE: These features can be mixed and matched "à la carte". Use of one feature does not preclude the use of any other feature unless specified. See the `/examples` directory for example configs corresponding to different use cases.
+These features can be mixed and matched "à la carte". Use of one feature does not preclude the use of any other feature unless specified. See the `/examples` directory for example configs corresponding to different use cases.
+
+NOTE: If integrating with fastauth make sure to enable feature flags: `cargo build --features fastauth_features,shared_storage`. If using shared storage, make sure to enable feature flags: `cargo build --features shared_storage`
+
+
 1. Cover the gas costs of end users while allowing them to maintain custody of their funds and approve transactions (`/relay`, `/send_meta_tx`)
 2. Only pay for users interacting with certain contracts by whitelisting contracts addresses (`whitelisted_contracts` in `config.toml`) 
 3. Specify gas cost allowances for all accounts (`/update_all_allowances`) or on a per-user account basis (`/create_account_atomic`, `/register_account`, `/update_allowance`) and keep track of allowances (`/get_allowance`)
@@ -93,7 +97,9 @@ For more extensive testing, especially when you've deployed the relayer to multi
 3. With the account from step 2, create a json file in this directory in the format `{"account_id":"example.testnet","public_key":"ed25519:98GtfFzez3opomVpwa7i4m3nptHtc7Ha514XHMWszLtQ","private_key":"ed25519:YWuyKVQHE3rJQYRC3pRGV56o1qEtA1PnMYPDEtroc5kX4A4mWrJwF7XkzGe7JWNMABbtY4XFDBJEzgLyfPkwpzC"}` using a [Full Access Key](https://docs.near.org/concepts/basics/accounts/access-keys#key-types) from an account that has enough NEAR to cover the gas costs of transactions your server will be relaying. Usually, this will be a copy of the json file found in the `.near-credentials` directory. 
 4. Update values in `config.toml`
 5. Open up the `port` from `config.toml` in your machine's network settings
-6. Run the server using `cargo run`. To run with logs (tracing) enabled run `RUST_LOG=tower_http=debug cargo run`
+6. Run the server using `cargo run`. 
+7. (OPTIONAL) To run with logs (tracing) enabled run `RUST_LOG=tower_http=debug cargo run`
+8. (OPTIONAL) If integrating with fastauth make sure to enable feature flags: `cargo build --features fastauth_features,shared_storage`. If using shared storage, make sure to enable feature flags: `cargo build --features shared_storage`
 
 ## Redis Setup - OPTIONAL 
 NOTE: this is only needed if you intend to use whitelisting, allowances, and oauth functionality

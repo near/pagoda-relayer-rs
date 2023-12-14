@@ -7,6 +7,7 @@
 
 # Please note this is for reference only and you should be updating the values in the `config.toml` file found in the `pagoda-relayer-rs` directory.
 
+# NOTE: make sure to enable feature flags: `cargo build --features fastauth_features,shared_storage`
 
 # ip address to run server on, default to localhost
 ip_address = [0, 0, 0, 0]
