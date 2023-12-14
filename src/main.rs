@@ -12,11 +12,13 @@ use axum::{
 };
 use config::{Config, File as ConfigFile};
 use near_crypto::InMemorySigner;
-use near_fetch::signer::KeyRotatingSigner;
+use near_fetch::signer::{ExposeAccountId, KeyRotatingSigner};
+use near_jsonrpc_client::methods::broadcast_tx_commit::RpcBroadcastTxCommitRequest;
 use near_primitives::borsh::BorshDeserialize;
 use near_primitives::delegate_action::SignedDelegateAction;
-use near_primitives::transaction::{Action, FunctionCallAction};
+use near_primitives::transaction::{Action, FunctionCallAction, Transaction};
 use near_primitives::types::AccountId;
+use near_primitives::views::FinalExecutionOutcomeView;
 use once_cell::sync::Lazy;
 use r2d2::{Pool, PooledConnection};
 use r2d2_redis::redis::{Commands, ErrorKind::IoError, RedisError};
@@ -25,6 +27,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use std::fmt;
 use std::fmt::{Debug, Display, Formatter};
+use std::future::Future;
 use std::net::SocketAddr;
 #[cfg(feature = "shared_storage")]
 use std::path::Path;
@@ -59,15 +62,15 @@ static LOCAL_CONF: Lazy<Config> = Lazy::new(|| {
         .unwrap()
 });
 static NETWORK_ENV: Lazy<String> = Lazy::new(|| LOCAL_CONF.get("network").unwrap());
-static RPC_CLIENT: Lazy<near_fetch::Client> = Lazy::new(|| {
-    let network_config = NetworkConfig {
-        rpc_url: LOCAL_CONF.get("rpc_url").unwrap(),
-        rpc_api_key: LOCAL_CONF.get("rpc_api_key").unwrap(),
-        wallet_url: LOCAL_CONF.get("wallet_url").unwrap(),
-        explorer_transaction_url: LOCAL_CONF.get("explorer_transaction_url").unwrap(),
-    };
-    network_config.rpc_client()
+static NETWORK_CONFIG: Lazy<NetworkConfig> = Lazy::new(|| NetworkConfig {
+    rpc_url: LOCAL_CONF.get("rpc_url").unwrap(),
+    rpc_api_key: LOCAL_CONF.get("rpc_api_key").unwrap(),
+    wallet_url: LOCAL_CONF.get("wallet_url").unwrap(),
+    explorer_transaction_url: LOCAL_CONF.get("explorer_transaction_url").unwrap(),
 });
+static RPC_CLIENT: Lazy<near_fetch::Client> = Lazy::new(|| NETWORK_CONFIG.rpc_client());
+static RPC_CLIENT_NOFETCH: Lazy<near_jsonrpc_client::JsonRpcClient> =
+    Lazy::new(|| NETWORK_CONFIG.raw_rpc_client());
 static IP_ADDRESS: Lazy<[u8; 4]> = Lazy::new(|| LOCAL_CONF.get("ip_address").unwrap());
 static PORT: Lazy<u16> = Lazy::new(|| LOCAL_CONF.get("port").unwrap());
 static RELAYER_ACCOUNT_ID: Lazy<String> =
@@ -300,6 +303,8 @@ async fn main() {
         // `POST /relay` goes to `relay` handler function
         .route("/relay", post(relay))
         .route("/send_meta_tx", post(send_meta_tx))
+        .route("/send_meta_tx_async", post(send_meta_tx_async))
+        .route("/send_meta_tx_nopoll", post(send_meta_tx_nopoll))
         .route("/create_account_atomic", post(create_account_atomic))
         .route("/get_allowance", get(get_allowance))
         .route("/update_allowance", post(update_allowance))
@@ -690,10 +695,112 @@ async fn send_meta_tx(data: Json<SignedDelegateAction>) -> impl IntoResponse {
     }
 }
 
+#[utoipa::path(
+    post,
+    path = "/send_meta_tx_nopoll",
+    request_body = SignedDelegateAction,
+    responses(
+        (status = 201, description = "Relayed and sent transaction ...", body = String),
+        (status = 400, description = "Error deserializing payload data object ...", body = String),
+        (status = 500, description = "Error signing transaction: ...", body = String),
+    ),
+)]
+async fn send_meta_tx_nopoll(data: Json<SignedDelegateAction>) -> impl IntoResponse {
+    let relayer_response = process_signed_delegate_action_noretry_async(
+        // deserialize SignedDelegateAction using serde json
+        data.0,
+    )
+    .await;
+    match relayer_response {
+        Ok(response) => response.into_response(),
+        Err(err) => (err.status_code, err.message).into_response(),
+    }
+}
+
+#[utoipa::path(
+    post,
+    path = "/send_meta_tx_async",
+    request_body = SignedDelegateAction,
+    responses(
+        (status = 202, description = "Relayed and sent transaction ...", body = String),
+    ),
+)]
+async fn send_meta_tx_async(data: Json<SignedDelegateAction>) -> impl IntoResponse {
+    tokio::spawn(async {
+        let relayer_response = process_signed_delegate_action_noretry_async(
+            // deserialize SignedDelegateAction using serde json
+            data.0,
+        )
+        .await;
+        let response = match relayer_response {
+            Ok(response) => response.into_response(),
+            Err(err) => (err.status_code, err.message).into_response(),
+        };
+        debug!("Async Relayer response: {:?}", response);
+    });
+    StatusCode::ACCEPTED.into_response()
+}
+
 #[instrument]
 async fn process_signed_delegate_action(
     signed_delegate_action: &SignedDelegateAction,
 ) -> Result<String, RelayError> {
+    process_signed_delegate_action_inner(
+        signed_delegate_action.clone(),
+        |receiver_id, actions| async move {
+            RPC_CLIENT
+                .send_tx(&*SIGNER, &receiver_id, actions)
+                .await
+                .map_err(|err| {
+                    let err_msg: String = format!("Error signing transaction: {:?}", err);
+                    error!("{err_msg}");
+                    err_msg
+                })
+        },
+    )
+    .await
+}
+
+async fn process_signed_delegate_action_noretry_async(
+    signed_delegate_action: SignedDelegateAction,
+) -> Result<String, RelayError> {
+    process_signed_delegate_action_inner(
+        signed_delegate_action,
+        |receiver_id, actions| async move {
+            let (nonce, block_hash, _) = RPC_CLIENT
+                .fetch_nonce(&*SIGNER.account_id(), &*SIGNER.public_key())
+                .await
+                .map_err(|e| format!("Error fetching nonce: {:?}", e))?;
+            RPC_CLIENT_NOFETCH
+                .call(&RpcBroadcastTxCommitRequest {
+                    signed_transaction: Transaction {
+                        nonce,
+                        block_hash,
+                        signer_id: SIGNER.account_id().clone(),
+                        public_key: SIGNER.public_key().clone(),
+                        receiver_id: receiver_id.clone(),
+                        actions: actions.clone(),
+                    }
+                    .sign(SIGNER.current_signer()),
+                })
+                .await
+                .map_err(|err| {
+                    let err_msg: String = format!("Error signing transaction: {:?}", err);
+                    error!("{err_msg}");
+                    err_msg
+                })
+        },
+    )
+    .await
+}
+
+async fn process_signed_delegate_action_inner<F>(
+    signed_delegate_action: SignedDelegateAction,
+    f: impl Fn(AccountId, Vec<Action>) -> F,
+) -> Result<String, RelayError>
+where
+    F: Future<Output = Result<FinalExecutionOutcomeView, String>>,
+{
     debug!(
         "Deserialized SignedDelegateAction object: {:#?}",
         signed_delegate_action
