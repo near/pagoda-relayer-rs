@@ -18,7 +18,9 @@ use near_primitives::borsh::BorshDeserialize;
 use near_primitives::delegate_action::SignedDelegateAction;
 use near_primitives::transaction::{Action, FunctionCallAction, Transaction};
 use near_primitives::types::AccountId;
-use near_primitives::views::FinalExecutionOutcomeView;
+use near_primitives::views::{
+    ExecutionOutcomeWithIdView, FinalExecutionOutcomeView, FinalExecutionStatus,
+};
 use once_cell::sync::Lazy;
 use r2d2::{Pool, PooledConnection};
 use r2d2_redis::redis::{Commands, ErrorKind::IoError, RedisError};
@@ -33,6 +35,8 @@ use std::net::SocketAddr;
 use std::path::Path;
 use std::str::FromStr;
 use std::string::ToString;
+use std::time::Duration;
+use tokio::time::sleep;
 use tower_http::trace::TraceLayer;
 use tracing::{debug, error, info, instrument, warn};
 use tracing_flame::FlameLayer;
@@ -218,6 +222,13 @@ impl Display for AllowanceJson {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         write!(f, "allowance in Gas: {}", self.allowance_in_gas)
     }
+}
+
+#[allow(dead_code)] // makes compiler happy - implicitly used as return types, so need to allow dead code
+struct TransactionResult {
+    status: FinalExecutionStatus,
+    transaction_outcome: ExecutionOutcomeWithIdView,
+    receipts_outcome: Vec<ExecutionOutcomeWithIdView>,
 }
 
 #[tokio::main]
@@ -473,10 +484,16 @@ async fn create_account_atomic(
        if it succeeds, then add oauth token to redis and allocate shared storage
        after updated redis and adding shared storage, finally return success msg
     */
-    let create_account_sda_result = process_signed_delegate_action(sda).await;
+    let create_account_sda_result = if *USE_FASTAUTH_FEATURES {
+        process_signed_delegate_action_big_timeout(sda.clone()).await
+    } else {
+        process_signed_delegate_action(sda).await
+    };
+
     if let Err(err) = create_account_sda_result {
         return (err.status_code, err.message).into_response();
     }
+    #[allow(unused_variables)] // makes compiler happy - used by err_msg
     let Ok(account_id) = account_id.parse::<AccountId>() else {
         let err_msg = format!("Invalid account_id: {account_id}");
         warn!("{err_msg}");
@@ -613,6 +630,7 @@ async fn register_account_and_allowance(
         return (StatusCode::INTERNAL_SERVER_ERROR, err_msg).into_response();
     };
 
+    #[allow(unused_variables)] // makes compiler happy - used by err_msg
     let Ok(account_id) = account_id.parse::<AccountId>() else {
         let err_msg = format!("Invalid account_id: {account_id}");
         warn!("{err_msg}");
@@ -748,14 +766,79 @@ async fn process_signed_delegate_action(
     process_signed_delegate_action_inner(
         signed_delegate_action.clone(),
         |receiver_id, actions| async move {
-            RPC_CLIENT
-                .send_tx(&*SIGNER, &receiver_id, actions)
+            match RPC_CLIENT.send_tx(&*SIGNER, &receiver_id, actions).await {
+                Err(err) => {
+                    let err_msg: String = format!("Error signing transaction: {:?}", err);
+                    error!("{err_msg}");
+                    Err(err_msg)
+                }
+                Ok(FinalExecutionOutcomeView {
+                    status,
+                    transaction_outcome,
+                    receipts_outcome,
+                    ..
+                }) => Ok(TransactionResult {
+                    status,
+                    transaction_outcome,
+                    receipts_outcome,
+                }),
+            }
+        },
+    )
+    .await
+}
+
+pub async fn process_signed_delegate_action_big_timeout(
+    signed_delegate_action: SignedDelegateAction,
+) -> Result<String, RelayError> {
+    process_signed_delegate_action_inner(
+        signed_delegate_action,
+        |receiver_id, actions| async move {
+            let hash = RPC_CLIENT
+                .send_tx_async(&*SIGNER, &receiver_id, actions)
                 .await
                 .map_err(|err| {
                     let err_msg: String = format!("Error signing transaction: {:?}", err);
                     error!("{err_msg}");
                     err_msg
+                })?;
+
+            let mut last_res = None;
+            const MAX_RETRIES: usize = 300;
+            for _retry_no in 1..=MAX_RETRIES {
+                let second = Duration::from_secs(1);
+                let res = match RPC_CLIENT.tx_async_status(SIGNER.account_id(), hash).await {
+                    Ok(res) => res,
+                    // The node is unstable, wait a second and try again
+                    Err(_) => {
+                        sleep(second).await;
+                        continue;
+                    }
+                };
+                last_res = Some(res.clone());
+                match res.status {
+                    FinalExecutionStatus::NotStarted => sleep(second).await,
+                    FinalExecutionStatus::Started => sleep(second).await,
+                    FinalExecutionStatus::Failure(_) => break,
+                    FinalExecutionStatus::SuccessValue(_) => break,
+                }
+            }
+            if let Some(FinalExecutionOutcomeView {
+                status,
+                transaction_outcome,
+                receipts_outcome,
+                ..
+            }) = last_res
+            {
+                Ok(TransactionResult {
+                    status,
+                    transaction_outcome,
+                    receipts_outcome,
                 })
+            } else {
+                error!("Tried {MAX_RETRIES} times, failed {MAX_RETRIES} times");
+                Err(format!("Failed after {MAX_RETRIES} retries"))
+            }
         },
     )
     .await
@@ -771,7 +854,12 @@ async fn process_signed_delegate_action_noretry_async(
                 .fetch_nonce(&*SIGNER.account_id(), &*SIGNER.public_key())
                 .await
                 .map_err(|e| format!("Error fetching nonce: {:?}", e))?;
-            RPC_CLIENT_NOFETCH
+            let FinalExecutionOutcomeView {
+                status,
+                transaction_outcome,
+                receipts_outcome,
+                ..
+            } = RPC_CLIENT_NOFETCH
                 .call(&RpcBroadcastTxCommitRequest {
                     signed_transaction: Transaction {
                         nonce,
@@ -788,7 +876,12 @@ async fn process_signed_delegate_action_noretry_async(
                     let err_msg: String = format!("Error signing transaction: {:?}", err);
                     error!("{err_msg}");
                     err_msg
-                })
+                })?;
+            Ok(TransactionResult {
+                status,
+                transaction_outcome,
+                receipts_outcome,
+            })
         },
     )
     .await
@@ -796,10 +889,11 @@ async fn process_signed_delegate_action_noretry_async(
 
 async fn process_signed_delegate_action_inner<F>(
     signed_delegate_action: SignedDelegateAction,
+    #[allow(unused_variables)] // makes compiler happy - used by Future
     f: impl Fn(AccountId, Vec<Action>) -> F,
 ) -> Result<String, RelayError>
 where
-    F: Future<Output = Result<FinalExecutionOutcomeView, String>>,
+    F: Future<Output = Result<TransactionResult, String>>,
 {
     debug!(
         "Deserialized SignedDelegateAction object: {:#?}",
@@ -959,7 +1053,7 @@ where
 
         let status = &execution.status;
         let response_msg = match status {
-            near_primitives::views::FinalExecutionStatus::Failure(_) => "Error sending transaction",
+            FinalExecutionStatus::Failure(_) => "Error sending transaction",
             _ => "Relayed and sent transaction",
         };
         let status_msg = json!({
@@ -986,7 +1080,7 @@ where
                 })?;
         info!("Updated remaining allowance for account {signer_account_id}: {new_allowance}",);
 
-        if let near_primitives::views::FinalExecutionStatus::Failure(_) = status {
+        if let FinalExecutionStatus::Failure(_) = status {
             error!("Error message: \n{status_msg:?}");
             Err(RelayError {
                 status_code: StatusCode::INTERNAL_SERVER_ERROR,
@@ -1012,7 +1106,7 @@ where
 
         let status = &execution.status;
         let response_msg = match status {
-            near_primitives::views::FinalExecutionStatus::Failure(_) => "Error sending transaction",
+            FinalExecutionStatus::Failure(_) => "Error sending transaction",
             _ => "Relayed and sent transaction",
         };
         let status_msg = json!({
@@ -1022,7 +1116,7 @@ where
             "Receipts Outcome": &execution.receipts_outcome,
         });
 
-        if let near_primitives::views::FinalExecutionStatus::Failure(_) = status {
+        if let FinalExecutionStatus::Failure(_) = status {
             error!("Error message: \n{status_msg:?}");
             Err(RelayError {
                 status_code: StatusCode::INTERNAL_SERVER_ERROR,
