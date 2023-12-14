@@ -445,7 +445,6 @@ async fn create_account_atomic(
         }
     }
     let redis_result = set_account_and_allowance_in_redis(account_id, allowance_in_gas).await;
-
     let Ok(_) = redis_result else {
         let err_msg = format!(
             "Error creating account_id {account_id} with allowance {allowance_in_gas} in Relayer DB:\n{redis_result:?}"
@@ -472,7 +471,10 @@ async fn create_account_atomic(
 
     // allocate shared storage for account_id if shared storage is being used
     if *USE_FASTAUTH_FEATURES || *USE_SHARED_STORAGE {
-        if let Err(err) = SHARED_STORAGE_POOL.allocate_default(&account_id).await {
+        if let Err(err) = SHARED_STORAGE_POOL
+            .allocate_default(account_id.clone())
+            .await
+        {
             let err_msg = format!("Error allocating storage for account {account_id}: {err:?}");
             error!("{err_msg}");
             return (StatusCode::INTERNAL_SERVER_ERROR, err_msg).into_response();
@@ -601,7 +603,10 @@ async fn register_account_and_allowance(
         warn!("{err_msg}");
         return (StatusCode::BAD_REQUEST, err_msg).into_response();
     };
-    if let Err(err) = SHARED_STORAGE_POOL.allocate_default(&account_id).await {
+    if let Err(err) = SHARED_STORAGE_POOL
+        .allocate_default(account_id.clone())
+        .await
+    {
         let err_msg = format!("Error allocating storage for account {account_id}: {err:?}");
         error!("{err_msg}");
         return (StatusCode::INTERNAL_SERVER_ERROR, err_msg).into_response();
@@ -694,9 +699,7 @@ async fn process_signed_delegate_action(
         .iter()
         .any(|s| s == da_receiver_id.as_str());
     if !*USE_FASTAUTH_FEATURES && !is_whitelisted_da_receiver {
-        let err_msg = format!(
-            "Delegate Action receiver_id {da_receiver_id} is not whitelisted",
-        );
+        let err_msg = format!("Delegate Action receiver_id {da_receiver_id} is not whitelisted",);
         warn!("{err_msg}");
         return Err(RelayError {
             status_code: StatusCode::BAD_REQUEST,
