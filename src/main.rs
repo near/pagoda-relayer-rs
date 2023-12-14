@@ -889,8 +889,7 @@ async fn process_signed_delegate_action_noretry_async(
 
 async fn process_signed_delegate_action_inner<F>(
     signed_delegate_action: SignedDelegateAction,
-    #[allow(unused_variables)] // makes compiler happy - used by Future
-    f: impl Fn(AccountId, Vec<Action>) -> F,
+    _f: impl Fn(AccountId, Vec<Action>) -> F,
 ) -> Result<String, RelayError>
 where
     F: Future<Output = Result<TransactionResult, String>>,
