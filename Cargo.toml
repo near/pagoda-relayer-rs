@@ -25,7 +25,9 @@ r2d2_redis = "0.14.0"
 redis = "0.23.0"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0.68"
-tokio = { version = "~1", features = ["full"] }  # using this version to avoid conflicts with nearcore version
+tokio = { version = "~1", features = [
+    "full",
+] } # using this version to avoid conflicts with nearcore version
 tower = "0.4.13"
 tower-http = { version = "0.3.5", features = ["trace", "cors"] }
 tracing = "0.1"
@@ -35,7 +37,9 @@ url = { version = "2", features = ["serde"] }
 utoipa = { version = "3.5.0", features = ["axum_extras"] }
 utoipa-rapidoc = { version = "0.1.0", features = ["axum"] }
 utoipa-swagger-ui = { version = "3", features = ["axum"] }
+flume = "0.11"
 
 [dev-dependencies]
 mockers = "0.22.0"
 mockall = "0.11.3"
+near-workspaces = "0.9.0"

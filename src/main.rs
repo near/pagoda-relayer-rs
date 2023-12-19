@@ -1,16 +1,18 @@
 mod error;
+mod lock_pool;
 mod redis_fns;
 mod rpc_conf;
 mod shared_storage;
 
 use axum::{
-    extract::Json,
+    extract::{Json, State},
     http::StatusCode,
     response::IntoResponse,
     routing::{get, post},
     Router,
 };
 use config::{Config, File as ConfigFile};
+use lock_pool::LockPool;
 use near_crypto::InMemorySigner;
 use near_fetch::signer::KeyRotatingSigner;
 use near_primitives::borsh::BorshDeserialize;
@@ -23,11 +25,14 @@ use r2d2_redis::redis::{Commands, ErrorKind::IoError, RedisError};
 use r2d2_redis::RedisConnectionManager;
 use serde::Deserialize;
 use serde_json::{json, Value};
-use std::fmt::{Debug, Display, Formatter};
-use std::net::SocketAddr;
 use std::str::FromStr;
 use std::string::ToString;
 use std::{fmt, path::Path};
+use std::{
+    fmt::{Debug, Display, Formatter},
+    path::PathBuf,
+};
+use std::{net::SocketAddr, sync::Arc};
 use tower_http::trace::TraceLayer;
 use tracing::{debug, error, info, instrument, warn};
 use tracing_flame::FlameLayer;
@@ -48,6 +53,37 @@ use crate::shared_storage::SharedStoragePoolManager;
 const TXN_GAS_ALLOWANCE: u64 = 10_000_000_000_000;
 const YN_TO_GAS: u128 = 1_000_000_000;
 
+#[derive(Debug, Clone, serde::Deserialize)]
+struct RelayerConfiguration {
+    #[serde(rename = "network")]
+    network_env: String,
+    #[serde(flatten)]
+    network_config: NetworkConfig,
+    ip_address: [u8; 4],
+    port: u16,
+    relayer_account_id: String,
+    shared_storage_account_id: String,
+    keys_filename: PathBuf,
+    shared_storage_keys_filename: PathBuf,
+    whitelisted_contracts: Vec<AccountId>,
+    #[serde(default)]
+    use_whitelisted_delegate_action_receiver_ids: bool,
+    whitelisted_delegate_action_receiver_ids: Vec<String>,
+    #[serde(default)]
+    use_redis: bool,
+    redis_url: String,
+    #[serde(default)]
+    use_fastauth_features: bool,
+    #[serde(default)]
+    use_pay_with_ft: bool,
+    burn_address: AccountId,
+    #[serde(default)]
+    use_shared_storage: bool,
+    social_db_contract_id: AccountId,
+    #[serde(default)]
+    flametrace_performance: bool,
+}
+
 // load config from toml and setup json rpc client
 static LOCAL_CONF: Lazy<Config> = Lazy::new(|| {
     Config::builder()
@@ -55,7 +91,7 @@ static LOCAL_CONF: Lazy<Config> = Lazy::new(|| {
         .build()
         .unwrap()
 });
-static NETWORK_ENV: Lazy<String> = Lazy::new(|| LOCAL_CONF.get("network").unwrap());
+// static NETWORK_ENV: Lazy<String> = Lazy::new(|| LOCAL_CONF.get("network").unwrap());
 static RPC_CLIENT: Lazy<near_fetch::Client> = Lazy::new(|| {
     let network_config = NetworkConfig {
         rpc_url: LOCAL_CONF.get("rpc_url").unwrap(),
@@ -65,13 +101,13 @@ static RPC_CLIENT: Lazy<near_fetch::Client> = Lazy::new(|| {
     };
     network_config.rpc_client()
 });
-static IP_ADDRESS: Lazy<[u8; 4]> = Lazy::new(|| LOCAL_CONF.get("ip_address").unwrap());
-static PORT: Lazy<u16> = Lazy::new(|| LOCAL_CONF.get("port").unwrap());
+// static IP_ADDRESS: Lazy<[u8; 4]> = Lazy::new(|| LOCAL_CONF.get("ip_address").unwrap());
+// static PORT: Lazy<u16> = Lazy::new(|| LOCAL_CONF.get("port").unwrap());
 static RELAYER_ACCOUNT_ID: Lazy<String> =
     Lazy::new(|| LOCAL_CONF.get("relayer_account_id").unwrap());
 static SHARED_STORAGE_ACCOUNT_ID: Lazy<String> =
     Lazy::new(|| LOCAL_CONF.get("shared_storage_account_id").unwrap());
-static SIGNER: Lazy<KeyRotatingSigner> = Lazy::new(|| {
+static SIGNER: Lazy<LockPool<InMemorySigner>> = Lazy::new(|| {
     let path = LOCAL_CONF
         .get::<String>("keys_filename")
         .expect("Failed to read 'keys_filename' from config");
@@ -79,7 +115,7 @@ static SIGNER: Lazy<KeyRotatingSigner> = Lazy::new(|| {
     let signers: Vec<InMemorySigner> =
         serde_json::from_reader(keys_file).expect("Failed to parse keys file");
 
-    KeyRotatingSigner::from_signers(signers)
+    LockPool::new(signers)
 });
 static SHARED_STORAGE_KEYS_FILENAME: Lazy<String> =
     Lazy::new(|| LOCAL_CONF.get("shared_storage_keys_filename").unwrap());
@@ -121,8 +157,8 @@ static SHARED_STORAGE_POOL: Lazy<SharedStoragePoolManager> = Lazy::new(|| {
         SHARED_STORAGE_ACCOUNT_ID.parse().unwrap(),
     )
 });
-static FLAMETRACE_PERFORMANCE: Lazy<bool> =
-    Lazy::new(|| LOCAL_CONF.get("flametrace_performance").unwrap_or(false));
+// static FLAMETRACE_PERFORMANCE: Lazy<bool> =
+//     Lazy::new(|| LOCAL_CONF.get("flametrace_performance").unwrap_or(false));
 
 #[derive(Clone, Debug, Deserialize, ToSchema)]
 struct AccountIdAllowanceOauthSDAJson {
@@ -211,10 +247,23 @@ impl Display for AllowanceJson {
     }
 }
 
+#[derive(Debug)]
+struct AppState {
+    config: RelayerConfiguration,
+    rpc_client: near_fetch::Client,
+}
+
 #[tokio::main]
 async fn main() {
+    let config: RelayerConfiguration = Config::builder()
+        .add_source(ConfigFile::with_name("config.toml"))
+        .build()
+        .unwrap()
+        .try_deserialize()
+        .unwrap();
+
     // initialize tracing (aka logging)
-    if *FLAMETRACE_PERFORMANCE {
+    if config.flametrace_performance {
         setup_global_subscriber();
         info!("default tracing setup with flametrace performance ENABLED");
     } else {
@@ -225,7 +274,7 @@ async fn main() {
     }
 
     // initialize our shared storage pool manager if using fastauth features or using shared storage
-    if *USE_FASTAUTH_FEATURES || *USE_SHARED_STORAGE {
+    if config.use_fastauth_features || config.use_shared_storage {
         if let Err(err) = SHARED_STORAGE_POOL.check_and_spawn_pool().await {
             let err_msg = format!("Error initializing shared storage pool: {err}");
             error!("{err_msg}");
@@ -277,9 +326,13 @@ async fn main() {
     struct ApiDoc;
 
     // if fastauth enabled, initialize whitelisted senders with "infinite" allowance in relayer DB
-    if *USE_FASTAUTH_FEATURES {
+    if config.use_fastauth_features {
         init_senders_infinite_allowance_fastauth().await;
     }
+
+    let rpc_client = config.network_config.rpc_client();
+
+    let app_state = Arc::new(AppState { config, rpc_client });
 
     // build our application with a route
     let app = Router::new()
@@ -299,11 +352,12 @@ async fn main() {
         .route("/register_account", post(register_account_and_allowance))
         // See https://docs.rs/tower-http/0.1.1/tower_http/trace/index.html for more details.
         .layer(TraceLayer::new_for_http())
-        .layer(cors_layer);
+        .layer(cors_layer)
+        .with_state(Arc::clone(&app_state));
 
     // run our app with hyper
     // `axum::Server` is a re-export of `hyper::Server`
-    let addr: SocketAddr = SocketAddr::from((*IP_ADDRESS, *PORT));
+    let addr: SocketAddr = SocketAddr::from((app_state.config.ip_address, app_state.config.port));
     info!("listening on {}", addr);
     axum::Server::bind(&addr)
         .serve(app.into_make_service())
@@ -400,6 +454,7 @@ async fn get_allowance(account_id_json: Json<AccountIdJson>) -> impl IntoRespons
 )]
 #[instrument]
 async fn create_account_atomic(
+    State(state): State<Arc<AppState>>,
     account_id_allowance_oauth_sda: Json<AccountIdAllowanceOauthSDAJson>,
 ) -> impl IntoResponse {
     /*
@@ -460,7 +515,8 @@ async fn create_account_atomic(
        if it succeeds, then add oauth token to redis and allocate shared storage
        after updated redis and adding shared storage, finally return success msg
     */
-    let create_account_sda_result = process_signed_delegate_action(sda).await;
+    let create_account_sda_result =
+        process_signed_delegate_action(&state.config, &state.rpc_client, sda).await;
     if let Err(err) = create_account_sda_result {
         return (err.status_code, err.message).into_response();
     }
@@ -539,9 +595,13 @@ async fn update_allowance(account_id_allowance: Json<AccountIdAllowanceJson>) ->
     ),
 )]
 #[instrument]
-async fn update_all_allowances(Json(allowance_json): Json<AllowanceJson>) -> impl IntoResponse {
+async fn update_all_allowances(
+    State(state): State<Arc<AppState>>,
+    Json(allowance_json): Json<AllowanceJson>,
+) -> impl IntoResponse {
     let allowance_in_gas = allowance_json.allowance_in_gas;
-    let redis_response = update_all_allowances_in_redis(allowance_in_gas).await;
+    let redis_response =
+        update_all_allowances_in_redis(&state.config.network_env, allowance_in_gas).await;
     match redis_response {
         Ok(response) => response.into_response(),
         Err(err) => (err.status_code, err.message).into_response(),
@@ -634,11 +694,17 @@ async fn register_account_and_allowance(
     ),
 )]
 #[instrument]
-async fn relay(data: Json<Vec<u8>>) -> impl IntoResponse {
+async fn relay(State(state): State<Arc<AppState>>, data: Json<Vec<u8>>) -> impl IntoResponse {
     // deserialize SignedDelegateAction using borsh
     match SignedDelegateAction::try_from_slice(&data.0) {
         Ok(signed_delegate_action) => {
-            match process_signed_delegate_action(&signed_delegate_action).await {
+            match process_signed_delegate_action(
+                &state.config,
+                &state.rpc_client,
+                &signed_delegate_action,
+            )
+            .await
+            {
                 Ok(response) => response.into_response(),
                 Err(err) => (err.status_code, err.message).into_response(),
             }
@@ -662,8 +728,13 @@ async fn relay(data: Json<Vec<u8>>) -> impl IntoResponse {
     ),
 )]
 #[instrument]
-async fn send_meta_tx(data: Json<SignedDelegateAction>) -> impl IntoResponse {
+async fn send_meta_tx(
+    State(state): State<Arc<AppState>>,
+    data: Json<SignedDelegateAction>,
+) -> impl IntoResponse {
     let relayer_response = process_signed_delegate_action(
+        &state.config,
+        &state.rpc_client,
         // deserialize SignedDelegateAction using serde json
         &data.0,
     )
@@ -676,6 +747,8 @@ async fn send_meta_tx(data: Json<SignedDelegateAction>) -> impl IntoResponse {
 
 #[instrument]
 async fn process_signed_delegate_action(
+    config: &RelayerConfiguration,
+    rpc_client: &near_fetch::Client,
     signed_delegate_action: &SignedDelegateAction,
 ) -> Result<String, RelayError> {
     debug!(
@@ -684,19 +757,18 @@ async fn process_signed_delegate_action(
     );
 
     // create Transaction from SignedDelegateAction
-    let signer_account_id: AccountId = RELAYER_ACCOUNT_ID.parse().unwrap();
+    let signer_account_id: AccountId = config.relayer_account_id.parse().unwrap();
     // the receiver of the txn is the sender of the signed delegate action
     let receiver_id = &signed_delegate_action.delegate_action.sender_id;
     let da_receiver_id = &signed_delegate_action.delegate_action.receiver_id;
 
     // check that the delegate action receiver_id is in the whitelisted_contracts
-    let is_whitelisted_da_receiver = WHITELISTED_CONTRACTS
+    let is_whitelisted_da_receiver = config
+        .whitelisted_contracts
         .iter()
-        .any(|s| s == da_receiver_id.as_str());
-    if !*USE_FASTAUTH_FEATURES && !is_whitelisted_da_receiver {
-        let err_msg = format!(
-            "Delegate Action receiver_id {da_receiver_id} is not whitelisted",
-        );
+        .any(|s| s == da_receiver_id);
+    if config.use_fastauth_features && !is_whitelisted_da_receiver {
+        let err_msg = format!("Delegate Action receiver_id {da_receiver_id} is not whitelisted");
         warn!("{err_msg}");
         return Err(RelayError {
             status_code: StatusCode::BAD_REQUEST,
@@ -704,9 +776,10 @@ async fn process_signed_delegate_action(
         });
     }
     // check the sender_id in whitelist if applicable
-    if *USE_WHITELISTED_DELEGATE_ACTION_RECEIVER_IDS && !*USE_FASTAUTH_FEATURES {
+    if config.use_whitelisted_delegate_action_receiver_ids && !config.use_fastauth_features {
         // check if the delegate action receiver_id (account sender_id) if a whitelisted delegate action receiver
-        let is_whitelisted_sender = WHITELISTED_DELEGATE_ACTION_RECEIVER_IDS
+        let is_whitelisted_sender = config
+            .whitelisted_delegate_action_receiver_ids
             .iter()
             .any(|s| s == receiver_id.as_str());
         if !is_whitelisted_sender {
@@ -720,7 +793,7 @@ async fn process_signed_delegate_action(
             });
         }
     }
-    if !is_whitelisted_da_receiver && *USE_FASTAUTH_FEATURES {
+    if !is_whitelisted_da_receiver && config.use_fastauth_features {
         // check if sender id and receiver id are the same AND (AddKey or DeleteKey action)
         let non_delegate_action = signed_delegate_action
             .delegate_action
@@ -740,7 +813,8 @@ async fn process_signed_delegate_action(
             Action::AddKey(_) | Action::DeleteKey(_)
         );
         // check if the receiver_id (delegate action sender_id) if a whitelisted delegate action receiver
-        let is_whitelisted_sender = WHITELISTED_DELEGATE_ACTION_RECEIVER_IDS
+        let is_whitelisted_sender = config
+            .whitelisted_delegate_action_receiver_ids
             .iter()
             .any(|s| s == receiver_id.as_str());
         if (receiver_id != da_receiver_id || !contains_key_action) && !is_whitelisted_sender {
@@ -784,7 +858,7 @@ async fn process_signed_delegate_action(
                     // get the receiver_id from the json without the escape chars
                     let receiver_id = args_json["receiver_id"].as_str().unwrap_or_default();
                     debug!("receiver_id: {receiver_id}");
-                    let burn_address = BURN_ADDRESS.to_string();
+                    let burn_address = config.burn_address.to_string();
                     debug!("BURN_ADDRESS.to_string(): {burn_address:?}");
 
                     // Check if receiver_id in args contain BURN_ADDRESS
@@ -807,7 +881,7 @@ async fn process_signed_delegate_action(
         }
     }
 
-    if *USE_REDIS {
+    if config.use_redis {
         // Check the sender's remaining gas allowance in Redis
         let end_user_account: &AccountId = &signed_delegate_action.delegate_action.sender_id;
         let remaining_allowance: u64 = get_remaining_allowance(end_user_account).await.unwrap_or(0);
@@ -824,8 +898,9 @@ async fn process_signed_delegate_action(
         }
 
         let actions = vec![Action::Delegate(signed_delegate_action.clone())];
-        let execution = RPC_CLIENT
-            .send_tx(&*SIGNER, receiver_id, actions)
+        let signer = SIGNER.request().await;
+        let execution = rpc_client
+            .send_tx(&*signer, receiver_id, actions)
             .await
             .map_err(|err| {
                 let err_msg = format!("Error signing transaction: {err:?}");
@@ -835,6 +910,8 @@ async fn process_signed_delegate_action(
                     message: err_msg,
                 }
             })?;
+
+        drop(signer);
 
         let status = &execution.status;
         let response_msg = match status {
@@ -877,8 +954,9 @@ async fn process_signed_delegate_action(
         }
     } else {
         let actions = vec![Action::Delegate(signed_delegate_action.clone())];
-        let execution = RPC_CLIENT
-            .send_tx(&*SIGNER, receiver_id, actions)
+        let signer = SIGNER.request().await;
+        let execution = rpc_client
+            .send_tx(&*signer, receiver_id, actions)
             .await
             .map_err(|err| {
                 let err_msg = format!("Error signing transaction: {err:?}");
@@ -888,6 +966,8 @@ async fn process_signed_delegate_action(
                     message: err_msg,
                 }
             })?;
+
+        drop(signer);
 
         let status = &execution.status;
         let response_msg = match status {
@@ -927,7 +1007,10 @@ pub async fn get_redis_cnxn() -> Result<PooledConnection<RedisConnectionManager>
     Ok(conn)
 }
 
-pub async fn update_all_allowances_in_redis(allowance_in_gas: u64) -> Result<String, RelayError> {
+pub async fn update_all_allowances_in_redis(
+    network_env: &str,
+    allowance_in_gas: u64,
+) -> Result<String, RelayError> {
     // Get a connection to Redis from the pool
     let mut redis_conn = match get_redis_cnxn().await {
         Ok(conn) => conn,
@@ -942,7 +1025,7 @@ pub async fn update_all_allowances_in_redis(allowance_in_gas: u64) -> Result<Str
     };
 
     // Fetch all keys that match the network env (.near for mainnet, .testnet for testnet, etc)
-    let network = match &(&*NETWORK_ENV)[..] {
+    let network = match network_env {
         "mainnet" => "near",
         a => a,
     };
@@ -1179,5 +1262,12 @@ mod test {
             println!("{}", response_bodies[i]);
             assert_eq!(response_status, StatusCode::OK);
         }
+    }
+
+    #[tokio::test]
+    async fn nonce_race() {
+        let worker = near_workspaces::sandbox().await.unwrap();
+
+        let relayer_account = worker.dev_create_account().await.unwrap();
     }
 }
