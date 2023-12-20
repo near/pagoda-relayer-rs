@@ -24,23 +24,23 @@ These features can be mixed and matched "à la carte". Use of one feature does n
 NOTE: If integrating with fastauth make sure to enable feature flags: `cargo build --features fastauth_features,shared_storage`. If using shared storage, make sure to enable feature flags: `cargo build --features shared_storage`
 
 
-1. Cover the gas costs of end users while allowing them to maintain custody of their funds and approve transactions (`/relay`, `/send_meta_tx`)
+1. Cover the gas costs of end users while allowing them to maintain custody of their funds and approve transactions (`/relay`, `/send_meta_tx`, `/send_meta_tx_async`, `/send_meta_tx_nopoll`)
 2. Only pay for users interacting with certain contracts by whitelisting contracts addresses (`whitelisted_contracts` in `config.toml`) 
 3. Specify gas cost allowances for all accounts (`/update_all_allowances`) or on a per-user account basis (`/create_account_atomic`, `/register_account`, `/update_allowance`) and keep track of allowances (`/get_allowance`)
 4. Specify the accounts for which the relayer will cover gas fees (`whitelisted_delegate_action_receiver_ids` in `config.toml`)
 5. Only allow users to register if they have a unique Oauth Token (`/create_account_atomic`, `/register_account`)
 6. Relayer Key Rotation: `keys_filenames` in `config.toml`
 7. Integrate with [Fastauth SDK](https://docs.near.org/tools/fastauth-sdk). See `/examples/configs/fastauth.toml`
+8. Mix and Match config options - see `examples/configs`
 
 ### Features - COMING SOON
 1. Allow users to pay for gas fees using Fungible Tokens they hold. This can be implemented by either:
    1. Swapping the FT for NEAR using a DEX like [Ref finance](https://app.ref.finance/) OR
    2. Sending the FT to a burn address that is verified by the relayer and the relayer covers the equivalent amount of gas in NEAR
 2. Cover storage deposit costs by deploying a storage contract
-3. Configure via to config use relayer without storage contract
-4. automated relayer funds "top up" service
-5. Put transactions in a queue to minimize network congestion - expected early-mid 2024
-6. Multichain relayers - expected early-mid 2024
+3. automated relayer funds "top up" service
+4. Put transactions in a queue to minimize network congestion - expected early-mid 2024
+5. Multichain relayers - expected early-mid 2024
 
 ## API Spec <a id="api_spc"></a>
 For more details on the following endpoint and to try them out, please [setup your local dev env](#basic_setup).
@@ -85,6 +85,8 @@ with
 For more extensive testing, especially when you've deployed the relayer to multiple environments, it is recommended that you use Postman or some other api testing service.
 - POST `/relay`
 - POST `/send_meta_tx`
+- POST `/send_meta_tx_async`
+- POST `/send_meta_tx_nopoll`
 - GET `/get_allowance`
 - POST `/update_allowance`
 - POST `/update_all_allowances`

@@ -131,17 +131,6 @@ impl SharedStoragePoolManager {
         Ok(())
     }
 
-    // #[allow(dead_code)]
-    // async fn get_account_storage(&self) -> anyhow::Result<Option<StorageView>> {
-    //     self.rpc_client
-    //         .view(&self.pool_contract_id, "get_account_storage")
-    //         .args_json(serde_json::json!({
-    //             "account_id": self.pool_owner_id.clone(),
-    //         }))
-    //         .await
-    //         .map_err(Into::into)
-    // }
-
     async fn get_shared_storage_pool(&self) -> anyhow::Result<Option<SharedStoragePool>> {
         let res = self
             .rpc_client
