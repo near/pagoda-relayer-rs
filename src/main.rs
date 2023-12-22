@@ -84,6 +84,30 @@ struct RelayerConfiguration {
     flametrace_performance: bool,
 }
 
+fn create_redis_pool(config: &RelayerConfiguration) -> Pool<RedisConnectionManager> {
+    let manager = RedisConnectionManager::new(config.redis_url.clone()).unwrap();
+    Pool::builder().build(manager).unwrap()
+}
+
+fn create_shared_storage_pool(
+    config: &RelayerConfiguration,
+    rpc_client: Arc<near_fetch::Client>,
+) -> SharedStoragePoolManager {
+    let signer =
+        InMemorySigner::from_file(&config.shared_storage_keys_filename).unwrap_or_else(|err| {
+            panic!(
+                "failed to get signing keys={:?}: {err:?}",
+                config.shared_storage_keys_filename
+            )
+        });
+    SharedStoragePoolManager::new(
+        signer,
+        Arc::clone(&rpc_client),
+        config.social_db_contract_id.clone(),
+        config.shared_storage_account_id.parse().unwrap(),
+    )
+}
+
 // load config from toml and setup json rpc client
 static LOCAL_CONF: Lazy<Config> = Lazy::new(|| {
     Config::builder()
@@ -91,22 +115,6 @@ static LOCAL_CONF: Lazy<Config> = Lazy::new(|| {
         .build()
         .unwrap()
 });
-// static NETWORK_ENV: Lazy<String> = Lazy::new(|| LOCAL_CONF.get("network").unwrap());
-static RPC_CLIENT: Lazy<near_fetch::Client> = Lazy::new(|| {
-    let network_config = NetworkConfig {
-        rpc_url: LOCAL_CONF.get("rpc_url").unwrap(),
-        rpc_api_key: LOCAL_CONF.get("rpc_api_key").unwrap(),
-        wallet_url: LOCAL_CONF.get("wallet_url").unwrap(),
-        explorer_transaction_url: LOCAL_CONF.get("explorer_transaction_url").unwrap(),
-    };
-    network_config.rpc_client()
-});
-// static IP_ADDRESS: Lazy<[u8; 4]> = Lazy::new(|| LOCAL_CONF.get("ip_address").unwrap());
-// static PORT: Lazy<u16> = Lazy::new(|| LOCAL_CONF.get("port").unwrap());
-static RELAYER_ACCOUNT_ID: Lazy<String> =
-    Lazy::new(|| LOCAL_CONF.get("relayer_account_id").unwrap());
-static SHARED_STORAGE_ACCOUNT_ID: Lazy<String> =
-    Lazy::new(|| LOCAL_CONF.get("shared_storage_account_id").unwrap());
 static SIGNER: Lazy<LockPool<InMemorySigner>> = Lazy::new(|| {
     let path = LOCAL_CONF
         .get::<String>("keys_filename")
@@ -117,48 +125,6 @@ static SIGNER: Lazy<LockPool<InMemorySigner>> = Lazy::new(|| {
 
     LockPool::new(signers)
 });
-static SHARED_STORAGE_KEYS_FILENAME: Lazy<String> =
-    Lazy::new(|| LOCAL_CONF.get("shared_storage_keys_filename").unwrap());
-static WHITELISTED_CONTRACTS: Lazy<Vec<String>> =
-    Lazy::new(|| LOCAL_CONF.get("whitelisted_contracts").unwrap());
-static USE_WHITELISTED_DELEGATE_ACTION_RECEIVER_IDS: Lazy<bool> = Lazy::new(|| {
-    LOCAL_CONF
-        .get("use_whitelisted_delegate_action_receiver_ids")
-        .unwrap_or(false)
-});
-static WHITELISTED_DELEGATE_ACTION_RECEIVER_IDS: Lazy<Vec<String>> = Lazy::new(|| {
-    LOCAL_CONF
-        .get("whitelisted_delegate_action_receiver_ids")
-        .unwrap()
-});
-static USE_REDIS: Lazy<bool> = Lazy::new(|| LOCAL_CONF.get("use_redis").unwrap_or(false));
-static REDIS_POOL: Lazy<Pool<RedisConnectionManager>> = Lazy::new(|| {
-    let redis_cnxn_url: String = LOCAL_CONF.get("redis_url").unwrap();
-    let manager = RedisConnectionManager::new(redis_cnxn_url).unwrap();
-    Pool::builder().build(manager).unwrap()
-});
-static USE_FASTAUTH_FEATURES: Lazy<bool> =
-    Lazy::new(|| LOCAL_CONF.get("use_fastauth_features").unwrap_or(false));
-static USE_PAY_WITH_FT: Lazy<bool> =
-    Lazy::new(|| LOCAL_CONF.get("use_pay_with_ft").unwrap_or(false));
-static BURN_ADDRESS: Lazy<AccountId> = Lazy::new(|| LOCAL_CONF.get("burn_address").unwrap());
-static USE_SHARED_STORAGE: Lazy<bool> =
-    Lazy::new(|| LOCAL_CONF.get("use_shared_storage").unwrap_or(false));
-static SHARED_STORAGE_POOL: Lazy<SharedStoragePoolManager> = Lazy::new(|| {
-    let social_db_id: String = LOCAL_CONF.get("social_db_contract_id").unwrap();
-    let signer = InMemorySigner::from_file(Path::new(SHARED_STORAGE_KEYS_FILENAME.as_str()))
-        .unwrap_or_else(|err| {
-            panic!("failed to get signing keys={SHARED_STORAGE_KEYS_FILENAME:?}: {err:?}")
-        });
-    SharedStoragePoolManager::new(
-        signer,
-        &RPC_CLIENT,
-        social_db_id.parse().unwrap(),
-        SHARED_STORAGE_ACCOUNT_ID.parse().unwrap(),
-    )
-});
-// static FLAMETRACE_PERFORMANCE: Lazy<bool> =
-//     Lazy::new(|| LOCAL_CONF.get("flametrace_performance").unwrap_or(false));
 
 #[derive(Clone, Debug, Deserialize, ToSchema)]
 struct AccountIdAllowanceOauthSDAJson {
@@ -250,7 +216,9 @@ impl Display for AllowanceJson {
 #[derive(Debug)]
 struct AppState {
     config: RelayerConfiguration,
-    rpc_client: near_fetch::Client,
+    rpc_client: Arc<near_fetch::Client>,
+    shared_storage_pool: Option<SharedStoragePoolManager>,
+    redis_pool: Pool<RedisConnectionManager>,
 }
 
 #[tokio::main]
@@ -273,14 +241,20 @@ async fn main() {
         info!("default tracing setup with flametrace performance DISABLED");
     }
 
+    let rpc_client = Arc::new(config.network_config.rpc_client());
+
+    let mut shared_storage_pool = None;
+
     // initialize our shared storage pool manager if using fastauth features or using shared storage
     if config.use_fastauth_features || config.use_shared_storage {
-        if let Err(err) = SHARED_STORAGE_POOL.check_and_spawn_pool().await {
+        let pool = create_shared_storage_pool(&config, Arc::clone(&rpc_client));
+        if let Err(err) = pool.check_and_spawn_pool().await {
             let err_msg = format!("Error initializing shared storage pool: {err}");
             error!("{err_msg}");
             tracing::error!(err_msg);
             return;
         } else {
+            shared_storage_pool = Some(pool);
             info!("shared storage pool initialized");
         }
     }
@@ -325,14 +299,19 @@ async fn main() {
     )]
     struct ApiDoc;
 
+    let redis_pool = create_redis_pool(&config);
+
     // if fastauth enabled, initialize whitelisted senders with "infinite" allowance in relayer DB
     if config.use_fastauth_features {
-        init_senders_infinite_allowance_fastauth().await;
+        init_senders_infinite_allowance_fastauth(&config, &redis_pool).await;
     }
 
-    let rpc_client = config.network_config.rpc_client();
-
-    let app_state = Arc::new(AppState { config, rpc_client });
+    let app_state = Arc::new(AppState {
+        config,
+        rpc_client,
+        shared_storage_pool,
+        redis_pool,
+    });
 
     // build our application with a route
     let app = Router::new()
@@ -377,11 +356,15 @@ fn setup_global_subscriber() -> impl Drop {
     _guard
 }
 
-async fn init_senders_infinite_allowance_fastauth() {
+async fn init_senders_infinite_allowance_fastauth(
+    config: &RelayerConfiguration,
+    redis_pool: &Pool<RedisConnectionManager>,
+) {
     let max_allowance = u64::MAX;
-    for whitelisted_sender in WHITELISTED_DELEGATE_ACTION_RECEIVER_IDS.iter() {
+    for whitelisted_sender in config.whitelisted_delegate_action_receiver_ids.iter() {
         let redis_result =
-            set_account_and_allowance_in_redis(whitelisted_sender, &max_allowance).await;
+            set_account_and_allowance_in_redis(redis_pool, whitelisted_sender, &max_allowance)
+                .await;
         if let Err(err) = redis_result {
             error!(
                 "Error setting allowance for account_id {} with allowance {} in Relayer DB: {:?}",
@@ -407,7 +390,10 @@ async fn init_senders_infinite_allowance_fastauth() {
     )
 )]
 #[instrument]
-async fn get_allowance(account_id_json: Json<AccountIdJson>) -> impl IntoResponse {
+async fn get_allowance(
+    State(state): State<Arc<AppState>>,
+    account_id_json: Json<AccountIdJson>,
+) -> impl IntoResponse {
     // convert str account_id val from json to AccountId so I can reuse get_remaining_allowance fn
     let Ok(account_id_val) = AccountId::from_str(&account_id_json.account_id) else {
         return (
@@ -416,7 +402,7 @@ async fn get_allowance(account_id_json: Json<AccountIdJson>) -> impl IntoRespons
         )
             .into_response();
     };
-    match get_remaining_allowance(&account_id_val).await {
+    match get_remaining_allowance(&state.redis_pool, &account_id_val).await {
         Ok(allowance) => (
             StatusCode::OK,
             allowance.to_string(), // TODO: LP return in json format
@@ -480,7 +466,7 @@ async fn create_account_atomic(
     */
 
     // check if the oauth_token has already been used and is a key in Redis
-    match get_oauth_token_in_redis(oauth_token).await {
+    match get_oauth_token_in_redis(&state.redis_pool, oauth_token).await {
         Ok(is_oauth_token_in_redis) => {
             if is_oauth_token_in_redis {
                 let err_msg = format!(
@@ -499,7 +485,8 @@ async fn create_account_atomic(
             return (StatusCode::INTERNAL_SERVER_ERROR, err_msg).into_response();
         }
     }
-    let redis_result = set_account_and_allowance_in_redis(account_id, allowance_in_gas).await;
+    let redis_result =
+        set_account_and_allowance_in_redis(&state.redis_pool, account_id, allowance_in_gas).await;
 
     let Ok(_) = redis_result else {
         let err_msg = format!(
@@ -515,8 +502,7 @@ async fn create_account_atomic(
        if it succeeds, then add oauth token to redis and allocate shared storage
        after updated redis and adding shared storage, finally return success msg
     */
-    let create_account_sda_result =
-        process_signed_delegate_action(&state.config, &state.rpc_client, sda).await;
+    let create_account_sda_result = process_signed_delegate_action(&state, sda).await;
     if let Err(err) = create_account_sda_result {
         return (err.status_code, err.message).into_response();
     }
@@ -527,16 +513,18 @@ async fn create_account_atomic(
     };
 
     // allocate shared storage for account_id if shared storage is being used
-    if *USE_FASTAUTH_FEATURES || *USE_SHARED_STORAGE {
-        if let Err(err) = SHARED_STORAGE_POOL.allocate_default(&account_id).await {
-            let err_msg = format!("Error allocating storage for account {account_id}: {err:?}");
-            error!("{err_msg}");
-            return (StatusCode::INTERNAL_SERVER_ERROR, err_msg).into_response();
+    if state.config.use_fastauth_features || state.config.use_shared_storage {
+        if let Some(shared_storage_pool) = &state.shared_storage_pool {
+            if let Err(err) = shared_storage_pool.allocate_default(&account_id).await {
+                let err_msg = format!("Error allocating storage for account {account_id}: {err:?}");
+                error!("{err_msg}");
+                return (StatusCode::INTERNAL_SERVER_ERROR, err_msg).into_response();
+            }
         }
     }
 
     // add oauth token to redis (key: oauth_token, val: true)
-    match set_oauth_token_in_redis(oauth_token).await {
+    match set_oauth_token_in_redis(&state.redis_pool, oauth_token).await {
         Ok(_) => {
             let ok_msg = format!(
                 "Added Oauth token {oauth_token:?} for account_id {account_id:?} \
@@ -566,11 +554,15 @@ post,
     ),
 )]
 #[instrument]
-async fn update_allowance(account_id_allowance: Json<AccountIdAllowanceJson>) -> impl IntoResponse {
+async fn update_allowance(
+    State(state): State<Arc<AppState>>,
+    account_id_allowance: Json<AccountIdAllowanceJson>,
+) -> impl IntoResponse {
     let account_id: &String = &account_id_allowance.account_id;
     let allowance_in_gas: &u64 = &account_id_allowance.allowance;
 
-    let redis_result = set_account_and_allowance_in_redis(account_id, allowance_in_gas).await;
+    let redis_result =
+        set_account_and_allowance_in_redis(&state.redis_pool, account_id, allowance_in_gas).await;
 
     let Ok(_) = redis_result else {
         let err_msg = format!(
@@ -600,8 +592,12 @@ async fn update_all_allowances(
     Json(allowance_json): Json<AllowanceJson>,
 ) -> impl IntoResponse {
     let allowance_in_gas = allowance_json.allowance_in_gas;
-    let redis_response =
-        update_all_allowances_in_redis(&state.config.network_env, allowance_in_gas).await;
+    let redis_response = update_all_allowances_in_redis(
+        &state.redis_pool,
+        &state.config.network_env,
+        allowance_in_gas,
+    )
+    .await;
     match redis_response {
         Ok(response) => response.into_response(),
         Err(err) => (err.status_code, err.message).into_response(),
@@ -620,13 +616,14 @@ async fn update_all_allowances(
 )]
 #[instrument]
 async fn register_account_and_allowance(
+    State(state): State<Arc<AppState>>,
     account_id_allowance_oauth: Json<AccountIdAllowanceOauthJson>,
 ) -> impl IntoResponse {
     let account_id: &String = &account_id_allowance_oauth.account_id;
     let allowance_in_gas: &u64 = &account_id_allowance_oauth.allowance;
     let oauth_token: &String = &account_id_allowance_oauth.oauth_token;
     // check if the oauth_token has already been used and is a key in Relayer DB
-    match get_oauth_token_in_redis(oauth_token).await {
+    match get_oauth_token_in_redis(&state.redis_pool, oauth_token).await {
         Ok(is_oauth_token_in_redis) => {
             if is_oauth_token_in_redis {
                 let err_msg = format!(
@@ -646,7 +643,8 @@ async fn register_account_and_allowance(
             return (StatusCode::INTERNAL_SERVER_ERROR, err_msg).into_response();
         }
     }
-    let redis_result = set_account_and_allowance_in_redis(account_id, allowance_in_gas).await;
+    let redis_result =
+        set_account_and_allowance_in_redis(&state.redis_pool, account_id, allowance_in_gas).await;
 
     let Ok(_) = redis_result else {
         let err_msg = format!(
@@ -661,14 +659,17 @@ async fn register_account_and_allowance(
         warn!("{err_msg}");
         return (StatusCode::BAD_REQUEST, err_msg).into_response();
     };
-    if let Err(err) = SHARED_STORAGE_POOL.allocate_default(&account_id).await {
-        let err_msg = format!("Error allocating storage for account {account_id}: {err:?}");
-        error!("{err_msg}");
-        return (StatusCode::INTERNAL_SERVER_ERROR, err_msg).into_response();
+
+    if let Some(ref shared_storage_pool) = state.shared_storage_pool {
+        if let Err(err) = shared_storage_pool.allocate_default(&account_id).await {
+            let err_msg = format!("Error allocating storage for account {account_id}: {err:?}");
+            error!("{err_msg}");
+            return (StatusCode::INTERNAL_SERVER_ERROR, err_msg).into_response();
+        }
     }
 
     // add oauth token to redis (key: oauth_token, val: true)
-    match set_oauth_token_in_redis(oauth_token).await {
+    match set_oauth_token_in_redis(&state.redis_pool, oauth_token).await {
         Ok(_) => {
             let ok_msg = format!("Added Oauth token {account_id_allowance_oauth:?} to Relayer DB");
             info!("{ok_msg}");
@@ -698,13 +699,7 @@ async fn relay(State(state): State<Arc<AppState>>, data: Json<Vec<u8>>) -> impl 
     // deserialize SignedDelegateAction using borsh
     match SignedDelegateAction::try_from_slice(&data.0) {
         Ok(signed_delegate_action) => {
-            match process_signed_delegate_action(
-                &state.config,
-                &state.rpc_client,
-                &signed_delegate_action,
-            )
-            .await
-            {
+            match process_signed_delegate_action(&state, &signed_delegate_action).await {
                 Ok(response) => response.into_response(),
                 Err(err) => (err.status_code, err.message).into_response(),
             }
@@ -733,9 +728,7 @@ async fn send_meta_tx(
     data: Json<SignedDelegateAction>,
 ) -> impl IntoResponse {
     let relayer_response = process_signed_delegate_action(
-        &state.config,
-        &state.rpc_client,
-        // deserialize SignedDelegateAction using serde json
+        &state, // deserialize SignedDelegateAction using serde json
         &data.0,
     )
     .await;
@@ -747,8 +740,7 @@ async fn send_meta_tx(
 
 #[instrument]
 async fn process_signed_delegate_action(
-    config: &RelayerConfiguration,
-    rpc_client: &near_fetch::Client,
+    state: &AppState,
     signed_delegate_action: &SignedDelegateAction,
 ) -> Result<String, RelayError> {
     debug!(
@@ -757,17 +749,18 @@ async fn process_signed_delegate_action(
     );
 
     // create Transaction from SignedDelegateAction
-    let signer_account_id: AccountId = config.relayer_account_id.parse().unwrap();
+    let signer_account_id: AccountId = state.config.relayer_account_id.parse().unwrap();
     // the receiver of the txn is the sender of the signed delegate action
     let receiver_id = &signed_delegate_action.delegate_action.sender_id;
     let da_receiver_id = &signed_delegate_action.delegate_action.receiver_id;
 
     // check that the delegate action receiver_id is in the whitelisted_contracts
-    let is_whitelisted_da_receiver = config
+    let is_whitelisted_da_receiver = state
+        .config
         .whitelisted_contracts
         .iter()
         .any(|s| s == da_receiver_id);
-    if config.use_fastauth_features && !is_whitelisted_da_receiver {
+    if state.config.use_fastauth_features && !is_whitelisted_da_receiver {
         let err_msg = format!("Delegate Action receiver_id {da_receiver_id} is not whitelisted");
         warn!("{err_msg}");
         return Err(RelayError {
@@ -776,9 +769,12 @@ async fn process_signed_delegate_action(
         });
     }
     // check the sender_id in whitelist if applicable
-    if config.use_whitelisted_delegate_action_receiver_ids && !config.use_fastauth_features {
+    if state.config.use_whitelisted_delegate_action_receiver_ids
+        && !state.config.use_fastauth_features
+    {
         // check if the delegate action receiver_id (account sender_id) if a whitelisted delegate action receiver
-        let is_whitelisted_sender = config
+        let is_whitelisted_sender = state
+            .config
             .whitelisted_delegate_action_receiver_ids
             .iter()
             .any(|s| s == receiver_id.as_str());
@@ -793,7 +789,7 @@ async fn process_signed_delegate_action(
             });
         }
     }
-    if !is_whitelisted_da_receiver && config.use_fastauth_features {
+    if !is_whitelisted_da_receiver && state.config.use_fastauth_features {
         // check if sender id and receiver id are the same AND (AddKey or DeleteKey action)
         let non_delegate_action = signed_delegate_action
             .delegate_action
@@ -813,7 +809,8 @@ async fn process_signed_delegate_action(
             Action::AddKey(_) | Action::DeleteKey(_)
         );
         // check if the receiver_id (delegate action sender_id) if a whitelisted delegate action receiver
-        let is_whitelisted_sender = config
+        let is_whitelisted_sender = state
+            .config
             .whitelisted_delegate_action_receiver_ids
             .iter()
             .any(|s| s == receiver_id.as_str());
@@ -831,7 +828,7 @@ async fn process_signed_delegate_action(
     }
 
     // Check if the SignedDelegateAction includes a FunctionCallAction that transfers FTs to BURN_ADDRESS
-    if *USE_PAY_WITH_FT {
+    if state.config.use_pay_with_ft {
         let non_delegate_actions = signed_delegate_action.delegate_action.get_actions();
         let treasury_payments: Vec<Action> = non_delegate_actions
             .into_iter()
@@ -858,7 +855,7 @@ async fn process_signed_delegate_action(
                     // get the receiver_id from the json without the escape chars
                     let receiver_id = args_json["receiver_id"].as_str().unwrap_or_default();
                     debug!("receiver_id: {receiver_id}");
-                    let burn_address = config.burn_address.to_string();
+                    let burn_address = state.config.burn_address.to_string();
                     debug!("BURN_ADDRESS.to_string(): {burn_address:?}");
 
                     // Check if receiver_id in args contain BURN_ADDRESS
@@ -881,10 +878,12 @@ async fn process_signed_delegate_action(
         }
     }
 
-    if config.use_redis {
+    if state.config.use_redis {
         // Check the sender's remaining gas allowance in Redis
         let end_user_account: &AccountId = &signed_delegate_action.delegate_action.sender_id;
-        let remaining_allowance: u64 = get_remaining_allowance(end_user_account).await.unwrap_or(0);
+        let remaining_allowance: u64 = get_remaining_allowance(&state.redis_pool, end_user_account)
+            .await
+            .unwrap_or(0);
         if remaining_allowance < TXN_GAS_ALLOWANCE {
             let err_msg = format!(
                 "AccountId {} does not have enough remaining gas allowance.",
@@ -899,7 +898,8 @@ async fn process_signed_delegate_action(
 
         let actions = vec![Action::Delegate(signed_delegate_action.clone())];
         let signer = SIGNER.request().await;
-        let execution = rpc_client
+        let execution = state
+            .rpc_client
             .send_tx(&*signer, receiver_id, actions)
             .await
             .map_err(|err| {
@@ -928,18 +928,21 @@ async fn process_signed_delegate_action(
         let gas_used_in_yn =
             calculate_total_gas_burned(&execution.transaction_outcome, &execution.receipts_outcome);
         debug!("total gas burnt in yN: {}", gas_used_in_yn);
-        let new_allowance =
-            update_remaining_allowance(&signer_account_id, gas_used_in_yn, remaining_allowance)
-                .await
-                .map_err(|err| {
-                    let err_msg =
-                        format!("Updating redis remaining allowance errored out: {err:?}");
-                    error!("{err_msg}");
-                    RelayError {
-                        status_code: StatusCode::INTERNAL_SERVER_ERROR,
-                        message: err_msg,
-                    }
-                })?;
+        let new_allowance = update_remaining_allowance(
+            &state.redis_pool,
+            &signer_account_id,
+            gas_used_in_yn,
+            remaining_allowance,
+        )
+        .await
+        .map_err(|err| {
+            let err_msg = format!("Updating redis remaining allowance errored out: {err:?}");
+            error!("{err_msg}");
+            RelayError {
+                status_code: StatusCode::INTERNAL_SERVER_ERROR,
+                message: err_msg,
+            }
+        })?;
         info!("Updated remaining allowance for account {signer_account_id}: {new_allowance}",);
 
         if let near_primitives::views::FinalExecutionStatus::Failure(_) = status {
@@ -955,7 +958,8 @@ async fn process_signed_delegate_action(
     } else {
         let actions = vec![Action::Delegate(signed_delegate_action.clone())];
         let signer = SIGNER.request().await;
-        let execution = rpc_client
+        let execution = state
+            .rpc_client
             .send_tx(&*signer, receiver_id, actions)
             .await
             .map_err(|err| {
@@ -994,8 +998,10 @@ async fn process_signed_delegate_action(
     }
 }
 
-pub async fn get_redis_cnxn() -> Result<PooledConnection<RedisConnectionManager>, RedisError> {
-    let conn_result = REDIS_POOL.get();
+pub async fn get_redis_cnxn(
+    redis_pool: &Pool<RedisConnectionManager>,
+) -> Result<PooledConnection<RedisConnectionManager>, RedisError> {
+    let conn_result = redis_pool.get();
     let conn: PooledConnection<RedisConnectionManager> = match conn_result {
         Ok(conn) => conn,
         Err(e) => {
@@ -1008,11 +1014,12 @@ pub async fn get_redis_cnxn() -> Result<PooledConnection<RedisConnectionManager>
 }
 
 pub async fn update_all_allowances_in_redis(
+    redis_pool: &Pool<RedisConnectionManager>,
     network_env: &str,
     allowance_in_gas: u64,
 ) -> Result<String, RelayError> {
     // Get a connection to Redis from the pool
-    let mut redis_conn = match get_redis_cnxn().await {
+    let mut redis_conn = match get_redis_cnxn(redis_pool).await {
         Ok(conn) => conn,
         Err(e) => {
             let err_msg = format!("Error getting Relayer DB connection from the pool: {e}");
@@ -1137,6 +1144,53 @@ mod test {
         println!("add_message_args_b64: {add_message_args_b64}");
     }
 
+    fn test_configuration() -> RelayerConfiguration {
+        RelayerConfiguration {
+            burn_address: "burn_address.near".parse().unwrap(),
+            social_db_contract_id: "social_db.near".parse().unwrap(),
+            network_config: NetworkConfig {
+                explorer_transaction_url: "https://explorer.testnet.near.org/transactions/"
+                    .parse()
+                    .unwrap(),
+                rpc_url: "https://rpc.testnet.near.org".parse().unwrap(),
+                wallet_url: "https://wallet.testnet.near.org".parse().unwrap(),
+                rpc_api_key: None,
+            },
+            flametrace_performance: false,
+            network_env: "testnet".to_string(),
+            redis_url: "redis://127.0.0.1:6379".to_string(),
+            relayer_account_id: "relayer.testnet".to_string(),
+            shared_storage_account_id: "shared_storage.testnet".to_string(),
+            ip_address: [127, 0, 0, 1],
+            port: 3030,
+            keys_filename: "./account_keys/nomnomnom.testnet.json".parse().unwrap(),
+            // shared_storage_keys_filename: "relayer-test.testnet.json".parse().unwrap(),
+            shared_storage_keys_filename: "./account_keys/nomnomnom.testnet.json".parse().unwrap(),
+            use_fastauth_features: true,
+            use_pay_with_ft: true,
+            use_redis: true,
+            use_shared_storage: false,
+            use_whitelisted_delegate_action_receiver_ids: true,
+            whitelisted_contracts: vec!["whitelisted_contract_1.near".parse().unwrap()],
+            whitelisted_delegate_action_receiver_ids: vec!["arrr_me.testnet".parse().unwrap()],
+        }
+    }
+
+    fn test_state() -> State<Arc<AppState>> {
+        let config = test_configuration();
+        let rpc_client = Arc::new(config.network_config.rpc_client());
+        let shared_storage_pool = config
+            .use_shared_storage
+            .then(|| create_shared_storage_pool(&config, Arc::clone(&rpc_client)));
+        let redis_pool = create_redis_pool(&config);
+        State(Arc::new(AppState {
+            config,
+            shared_storage_pool,
+            rpc_client,
+            redis_pool,
+        }))
+    }
+
     #[tokio::test]
     // NOTE: uncomment ignore locally to run test bc redis doesn't work in github action build env
     #[ignore]
@@ -1149,9 +1203,11 @@ mod test {
         let nonce: i32 = 1;
         let max_block_height = 2_000_000_000;
 
+        let state = test_state();
+
         // simulate calling the '/update_allowance' function with sender_id & allowance
         let allowance_in_gas: u64 = u64::MAX;
-        set_account_and_allowance_in_redis(&sender_id, &allowance_in_gas)
+        set_account_and_allowance_in_redis(&state.redis_pool, &sender_id, &allowance_in_gas)
             .await
             .expect("Failed to update account and allowance in redis");
 
@@ -1165,7 +1221,8 @@ mod test {
         );
         let json_payload = Json(signed_delegate_action);
         println!("SignedDelegateAction Json Serialized (no borsh): {json_payload:?}");
-        let response: Response = send_meta_tx(json_payload).await.into_response();
+
+        let response: Response = send_meta_tx(state, json_payload).await.into_response();
         let response_status: StatusCode = response.status();
         let body: BoxBody = response.into_body();
         let body_str: String = read_body_to_string(body).await.unwrap();
@@ -1194,7 +1251,8 @@ mod test {
         println!(
             "SignedDelegateAction Json Serialized (no borsh) receiver_id not in whitelist: {non_whitelist_json_payload:?}"
         );
-        let err_response = send_meta_tx(non_whitelist_json_payload)
+
+        let err_response = send_meta_tx(test_state(), non_whitelist_json_payload)
             .await
             .into_response();
         let err_response_status = err_response.status();
@@ -1243,7 +1301,10 @@ mod test {
                 max_block_height,
             );
             let json_payload = signed_delegate_action.try_to_vec().unwrap();
-            let response = relay(Json(json_payload)).await.into_response();
+
+            let response = relay(test_state(), Json(json_payload))
+                .await
+                .into_response();
             response_statuses.push(response.status());
             let body: BoxBody = response.into_body();
             let body_str: String = read_body_to_string(body).await.unwrap();
