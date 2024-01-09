@@ -28,9 +28,6 @@ whitelisted_contracts = [
     "membership-1.arkana-buidl-asia.testnet",
     "dev-1687360843405-25378110567326",
     "dev-1688592807423-71580860503217",
-    "dev-1688631942005-96369098230756",
-    "dev-1691061450332-46261369827940",
-    "tt_local.testnet",
 ] # whitelisted contract ids (receiver_id)
 # if this is set to false, just call /send_meta_tx or /relay endpoints. All other endpoints are coupled with using redis
 # this needs to be set to true if use_fastauth_features = true

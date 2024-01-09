@@ -23,9 +23,10 @@ use near_crypto::InMemorySigner;
 #[cfg(test)]
 use near_crypto::{KeyType, PublicKey, Signature};
 use near_fetch::signer::KeyRotatingSigner;
-use near_primitives::borsh::BorshDeserialize;
 #[cfg(test)]
 use near_primitives::borsh::BorshSerialize;
+use near_primitives::borsh::{schema, BorshDeserialize};
+use near_primitives::contract;
 use near_primitives::delegate_action::SignedDelegateAction;
 #[cfg(test)]
 use near_primitives::delegate_action::{DelegateAction, NonDelegateAction};
@@ -65,7 +66,10 @@ use crate::shared_storage::SharedStoragePoolManager;
 // transaction cost in Gas (10^21yN or 10Tgas or 0.001N)
 const TXN_GAS_ALLOWANCE: u64 = 10_000_000_000_000;
 const YN_TO_GAS: u128 = 1_000_000_000;
-
+const FT_TRANSFER_METHOD_NAME: &str = "ft_transfer";
+const STORAGE_DEPOSIT_METHOD_NAME: &str = "storage_deposit";
+const STORAGE_DEPOSIT_AMOUNT_FT: u128 = 1250000000000000000000;
+const FT_TRANSFER_ATTACHMENT_DEPOSIT_AMOUNT: u128 = 1;
 // load config from toml and setup json rpc client
 static LOCAL_CONF: Lazy<Config> = Lazy::new(|| {
     Config::builder()
@@ -138,6 +142,7 @@ static SHARED_STORAGE_POOL: Lazy<SharedStoragePoolManager> = Lazy::new(|| {
         SHARED_STORAGE_ACCOUNT_ID.parse().unwrap(),
     )
 });
+static USE_ARKANA: Lazy<bool> = Lazy::new(|| LOCAL_CONF.get("use_arkana").unwrap_or(false));
 
 #[derive(Clone, Debug, Deserialize, ToSchema)]
 struct AccountIdAllowanceOauthSDAJson {
@@ -202,7 +207,6 @@ impl Display for AccountIdAllowanceJson {
         )
     }
 }
-
 #[derive(Clone, Debug, Deserialize, ToSchema)]
 struct AccountIdJson {
     #[schema(example = "example.near")]
@@ -530,7 +534,6 @@ async fn update_allowance(account_id_allowance: Json<AccountIdAllowanceJson>) ->
     info!("success_msg");
     (StatusCode::CREATED, success_msg).into_response()
 }
-
 #[utoipa::path(
     post,
     path = "/update_all_allowances",
@@ -810,6 +813,46 @@ async fn process_signed_delegate_action(
                 status_code: StatusCode::BAD_REQUEST,
                 message: err_msg,
             });
+        }
+    }
+
+    if USE_ARKANA.clone() {
+        let non_delegate_actions: Vec<Action> =
+            signed_delegate_action.delegate_action.get_actions();
+        for non_delegate_action in non_delegate_actions {
+            if let Action::FunctionCall(FunctionCallAction {
+                method_name,
+                deposit,
+                ..
+            }) = non_delegate_action.clone()
+            {
+                debug!("method_name: {:?}", method_name);
+                debug!("deposit: {:?}", deposit);
+
+                match method_name.as_str() {
+                    FT_TRANSFER_METHOD_NAME => {
+                        if deposit != FT_TRANSFER_ATTACHMENT_DEPOSIT_AMOUNT {
+                            return Err(RelayError {
+                                status_code: StatusCode::BAD_REQUEST,
+                                message: "Ft transfer requires 1 yocto attached.".to_string(),
+                            });
+                        } else {
+                            non_delegate_action
+                        }
+                    }
+                    STORAGE_DEPOSIT_METHOD_NAME => {
+                        if deposit != STORAGE_DEPOSIT_AMOUNT_FT {
+                            return Err(RelayError {
+                                status_code: StatusCode::BAD_REQUEST,
+                                message: "Attached less or more than allowed storage_deposit amount allowed.".to_string(),
+                            });
+                        } else {
+                            non_delegate_action
+                        }
+                    }
+                    _ => non_delegate_action,
+                };
+            }
         }
     }
 
@@ -1195,4 +1238,41 @@ async fn test_relay_with_load() {
         println!("{}", response_bodies[i]);
         assert_eq!(response_status, StatusCode::OK);
     }
+}
+
+#[tokio::test]
+//Requires an account with a fungible token contract deployed
+#[ignore]
+async fn test_send_meta_tx_with() {
+    // tests assume testnet in config
+    // Test fungible token Action
+    let actions = vec![Action::FunctionCall(FunctionCallAction {
+        method_name: "ft_transfer".to_string(),
+        args: vec![123],
+        deposit: 1,
+        gas: 100000000000000,
+    })];
+    let sender_id: String = String::from("relayer_test0.testnet");
+    let receiver_id: String = String::from("relayer_test1.testnet");
+    let nonce: i32 = 1;
+    let max_block_height = 2000000000;
+    // Call the `/send_meta_tx` function happy path
+    let signed_delegate_action = create_signed_delegate_action(
+        sender_id.clone(),
+        receiver_id.clone(),
+        actions.clone(),
+        nonce,
+        max_block_height,
+    );
+    let json_payload = Json(signed_delegate_action);
+    println!(
+        "SignedDelegateAction Json Serialized (no borsh): {:?}",
+        json_payload
+    );
+    let response: Response = send_meta_tx(json_payload).await.into_response();
+    let response_status: StatusCode = response.status();
+    let body: BoxBody = response.into_body();
+    let body_str: String = read_body_to_string(body).await.unwrap();
+    println!("Response body: {body_str:?}");
+    assert_eq!(response_status, StatusCode::OK);
 }
