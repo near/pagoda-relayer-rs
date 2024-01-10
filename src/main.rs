@@ -1243,17 +1243,17 @@ async fn test_relay_with_load() {
 #[tokio::test]
 //Requires an account with a fungible token contract deployed
 #[ignore]
-async fn test_send_meta_tx_with() {
+async fn test_send_meta_tx_with_ft_too_much_deposit() {
     // tests assume testnet in config
     // Test fungible token Action
     let actions = vec![Action::FunctionCall(FunctionCallAction {
         method_name: "ft_transfer".to_string(),
-        args: vec![123],
-        deposit: 1,
+        args: vec![0],
+        deposit: 1250000000000000000001,
         gas: 100000000000000,
     })];
-    let sender_id: String = String::from("relayer_test0.testnet");
-    let receiver_id: String = String::from("relayer_test1.testnet");
+    let sender_id: String = String::from("nomnomnom.testnet");
+    let receiver_id: String = String::from("tt_local.testnet");
     let nonce: i32 = 1;
     let max_block_height = 2000000000;
     // Call the `/send_meta_tx` function happy path
