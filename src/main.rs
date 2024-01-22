@@ -12,22 +12,31 @@ use axum::{
 };
 use config::{Config, File as ConfigFile};
 use near_crypto::InMemorySigner;
-use near_fetch::signer::KeyRotatingSigner;
+use near_fetch::signer::{ExposeAccountId, KeyRotatingSigner};
+use near_jsonrpc_client::methods::broadcast_tx_commit::RpcBroadcastTxCommitRequest;
 use near_primitives::borsh::BorshDeserialize;
 use near_primitives::delegate_action::SignedDelegateAction;
-use near_primitives::transaction::{Action, FunctionCallAction};
+use near_primitives::transaction::{Action, FunctionCallAction, Transaction};
 use near_primitives::types::AccountId;
+use near_primitives::views::{
+    ExecutionOutcomeWithIdView, FinalExecutionOutcomeView, FinalExecutionStatus,
+};
 use once_cell::sync::Lazy;
 use r2d2::{Pool, PooledConnection};
 use r2d2_redis::redis::{Commands, ErrorKind::IoError, RedisError};
 use r2d2_redis::RedisConnectionManager;
 use serde::Deserialize;
 use serde_json::{json, Value};
+use std::fmt;
 use std::fmt::{Debug, Display, Formatter};
+use std::future::Future;
 use std::net::SocketAddr;
+#[cfg(feature = "shared_storage")]
+use std::path::Path;
 use std::str::FromStr;
 use std::string::ToString;
-use std::{fmt, path::Path};
+use std::time::Duration;
+use tokio::time::sleep;
 use tower_http::trace::TraceLayer;
 use tracing::{debug, error, info, instrument, warn};
 use tracing_flame::FlameLayer;
@@ -42,6 +51,7 @@ use crate::redis_fns::{
     set_account_and_allowance_in_redis, set_oauth_token_in_redis, update_remaining_allowance,
 };
 use crate::rpc_conf::NetworkConfig;
+#[cfg(feature = "shared_storage")]
 use crate::shared_storage::SharedStoragePoolManager;
 
 // transaction cost in Gas (10^21yN or 10Tgas or 0.001N)
@@ -56,19 +66,20 @@ static LOCAL_CONF: Lazy<Config> = Lazy::new(|| {
         .unwrap()
 });
 static NETWORK_ENV: Lazy<String> = Lazy::new(|| LOCAL_CONF.get("network").unwrap());
-static RPC_CLIENT: Lazy<near_fetch::Client> = Lazy::new(|| {
-    let network_config = NetworkConfig {
-        rpc_url: LOCAL_CONF.get("rpc_url").unwrap(),
-        rpc_api_key: LOCAL_CONF.get("rpc_api_key").unwrap(),
-        wallet_url: LOCAL_CONF.get("wallet_url").unwrap(),
-        explorer_transaction_url: LOCAL_CONF.get("explorer_transaction_url").unwrap(),
-    };
-    network_config.rpc_client()
+static NETWORK_CONFIG: Lazy<NetworkConfig> = Lazy::new(|| NetworkConfig {
+    rpc_url: LOCAL_CONF.get("rpc_url").unwrap(),
+    rpc_api_key: LOCAL_CONF.get("rpc_api_key").unwrap(),
+    wallet_url: LOCAL_CONF.get("wallet_url").unwrap(),
+    explorer_transaction_url: LOCAL_CONF.get("explorer_transaction_url").unwrap(),
 });
+static RPC_CLIENT: Lazy<near_fetch::Client> = Lazy::new(|| NETWORK_CONFIG.rpc_client());
+static RPC_CLIENT_NOFETCH: Lazy<near_jsonrpc_client::JsonRpcClient> =
+    Lazy::new(|| NETWORK_CONFIG.raw_rpc_client());
 static IP_ADDRESS: Lazy<[u8; 4]> = Lazy::new(|| LOCAL_CONF.get("ip_address").unwrap());
 static PORT: Lazy<u16> = Lazy::new(|| LOCAL_CONF.get("port").unwrap());
 static RELAYER_ACCOUNT_ID: Lazy<String> =
     Lazy::new(|| LOCAL_CONF.get("relayer_account_id").unwrap());
+#[cfg(feature = "shared_storage")]
 static SHARED_STORAGE_ACCOUNT_ID: Lazy<String> =
     Lazy::new(|| LOCAL_CONF.get("shared_storage_account_id").unwrap());
 static SIGNER: Lazy<KeyRotatingSigner> = Lazy::new(|| {
@@ -81,6 +92,7 @@ static SIGNER: Lazy<KeyRotatingSigner> = Lazy::new(|| {
 
     KeyRotatingSigner::from_signers(signers)
 });
+#[cfg(feature = "shared_storage")]
 static SHARED_STORAGE_KEYS_FILENAME: Lazy<String> =
     Lazy::new(|| LOCAL_CONF.get("shared_storage_keys_filename").unwrap());
 static WHITELISTED_CONTRACTS: Lazy<Vec<String>> =
@@ -108,6 +120,7 @@ static USE_PAY_WITH_FT: Lazy<bool> =
 static BURN_ADDRESS: Lazy<AccountId> = Lazy::new(|| LOCAL_CONF.get("burn_address").unwrap());
 static USE_SHARED_STORAGE: Lazy<bool> =
     Lazy::new(|| LOCAL_CONF.get("use_shared_storage").unwrap_or(false));
+#[cfg(feature = "shared_storage")]
 static SHARED_STORAGE_POOL: Lazy<SharedStoragePoolManager> = Lazy::new(|| {
     let social_db_id: String = LOCAL_CONF.get("social_db_contract_id").unwrap();
     let signer = InMemorySigner::from_file(Path::new(SHARED_STORAGE_KEYS_FILENAME.as_str()))
@@ -211,6 +224,13 @@ impl Display for AllowanceJson {
     }
 }
 
+#[allow(dead_code)] // makes compiler happy - implicitly used as return types, so need to allow dead code
+struct TransactionResult {
+    status: FinalExecutionStatus,
+    transaction_outcome: ExecutionOutcomeWithIdView,
+    receipts_outcome: Vec<ExecutionOutcomeWithIdView>,
+}
+
 #[tokio::main]
 async fn main() {
     // initialize tracing (aka logging)
@@ -226,6 +246,7 @@ async fn main() {
 
     // initialize our shared storage pool manager if using fastauth features or using shared storage
     if *USE_FASTAUTH_FEATURES || *USE_SHARED_STORAGE {
+        #[cfg(any(feature = "fastauth_features", feature = "shared_storage"))]
         if let Err(err) = SHARED_STORAGE_POOL.check_and_spawn_pool().await {
             let err_msg = format!("Error initializing shared storage pool: {err}");
             error!("{err_msg}");
@@ -278,6 +299,7 @@ async fn main() {
 
     // if fastauth enabled, initialize whitelisted senders with "infinite" allowance in relayer DB
     if *USE_FASTAUTH_FEATURES {
+        #[cfg(feature = "fastauth_features")]
         init_senders_infinite_allowance_fastauth().await;
     }
 
@@ -292,6 +314,8 @@ async fn main() {
         // `POST /relay` goes to `relay` handler function
         .route("/relay", post(relay))
         .route("/send_meta_tx", post(send_meta_tx))
+        .route("/send_meta_tx_async", post(send_meta_tx_async))
+        .route("/send_meta_tx_nopoll", post(send_meta_tx_nopoll))
         .route("/create_account_atomic", post(create_account_atomic))
         .route("/get_allowance", get(get_allowance))
         .route("/update_allowance", post(update_allowance))
@@ -323,6 +347,7 @@ fn setup_global_subscriber() -> impl Drop {
     _guard
 }
 
+#[cfg(feature = "fastauth_features")]
 async fn init_senders_infinite_allowance_fastauth() {
     let max_allowance = u64::MAX;
     for whitelisted_sender in WHITELISTED_DELEGATE_ACTION_RECEIVER_IDS.iter() {
@@ -445,7 +470,6 @@ async fn create_account_atomic(
         }
     }
     let redis_result = set_account_and_allowance_in_redis(account_id, allowance_in_gas).await;
-
     let Ok(_) = redis_result else {
         let err_msg = format!(
             "Error creating account_id {account_id} with allowance {allowance_in_gas} in Relayer DB:\n{redis_result:?}"
@@ -460,10 +484,16 @@ async fn create_account_atomic(
        if it succeeds, then add oauth token to redis and allocate shared storage
        after updated redis and adding shared storage, finally return success msg
     */
-    let create_account_sda_result = process_signed_delegate_action(sda).await;
+    let create_account_sda_result = if *USE_FASTAUTH_FEATURES {
+        process_signed_delegate_action_big_timeout(sda.clone()).await
+    } else {
+        process_signed_delegate_action(sda).await
+    };
+
     if let Err(err) = create_account_sda_result {
         return (err.status_code, err.message).into_response();
     }
+    #[allow(unused_variables)] // makes compiler happy - used by err_msg
     let Ok(account_id) = account_id.parse::<AccountId>() else {
         let err_msg = format!("Invalid account_id: {account_id}");
         warn!("{err_msg}");
@@ -472,7 +502,11 @@ async fn create_account_atomic(
 
     // allocate shared storage for account_id if shared storage is being used
     if *USE_FASTAUTH_FEATURES || *USE_SHARED_STORAGE {
-        if let Err(err) = SHARED_STORAGE_POOL.allocate_default(&account_id).await {
+        #[cfg(any(feature = "fastauth_features", feature = "shared_storage"))]
+        if let Err(err) = SHARED_STORAGE_POOL
+            .allocate_default(account_id.clone())
+            .await
+        {
             let err_msg = format!("Error allocating storage for account {account_id}: {err:?}");
             error!("{err_msg}");
             return (StatusCode::INTERNAL_SERVER_ERROR, err_msg).into_response();
@@ -596,12 +630,17 @@ async fn register_account_and_allowance(
         return (StatusCode::INTERNAL_SERVER_ERROR, err_msg).into_response();
     };
 
+    #[allow(unused_variables)] // makes compiler happy - used by err_msg
     let Ok(account_id) = account_id.parse::<AccountId>() else {
         let err_msg = format!("Invalid account_id: {account_id}");
         warn!("{err_msg}");
         return (StatusCode::BAD_REQUEST, err_msg).into_response();
     };
-    if let Err(err) = SHARED_STORAGE_POOL.allocate_default(&account_id).await {
+    #[cfg(feature = "shared_storage")]
+    if let Err(err) = SHARED_STORAGE_POOL
+        .allocate_default(account_id.clone())
+        .await
+    {
         let err_msg = format!("Error allocating storage for account {account_id}: {err:?}");
         error!("{err_msg}");
         return (StatusCode::INTERNAL_SERVER_ERROR, err_msg).into_response();
@@ -674,10 +713,187 @@ async fn send_meta_tx(data: Json<SignedDelegateAction>) -> impl IntoResponse {
     }
 }
 
+#[utoipa::path(
+    post,
+    path = "/send_meta_tx_nopoll",
+    request_body = SignedDelegateAction,
+    responses(
+        (status = 201, description = "Relayed and sent transaction ...", body = String),
+        (status = 400, description = "Error deserializing payload data object ...", body = String),
+        (status = 500, description = "Error signing transaction: ...", body = String),
+    ),
+)]
+async fn send_meta_tx_nopoll(data: Json<SignedDelegateAction>) -> impl IntoResponse {
+    let relayer_response = process_signed_delegate_action_noretry_async(
+        // deserialize SignedDelegateAction using serde json
+        data.0,
+    )
+    .await;
+    match relayer_response {
+        Ok(response) => response.into_response(),
+        Err(err) => (err.status_code, err.message).into_response(),
+    }
+}
+
+#[utoipa::path(
+    post,
+    path = "/send_meta_tx_async",
+    request_body = SignedDelegateAction,
+    responses(
+        (status = 202, description = "Relayed and sent transaction ...", body = String),
+    ),
+)]
+async fn send_meta_tx_async(data: Json<SignedDelegateAction>) -> impl IntoResponse {
+    tokio::spawn(async {
+        let relayer_response = process_signed_delegate_action_noretry_async(
+            // deserialize SignedDelegateAction using serde json
+            data.0,
+        )
+        .await;
+        let response = match relayer_response {
+            Ok(response) => response.into_response(),
+            Err(err) => (err.status_code, err.message).into_response(),
+        };
+        debug!("Async Relayer response: {:?}", response);
+    });
+    StatusCode::ACCEPTED.into_response()
+}
+
 #[instrument]
 async fn process_signed_delegate_action(
     signed_delegate_action: &SignedDelegateAction,
 ) -> Result<String, RelayError> {
+    process_signed_delegate_action_inner(
+        signed_delegate_action.clone(),
+        |receiver_id, actions| async move {
+            match RPC_CLIENT.send_tx(&*SIGNER, &receiver_id, actions).await {
+                Err(err) => {
+                    let err_msg: String = format!("Error signing transaction: {:?}", err);
+                    error!("{err_msg}");
+                    Err(err_msg)
+                }
+                Ok(FinalExecutionOutcomeView {
+                    status,
+                    transaction_outcome,
+                    receipts_outcome,
+                    ..
+                }) => Ok(TransactionResult {
+                    status,
+                    transaction_outcome,
+                    receipts_outcome,
+                }),
+            }
+        },
+    )
+    .await
+}
+
+pub async fn process_signed_delegate_action_big_timeout(
+    signed_delegate_action: SignedDelegateAction,
+) -> Result<String, RelayError> {
+    process_signed_delegate_action_inner(
+        signed_delegate_action,
+        |receiver_id, actions| async move {
+            let hash = RPC_CLIENT
+                .send_tx_async(&*SIGNER, &receiver_id, actions)
+                .await
+                .map_err(|err| {
+                    let err_msg: String = format!("Error signing transaction: {:?}", err);
+                    error!("{err_msg}");
+                    err_msg
+                })?;
+
+            let mut last_res = None;
+            const MAX_RETRIES: usize = 300;
+            for _retry_no in 1..=MAX_RETRIES {
+                let second = Duration::from_secs(1);
+                let res = match RPC_CLIENT.tx_async_status(SIGNER.account_id(), hash).await {
+                    Ok(res) => res,
+                    // The node is unstable, wait a second and try again
+                    Err(_) => {
+                        sleep(second).await;
+                        continue;
+                    }
+                };
+                last_res = Some(res.clone());
+                match res.status {
+                    FinalExecutionStatus::NotStarted => sleep(second).await,
+                    FinalExecutionStatus::Started => sleep(second).await,
+                    FinalExecutionStatus::Failure(_) => break,
+                    FinalExecutionStatus::SuccessValue(_) => break,
+                }
+            }
+            if let Some(FinalExecutionOutcomeView {
+                status,
+                transaction_outcome,
+                receipts_outcome,
+                ..
+            }) = last_res
+            {
+                Ok(TransactionResult {
+                    status,
+                    transaction_outcome,
+                    receipts_outcome,
+                })
+            } else {
+                error!("Tried {MAX_RETRIES} times, failed {MAX_RETRIES} times");
+                Err(format!("Failed after {MAX_RETRIES} retries"))
+            }
+        },
+    )
+    .await
+}
+
+async fn process_signed_delegate_action_noretry_async(
+    signed_delegate_action: SignedDelegateAction,
+) -> Result<String, RelayError> {
+    process_signed_delegate_action_inner(
+        signed_delegate_action,
+        |receiver_id, actions| async move {
+            let (nonce, block_hash, _) = RPC_CLIENT
+                .fetch_nonce(&*SIGNER.account_id(), &*SIGNER.public_key())
+                .await
+                .map_err(|e| format!("Error fetching nonce: {:?}", e))?;
+            let FinalExecutionOutcomeView {
+                status,
+                transaction_outcome,
+                receipts_outcome,
+                ..
+            } = RPC_CLIENT_NOFETCH
+                .call(&RpcBroadcastTxCommitRequest {
+                    signed_transaction: Transaction {
+                        nonce,
+                        block_hash,
+                        signer_id: SIGNER.account_id().clone(),
+                        public_key: SIGNER.public_key().clone(),
+                        receiver_id: receiver_id.clone(),
+                        actions: actions.clone(),
+                    }
+                    .sign(SIGNER.current_signer()),
+                })
+                .await
+                .map_err(|err| {
+                    let err_msg: String = format!("Error signing transaction: {:?}", err);
+                    error!("{err_msg}");
+                    err_msg
+                })?;
+            Ok(TransactionResult {
+                status,
+                transaction_outcome,
+                receipts_outcome,
+            })
+        },
+    )
+    .await
+}
+
+async fn process_signed_delegate_action_inner<F>(
+    signed_delegate_action: SignedDelegateAction,
+    _f: impl Fn(AccountId, Vec<Action>) -> F,
+) -> Result<String, RelayError>
+where
+    F: Future<Output = Result<TransactionResult, String>>,
+{
     debug!(
         "Deserialized SignedDelegateAction object: {:#?}",
         signed_delegate_action
@@ -694,9 +910,7 @@ async fn process_signed_delegate_action(
         .iter()
         .any(|s| s == da_receiver_id.as_str());
     if !*USE_FASTAUTH_FEATURES && !is_whitelisted_da_receiver {
-        let err_msg = format!(
-            "Delegate Action receiver_id {da_receiver_id} is not whitelisted",
-        );
+        let err_msg = format!("Delegate Action receiver_id {da_receiver_id} is not whitelisted",);
         warn!("{err_msg}");
         return Err(RelayError {
             status_code: StatusCode::BAD_REQUEST,
@@ -838,7 +1052,7 @@ async fn process_signed_delegate_action(
 
         let status = &execution.status;
         let response_msg = match status {
-            near_primitives::views::FinalExecutionStatus::Failure(_) => "Error sending transaction",
+            FinalExecutionStatus::Failure(_) => "Error sending transaction",
             _ => "Relayed and sent transaction",
         };
         let status_msg = json!({
@@ -865,7 +1079,7 @@ async fn process_signed_delegate_action(
                 })?;
         info!("Updated remaining allowance for account {signer_account_id}: {new_allowance}",);
 
-        if let near_primitives::views::FinalExecutionStatus::Failure(_) = status {
+        if let FinalExecutionStatus::Failure(_) = status {
             error!("Error message: \n{status_msg:?}");
             Err(RelayError {
                 status_code: StatusCode::INTERNAL_SERVER_ERROR,
@@ -891,7 +1105,7 @@ async fn process_signed_delegate_action(
 
         let status = &execution.status;
         let response_msg = match status {
-            near_primitives::views::FinalExecutionStatus::Failure(_) => "Error sending transaction",
+            FinalExecutionStatus::Failure(_) => "Error sending transaction",
             _ => "Relayed and sent transaction",
         };
         let status_msg = json!({
@@ -901,7 +1115,7 @@ async fn process_signed_delegate_action(
             "Receipts Outcome": &execution.receipts_outcome,
         });
 
-        if let near_primitives::views::FinalExecutionStatus::Failure(_) = status {
+        if let FinalExecutionStatus::Failure(_) = status {
             error!("Error message: \n{status_msg:?}");
             Err(RelayError {
                 status_code: StatusCode::INTERNAL_SERVER_ERROR,
