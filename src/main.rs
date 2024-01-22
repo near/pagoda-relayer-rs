@@ -756,6 +756,8 @@ async fn send_meta_tx_async(data: Json<SignedDelegateAction>) -> impl IntoRespon
         };
         debug!("Async Relayer response: {:?}", response);
     });
+    // TODO separate txn pre-validation logic and sending txn in process_signed_delegate_action
+    // only respond with ACCEPTED if txn passes pre-validation
     StatusCode::ACCEPTED.into_response()
 }
 
