@@ -7,15 +7,11 @@ ip_address = [0, 0, 0, 0]
 port = 3030
 # replace with the account id of the public key you will use to sign relay transactions - this should match the account_id in your json file
 relayer_account_id = "nomnomnom.testnet"   # "relayer.pagodaplatform.near"
-# replace with json files containing 3 entries: account_id (should match relayer_account_id), public_key, private_key
+# this is a list of jsons from json key files containing 3 entries: account_id, public_key, secret_key
+# NOTE: If you copy/paste the json from the key files, you might need to change private_key to secret_key
+# NOTE: account_id for all keys used should match as they should be derived from the same account_id
 # this is recommended for high throughput use cases to prevent nonce race conditions
-keys_filenames = [
-    "./account_keys/nomnomnom.testnet.json",
-    "./account_keys/e4a6dd159d45d4104679e709d29d49a533e5df9467b311c9dbea7fb8f0077335.json",
-    "./account_keys/df86e9701801e30cf0649b2ea43aeacef60e394e076709d4519880d5a9c7bc9e.json",
-    "./account_keys/37cb5b936de257d014e663663b186e58e4c3c4c9b4c7643e7b89821e789b0b4b.json",
-    "./account_keys/b278b7752b844a0cc88f8dbdb053b860d6283fb353e7a317b3b82efe01396c3e.json",
-]
+keys_filename = "./account_keys/nomnomnom.testnet.json"
 # replace with the account id of the public key you will use to sign shared_storage transactions - this should match the account_id in your json file
 shared_storage_account_id = "relayer-test.testnet"  # "social-storage.pagodaplatform.near"
 # replace with json file containing 3 entries: account_id (should match shared_storage_account_id), public_key, private_key
@@ -40,6 +36,9 @@ use_shared_storage = false
 # reference shared storage contract: https://github.com/NearSocial/social-db/blob/master/contract/src/shared_storage.rs
 social_db_contract_id = "v1.social08.testnet"
 
+# flametrace is used for generating flame graphs for performance inspection using the tracing-flame crate https://crates.io/crates/tracing-flame
+flametrace_performance = false
+
 # Uncoment the network you want to use or add your own
 
 # mainnet
@@ -51,7 +50,7 @@ social_db_contract_id = "v1.social08.testnet"
 
 # testnet
 network = "testnet"
-rpc_url = "https://archival-rpc.testnet.near.org"
+rpc_url = "https://rpc.testnet.near.org"
 wallet_url = "https://wallet.testnet.near.org"
 explorer_transaction_url = "https://explorer.testnet.near.org/transactions/"
 rpc_api_key = ""

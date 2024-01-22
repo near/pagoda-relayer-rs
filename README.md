@@ -19,24 +19,28 @@ The `SignedTransaction` is then sent to the network via RPC call and the result 
 6. Capital Efficiency: Without relayer if your business has 1M users they would have to be allocated 0.25 NEAR to cover their gas costs totalling 250k NEAR. However, only ~10% of the users would actually use the full allowance and a large amount of the 250k NEAR is just sitting there unused. So using the relayer, you can allocate 50k NEAR as a global pool of capital for your users, which can refilled on an as needed basis.
 
 ## Features 
-NOTE: These features can be mixed and matched "à la carte". Use of one feature does not preclude the use of any other feature unless specified. See the `/examples` directory for example configs corresponding to different use cases.
-1. Cover the gas costs of end users while allowing them to maintain custody of their funds and approve transactions (`/relay`, `/send_meta_tx`)
+These features can be mixed and matched "à la carte". Use of one feature does not preclude the use of any other feature unless specified. See the `/examples` directory for example configs corresponding to different use cases.
+
+NOTE: If integrating with fastauth make sure to enable feature flags: `cargo build --features fastauth_features,shared_storage`. If using shared storage, make sure to enable feature flags: `cargo build --features shared_storage`
+
+
+1. Cover the gas costs of end users while allowing them to maintain custody of their funds and approve transactions (`/relay`, `/send_meta_tx`, `/send_meta_tx_async`, `/send_meta_tx_nopoll`)
 2. Only pay for users interacting with certain contracts by whitelisting contracts addresses (`whitelisted_contracts` in `config.toml`) 
 3. Specify gas cost allowances for all accounts (`/update_all_allowances`) or on a per-user account basis (`/create_account_atomic`, `/register_account`, `/update_allowance`) and keep track of allowances (`/get_allowance`)
 4. Specify the accounts for which the relayer will cover gas fees (`whitelisted_delegate_action_receiver_ids` in `config.toml`)
 5. Only allow users to register if they have a unique Oauth Token (`/create_account_atomic`, `/register_account`)
 6. Relayer Key Rotation: `keys_filenames` in `config.toml`
 7. Integrate with [Fastauth SDK](https://docs.near.org/tools/fastauth-sdk). See `/examples/configs/fastauth.toml`
+8. Mix and Match config options - see `examples/configs`
 
 ### Features - COMING SOON
 1. Allow users to pay for gas fees using Fungible Tokens they hold. This can be implemented by either:
    1. Swapping the FT for NEAR using a DEX like [Ref finance](https://app.ref.finance/) OR
    2. Sending the FT to a burn address that is verified by the relayer and the relayer covers the equivalent amount of gas in NEAR
 2. Cover storage deposit costs by deploying a storage contract
-3. Configure via to config use relayer without storage contract
-4. automated relayer funds "top up" service
-5. Put transactions in a queue to minimize network congestion - expected early-mid 2024
-6. Multichain relayers - expected early-mid 2024
+3. automated relayer funds "top up" service
+4. Put transactions in a queue to minimize network congestion - expected early-mid 2024
+5. Multichain relayers - expected early-mid 2024
 
 ## API Spec <a id="api_spc"></a>
 For more details on the following endpoint and to try them out, please [setup your local dev env](#basic_setup).
@@ -81,6 +85,8 @@ with
 For more extensive testing, especially when you've deployed the relayer to multiple environments, it is recommended that you use Postman or some other api testing service.
 - POST `/relay`
 - POST `/send_meta_tx`
+- POST `/send_meta_tx_async`
+- POST `/send_meta_tx_nopoll`
 - GET `/get_allowance`
 - POST `/update_allowance`
 - POST `/update_all_allowances`
@@ -93,7 +99,9 @@ For more extensive testing, especially when you've deployed the relayer to multi
 3. With the account from step 2, create a json file in this directory in the format `{"account_id":"example.testnet","public_key":"ed25519:98GtfFzez3opomVpwa7i4m3nptHtc7Ha514XHMWszLtQ","private_key":"ed25519:YWuyKVQHE3rJQYRC3pRGV56o1qEtA1PnMYPDEtroc5kX4A4mWrJwF7XkzGe7JWNMABbtY4XFDBJEzgLyfPkwpzC"}` using a [Full Access Key](https://docs.near.org/concepts/basics/accounts/access-keys#key-types) from an account that has enough NEAR to cover the gas costs of transactions your server will be relaying. Usually, this will be a copy of the json file found in the `.near-credentials` directory. 
 4. Update values in `config.toml`
 5. Open up the `port` from `config.toml` in your machine's network settings
-6. Run the server using `cargo run`. To run with logs (tracing) enabled run `RUST_LOG=tower_http=debug cargo run`
+6. Run the server using `cargo run`. 
+7. (OPTIONAL) To run with logs (tracing) enabled run `RUST_LOG=tower_http=debug cargo run`
+8. (OPTIONAL) If integrating with fastauth make sure to enable feature flags: `cargo build --features fastauth_features,shared_storage`. If using shared storage, make sure to enable feature flags: `cargo build --features shared_storage`
 
 ## Redis Setup - OPTIONAL 
 NOTE: this is only needed if you intend to use whitelisting, allowances, and oauth functionality
@@ -111,13 +119,24 @@ NOTE: this is only needed if you intend to use whitelisting, allowances, and oau
 5. Add the newly generated key to the relayer account: `near add-key your_relayer_account.testnet ed25519:GdsF992LXiwNiAGUtxL7VbcPBAckbYBZubF6fTYrVY5Q`
    1. This will output something like: `Adding full access key = ed25519:GdsF992LXiwNiAGUtxL7VbcPBAckbYBZubF6fTYrVY5Q to your_relayer_account.testnet. Transaction Id Bur9nJxos4f5cbibYXugZQQmZ4Uo2jsHYiVUwPT7AZMG To see the transaction in the transaction explorer, please open this url in your browser https://explorer.testnet.near.org/transactions/Bur9nJxos4f5cbibYXugZQQmZ4Uo2jsHYiVUwPT7AZMG`
 6. Repeat steps 4 & 5 until you have the desired number of keys. Anywhere between 5-20 full access keys added to the relayer account works for most cases. 
-7. To double check your keys were successfully added to the account run `near keys your_relayer_account.testnet` again and you should see the newly added full access keys
-8. Copy all the newly generated keyfiles (usually `.json` files located in` ~/.near-credentials` directory) into the `pagoda-relayer-rs` directory
+7. To double-check your keys were successfully added to the account run `near keys your_relayer_account.testnet` again, and you should see the newly added full access keys
+8. Copy all contents of the newly generated keyfiles (usually `.json` files located in` ~/.near-credentials` directory) into the json file (`your_relayer_account.testnet.json` in the example) in the `account_keys` directory. You will now have a list of jsons from json key files containing 3 entries: account_id, public_key, secret_key in the file.
+   1. NOTE: You might need to change `private_key` to `secret_key`
 9. Change all the `"account_id"`s of the keyfiles in the relayer directory from the implicit account_id (i.e. `e05185d0de0d6e4897555a386fdd3f48508ad1cdeaebcbd1cac81c72116cc5ab`) to the relayer account_id `your_relayer_account.testnet`
-10. Add the key filenames (i.e. `"e05185d0de0d6e4897555a386fdd3f48508ad1cdeaebcbd1cac81c72116cc5ab.json"`) to the `keys_filenames` list in `config.toml`
+10. Make sure the `key_filename` in `config.toml` matches your (i.e. `"your_relayer_account.testnet.json"`) to the `keys_filenames` list in `config.toml`
 
-## Testing
+## Unit Testing
 1. Run unit tests with `cargo test`
+
+## Performance Testing
+1. Remove the `#[ignore]` attribute above `test_relay_with_load()` testing function and run the test
+2. Flame Tracing https://crates.io/crates/tracing-flame
+   - Set `flametrace_performance = true` in `config.toml` 
+   - run `cargo run`, while sending requests to the endpoints of the functions you want to examine the performance of. 
+   - Stop the execution of the `cargo run` process. 
+   - Install inferno `cargo install inferno` 
+   - Generate the flamegraph from the `tracing.folded` file generated while running the relayer: `cat tracing.folded | inferno-flamegraph > tracing-flamegraph.svg`
+   - Generate a flamechart: `cat tracing.folded | inferno-flamegraph --flamechart > tracing-flamechart.svg`
 
 ## Docker Deployment
 1. Update `config.toml` as per your requirements.

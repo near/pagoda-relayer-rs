@@ -361,8 +361,18 @@ version = "0.10.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4114279215a005bc675e386011e594e1d9b800918cea18fcadadcce864a2046b"
 dependencies = [
- "borsh-derive",
+ "borsh-derive 0.10.3",
  "hashbrown 0.13.2",
+]
+
+[[package]]
+name = "borsh"
+version = "1.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9897ef0f1bd2362169de6d7e436ea2237dc1085d7d1e4db75f4be34d86f309d1"
+dependencies = [
+ "borsh-derive 1.2.1",
+ "cfg_aliases",
 ]
 
 [[package]]
@@ -373,9 +383,23 @@ checksum = "0754613691538d51f329cce9af41d7b7ca150bc973056f1156611489475f54f7"
 dependencies = [
  "borsh-derive-internal",
  "borsh-schema-derive-internal",
- "proc-macro-crate",
+ "proc-macro-crate 0.1.5",
  "proc-macro2",
  "syn 1.0.109",
+]
+
+[[package]]
+name = "borsh-derive"
+version = "1.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "478b41ff04256c5c8330f3dfdaaae2a5cc976a8e75088bafa4625b0d0208de8c"
+dependencies = [
+ "once_cell",
+ "proc-macro-crate 2.0.1",
+ "proc-macro2",
+ "quote",
+ "syn 2.0.37",
+ "syn_derive",
 ]
 
 [[package]]
@@ -457,6 +481,12 @@ name = "cfg-if"
 version = "1.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "baf1de4339761588bc0619e3cbc0120ee582ebb74b53b4efbf79117bd2da40fd"
+
+[[package]]
+name = "cfg_aliases"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fd16c4719339c4530435d38e511904438d07cce7950afa3718a84ac36c10e89e"
 
 [[package]]
 name = "chrono"
@@ -833,6 +863,12 @@ name = "dtoa"
 version = "0.4.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "56899898ce76aaf4a0f24d914c97ea6ed976d42fec6ad33fcbb0a1103e07b2b0"
+
+[[package]]
+name = "dyn-clone"
+version = "1.0.16"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "545b22097d44f8a9581187cdf93de7a71e4722bf51200cfaba810865b49a495d"
 
 [[package]]
 name = "easy-ext"
@@ -1642,7 +1678,7 @@ version = "0.17.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "dc0cb40869cab7f5232f934f45db35bffe0f2d2a7cb0cd0346202fbe4ebf2dd7"
 dependencies = [
- "borsh",
+ "borsh 0.10.3",
  "serde",
 ]
 
@@ -1687,7 +1723,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ff6b382b626e7e0cd372d027c6672ac97b4b6ee6114288c9e58d8180b935d315"
 dependencies = [
  "blake2",
- "borsh",
+ "borsh 0.10.3",
  "bs58",
  "c2-chacha",
  "curve25519-dalek",
@@ -1709,15 +1745,17 @@ dependencies = [
 
 [[package]]
 name = "near-fetch"
-version = "0.0.12"
+version = "0.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d227650df31a89e5bd256f7a9b5ae85f6f9b855f7114b2a4e935d15372d77cab"
+checksum = "b781c0a57944d4cea8c7586e98e76f08b2e107d23338eeb9aca88213b2cbcd98"
 dependencies = [
  "near-account-id",
  "near-crypto",
+ "near-gas",
  "near-jsonrpc-client",
  "near-jsonrpc-primitives",
  "near-primitives",
+ "near-token",
  "serde",
  "serde_json",
  "thiserror",
@@ -1735,12 +1773,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "near-gas"
+version = "0.2.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "14e75c875026229902d065e4435804497337b631ec69ba746b102954273e9ad1"
+dependencies = [
+ "borsh 1.2.1",
+ "schemars",
+ "serde",
+]
+
+[[package]]
 name = "near-jsonrpc-client"
 version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "118f44c02ad211db805c1370ad3ff26576af6ff554093c9fece1b835d29d233a"
 dependencies = [
- "borsh",
+ "borsh 0.10.3",
  "lazy_static",
  "log",
  "near-chain-configs",
@@ -1802,7 +1851,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "05f7051aaf199adc4d068620fca6d5f70f906a1540d03a8bb3701271f8881835"
 dependencies = [
  "arbitrary",
- "borsh",
+ "borsh 0.10.3",
  "bytesize",
  "cfg-if",
  "chrono",
@@ -1840,7 +1889,7 @@ checksum = "775fec19ef51a341abdbf792a9dda5b4cb89f488f681b2fd689b9321d24db47b"
 dependencies = [
  "arbitrary",
  "base64 0.21.4",
- "borsh",
+ "borsh 0.10.3",
  "bs58",
  "derive_more",
  "enum-map",
@@ -1884,6 +1933,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6540152fba5e96fe5d575b79e8cd244cf2add747bb01362426bdc069bc3a23bc"
 
 [[package]]
+name = "near-token"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7b68f3f8a2409f72b43efdbeff8e820b81e70824c49fee8572979d789d1683fb"
+
+[[package]]
 name = "near-units"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1921,7 +1976,7 @@ version = "0.17.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ec545d1bede0579e7c15dd2dce9b998dc975c52f2165702ff40bec7ff69728bb"
 dependencies = [
- "borsh",
+ "borsh 0.10.3",
  "near-account-id",
  "near-rpc-error-macro",
  "serde",
@@ -2343,6 +2398,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "proc-macro-crate"
+version = "2.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "97dc5fea232fc28d2f597b37c4876b348a40e33f3b02cc975c8d006d78d94b1a"
+dependencies = [
+ "toml_datetime",
+ "toml_edit",
+]
+
+[[package]]
 name = "proc-macro-error"
 version = "1.0.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2664,7 +2729,7 @@ checksum = "dbb5fb1acd8a1a18b3dd5be62d25485eb770e05afb408a9627d14d451bae12da"
 
 [[package]]
 name = "relayer"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "axum",
@@ -2693,6 +2758,7 @@ dependencies = [
  "tower",
  "tower-http",
  "tracing",
+ "tracing-flame",
  "tracing-subscriber",
  "url",
  "utoipa",
@@ -2912,6 +2978,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "schemars"
+version = "0.8.16"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "45a28f4c49489add4ce10783f7911893516f15afe45d015608d41faca6bc4d29"
+dependencies = [
+ "dyn-clone",
+ "schemars_derive",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "schemars_derive"
+version = "0.8.16"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c767fd6fa65d9ccf9cf026122c1b555f2ef9a4f0cea69da4d7dbc3e258d30967"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "serde_derive_internals",
+ "syn 1.0.109",
+]
+
+[[package]]
 name = "scopeguard"
 version = "1.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2993,6 +3083,17 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.37",
+]
+
+[[package]]
+name = "serde_derive_internals"
+version = "0.26.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "85bf8229e7920a9f636479437026331ce11aa132b4dde37d121944a44d6e5f3c"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 1.0.109",
 ]
 
 [[package]]
@@ -3258,6 +3359,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "syn_derive"
+version = "0.1.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1329189c02ff984e9736652b1631330da25eaa6bc639089ed4915d25446cbe7b"
+dependencies = [
+ "proc-macro-error",
+ "proc-macro2",
+ "quote",
+ "syn 2.0.37",
+]
+
+[[package]]
 name = "sync_wrapper"
 version = "0.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3475,6 +3588,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "toml_datetime"
+version = "0.6.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7cda73e2f1397b1262d6dfdcef8aafae14d1de7748d66822d3bfeeb6d03e5e4b"
+
+[[package]]
+name = "toml_edit"
+version = "0.20.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "396e4d48bbb2b7554c944bde63101b5ae446cff6ec4a24227428f15eb72ef338"
+dependencies = [
+ "indexmap 2.0.0",
+ "toml_datetime",
+ "winnow",
+]
+
+[[package]]
 name = "tonic"
 version = "0.6.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3619,6 +3749,17 @@ version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d686ec1c0f384b1277f097b2f279a2ecc11afe8c133c1aabf036a27cb4cd206e"
 dependencies = [
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
+name = "tracing-flame"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0bae117ee14789185e129aaee5d93750abe67fdc5a9a62650452bfe4e122a3a9"
+dependencies = [
+ "lazy_static",
  "tracing",
  "tracing-subscriber",
 ]
@@ -4073,6 +4214,15 @@ name = "windows_x86_64_msvc"
 version = "0.48.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ed94fce61571a4006852b7389a063ab983c02eb1bb37b47f8272ce92d06d9538"
+
+[[package]]
+name = "winnow"
+version = "0.5.28"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6c830786f7720c2fd27a1a0e27a709dbd3c4d009b56d098fc742d4f4eab91fe2"
+dependencies = [
+ "memchr",
+]
 
 [[package]]
 name = "winreg"
