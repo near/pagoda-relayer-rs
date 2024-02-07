@@ -14,13 +14,13 @@ use config::{Config, File as ConfigFile};
 use near_crypto::InMemorySigner;
 use near_fetch::signer::{ExposeAccountId, KeyRotatingSigner};
 use near_jsonrpc_client::methods::broadcast_tx_commit::RpcBroadcastTxCommitRequest;
-use near_primitives::borsh::BorshDeserialize;
 use near_primitives::delegate_action::SignedDelegateAction;
 use near_primitives::transaction::{Action, FunctionCallAction, Transaction};
 use near_primitives::types::AccountId;
 use near_primitives::views::{
     ExecutionOutcomeWithIdView, FinalExecutionOutcomeView, FinalExecutionStatus,
 };
+use near_primitives::{borsh::BorshDeserialize, transaction::CreateAccountAction};
 use once_cell::sync::Lazy;
 use r2d2::{Pool, PooledConnection};
 use r2d2_redis::redis::{Commands, ErrorKind::IoError, RedisError};
@@ -57,6 +57,10 @@ use crate::shared_storage::SharedStoragePoolManager;
 // transaction cost in Gas (10^21yN or 10Tgas or 0.001N)
 const TXN_GAS_ALLOWANCE: u64 = 10_000_000_000_000;
 const YN_TO_GAS: u128 = 1_000_000_000;
+const FT_TRANSFER_METHOD_NAME: &str = "ft_transfer";
+const STORAGE_DEPOSIT_METHOD_NAME: &str = "storage_deposit";
+const STORAGE_DEPOSIT_AMOUNT_FT: u128 = 1250000000000000000000;
+const FT_TRANSFER_ATTACHMENT_DEPOSIT_AMOUNT: u128 = 1;
 
 // load config from toml and setup json rpc client
 static LOCAL_CONF: Lazy<Config> = Lazy::new(|| {
@@ -97,6 +101,8 @@ static SHARED_STORAGE_KEYS_FILENAME: Lazy<String> =
     Lazy::new(|| LOCAL_CONF.get("shared_storage_keys_filename").unwrap());
 static WHITELISTED_CONTRACTS: Lazy<Vec<String>> =
     Lazy::new(|| LOCAL_CONF.get("whitelisted_contracts").unwrap());
+static USE_WHITELISTED_CONTRACTS: Lazy<bool> =
+    Lazy::new(|| LOCAL_CONF.get("use_whitelisted_contracts").unwrap_or(false));
 static USE_WHITELISTED_DELEGATE_ACTION_RECEIVER_IDS: Lazy<bool> = Lazy::new(|| {
     LOCAL_CONF
         .get("use_whitelisted_delegate_action_receiver_ids")
@@ -113,6 +119,9 @@ static REDIS_POOL: Lazy<Pool<RedisConnectionManager>> = Lazy::new(|| {
     let manager = RedisConnectionManager::new(redis_cnxn_url).unwrap();
     Pool::builder().build(manager).unwrap()
 });
+static USE_EXCHANGE: Lazy<bool> = Lazy::new(|| LOCAL_CONF.get("use_exchange").unwrap_or(false));
+static ALLOWED_ACTIONS: Lazy<Vec<String>> =
+    Lazy::new(|| LOCAL_CONF.get("allowed_actions").unwrap());
 static USE_FASTAUTH_FEATURES: Lazy<bool> =
     Lazy::new(|| LOCAL_CONF.get("use_fastauth_features").unwrap_or(false));
 static USE_PAY_WITH_FT: Lazy<bool> =
@@ -906,12 +915,78 @@ where
     // the receiver of the txn is the sender of the signed delegate action
     let receiver_id = &signed_delegate_action.delegate_action.sender_id;
     let da_receiver_id = &signed_delegate_action.delegate_action.receiver_id;
-
     // check that the delegate action receiver_id is in the whitelisted_contracts
     let is_whitelisted_da_receiver = WHITELISTED_CONTRACTS
         .iter()
         .any(|s| s == da_receiver_id.as_str());
-    if !*USE_FASTAUTH_FEATURES && !is_whitelisted_da_receiver {
+    if USE_EXCHANGE.clone() {
+        let non_delegate_actions: Vec<Action> =
+            signed_delegate_action.delegate_action.get_actions();
+        if *USE_WHITELISTED_DELEGATE_ACTION_RECEIVER_IDS {
+                        // check if the delegate action receiver_id (account sender_id) if a whitelisted delegate action receiver
+                        let is_whitelisted_sender = WHITELISTED_DELEGATE_ACTION_RECEIVER_IDS
+                            .iter()
+                            .any(|s| s == receiver_id.as_str());
+                        if !is_whitelisted_sender {
+                            return Err(RelayError {
+                                status_code: StatusCode::BAD_REQUEST,
+                                message: "Delegate Action Sender_id {receiver_id} is not whitelisted".to_string(),
+                            });
+                        }
+        }
+        for non_delegate_action in non_delegate_actions {
+            match non_delegate_action.clone() {
+                Action::FunctionCall(FunctionCallAction {
+                    method_name,
+                    deposit,
+                    ..
+                }) => {
+                    debug!("method_name: {:?}", method_name);
+                    debug!("deposit: {:?}", deposit);
+                    if !is_whitelisted_da_receiver{
+                        return Err(RelayError {
+                            status_code: StatusCode::BAD_REQUEST,
+                            message: "Delegate Action receiver_id {da_receiver_id} is not whitelisted".to_string(),
+                        });
+                    }
+                    
+                    match method_name.as_str() {
+                        FT_TRANSFER_METHOD_NAME => {
+                            if deposit != FT_TRANSFER_ATTACHMENT_DEPOSIT_AMOUNT {
+                                return Err(RelayError {
+                                    status_code: StatusCode::BAD_REQUEST,
+                                    message: "Ft transfer requires 1 yocto attached.".to_string(),
+                                });
+                            }
+                        }
+                        STORAGE_DEPOSIT_METHOD_NAME => {
+                            if deposit != STORAGE_DEPOSIT_AMOUNT_FT {
+                                return Err(RelayError {
+                                status_code: StatusCode::BAD_REQUEST,
+                                message: "Attached less or more than allowed storage_deposit amount allowed.".to_string(),
+                            });
+                            }
+                        }
+                        _ => {
+                            return Err(RelayError {
+                                status_code: StatusCode::BAD_REQUEST,
+                                message: "Method name not allowed.".to_string(),
+                            });
+                        }
+                    }
+                }
+                Action::CreateAccount(_) => debug!("CreateAccount action"),
+                Action::Transfer(_) => debug!("CreateAccount action"),
+                _ => {
+                    return Err(RelayError {
+                        status_code: StatusCode::BAD_REQUEST,
+                        message: "This action type is not allowed.".to_string(),
+                    })
+                }
+            }
+        }
+    }
+    if !*USE_FASTAUTH_FEATURES && !is_whitelisted_da_receiver && *USE_WHITELISTED_CONTRACTS {
         let err_msg = format!("Delegate Action receiver_id {da_receiver_id} is not whitelisted",);
         warn!("{err_msg}");
         return Err(RelayError {
@@ -936,7 +1011,7 @@ where
             });
         }
     }
-    if !is_whitelisted_da_receiver && *USE_FASTAUTH_FEATURES {
+    if !is_whitelisted_da_receiver && *USE_FASTAUTH_FEATURES && *USE_WHITELISTED_CONTRACTS  {
         // check if sender id and receiver id are the same AND (AddKey or DeleteKey action)
         let non_delegate_action = signed_delegate_action
             .delegate_action
