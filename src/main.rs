@@ -923,16 +923,17 @@ where
         let non_delegate_actions: Vec<Action> =
             signed_delegate_action.delegate_action.get_actions();
         if *USE_WHITELISTED_DELEGATE_ACTION_RECEIVER_IDS {
-                        // check if the delegate action receiver_id (account sender_id) if a whitelisted delegate action receiver
-                        let is_whitelisted_sender = WHITELISTED_DELEGATE_ACTION_RECEIVER_IDS
-                            .iter()
-                            .any(|s| s == receiver_id.as_str());
-                        if !is_whitelisted_sender {
-                            return Err(RelayError {
-                                status_code: StatusCode::BAD_REQUEST,
-                                message: "Delegate Action Sender_id {receiver_id} is not whitelisted".to_string(),
-                            });
-                        }
+            // check if the delegate action receiver_id (account sender_id) if a whitelisted delegate action receiver
+            let is_whitelisted_sender = WHITELISTED_DELEGATE_ACTION_RECEIVER_IDS
+                .iter()
+                .any(|s| s == receiver_id.as_str());
+            if !is_whitelisted_sender {
+                return Err(RelayError {
+                    status_code: StatusCode::BAD_REQUEST,
+                    message: "Delegate Action Sender_id {receiver_id} is not whitelisted"
+                        .to_string(),
+                });
+            }
         }
         for non_delegate_action in non_delegate_actions {
             match non_delegate_action.clone() {
@@ -943,13 +944,14 @@ where
                 }) => {
                     debug!("method_name: {:?}", method_name);
                     debug!("deposit: {:?}", deposit);
-                    if !is_whitelisted_da_receiver{
+                    if !is_whitelisted_da_receiver {
                         return Err(RelayError {
                             status_code: StatusCode::BAD_REQUEST,
-                            message: "Delegate Action receiver_id {da_receiver_id} is not whitelisted".to_string(),
+                            message:
+                                "Delegate Action receiver_id {da_receiver_id} is not whitelisted"
+                                    .to_string(),
                         });
                     }
-                    
                     match method_name.as_str() {
                         FT_TRANSFER_METHOD_NAME => {
                             if deposit != FT_TRANSFER_ATTACHMENT_DEPOSIT_AMOUNT {
@@ -976,7 +978,7 @@ where
                     }
                 }
                 Action::CreateAccount(_) => debug!("CreateAccount action"),
-                Action::Transfer(_) => debug!("CreateAccount action"),
+                Action::Transfer(_) => debug!("Transfer action"),
                 _ => {
                     return Err(RelayError {
                         status_code: StatusCode::BAD_REQUEST,
@@ -1011,7 +1013,7 @@ where
             });
         }
     }
-    if !is_whitelisted_da_receiver && *USE_FASTAUTH_FEATURES && *USE_WHITELISTED_CONTRACTS  {
+    if !is_whitelisted_da_receiver && *USE_FASTAUTH_FEATURES && *USE_WHITELISTED_CONTRACTS {
         // check if sender id and receiver id are the same AND (AddKey or DeleteKey action)
         let non_delegate_action = signed_delegate_action
             .delegate_action
