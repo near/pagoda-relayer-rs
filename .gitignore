@@ -20,5 +20,3 @@ tracing.folded
 *.json
 # except for example json file used for testing
 !nomnomnom.testnet.json
-# openapi schema json
-!openapi_schema.json
