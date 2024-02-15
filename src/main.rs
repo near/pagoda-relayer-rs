@@ -978,7 +978,10 @@ where
                     }
                 }
                 Action::CreateAccount(_) => debug!("CreateAccount action"),
-                Action::Transfer(_) => debug!("Transfer action"),
+                Action::Transfer(_) => return Err(RelayError {
+                        status_code: StatusCode::BAD_REQUEST,
+                        message: "Transfer action type is not allowed.".to_string(),
+                    }),
                 _ => {
                     return Err(RelayError {
                         status_code: StatusCode::BAD_REQUEST,
