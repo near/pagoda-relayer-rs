@@ -1,0 +1,312 @@
+---
+openapi: 3.0.3
+info:
+  title: relayer
+  description: "APIs for creating accounts, managing allowances, and relaying meta
+    transactions. \n NOTE: the SignedDelegateAction is not supported by the openapi
+    schema. \n Here's an example json of a SignedDelegateAction payload:\n ```{\"delegate_action\":
+    {\"actions\": [{\"Transfer\": {\"deposit\": \"1\" }}], \"max_block_height\": 922790412,
+    \"nonce\": 103066617000686, \"public_key\": \"ed25519:98GtfFzez3opomVpwa7i4m2nptHtc8Ha405XHMWszQtL\",
+    \"receiver_id\": \"relayer.example.testnet\", \"sender_id\": \"example.testnet\"
+    }, \"signature\": \"ed25519:4uJu8KapH98h8cQm4btE0DKnbiFXSZNT7McDw4LHy7pdAt4Mz8DfuyQZadGgFExo77or9152iwcw2q12rnFWa6bg\"
+    }``` \n For more details on the SignedDelegateAction data structure, please see
+    https://docs.rs/near-primitives/latest/near_primitives/delegate_action/struct.SignedDelegateAction.html
+    or https://docs.near.org/develop/relayers/build-relayer#signing-a-delegated-transaction "
+  license:
+    name: ''
+  version: 0.3.0
+paths:
+  "/create_account_atomic":
+    post:
+      tags:
+        - crate
+      operationId: create_account_atomic
+      requestBody:
+        content:
+          application/json:
+            schema:
+              "$ref": "#/components/schemas/AccountIdAllowanceOauthSDAJson"
+        required: true
+      responses:
+        '201':
+          description: 'Added Oauth token https://securetoken.google.com/pagoda-oboarding-dev:Op4h13AQozM4CikngfHiFVC2xhf2
+            for account_id example.near with allowance (in Gas) 90000000000000 to
+            Relayer DB. Near onchain account creation response: {create_account_sda_result:?}'
+          content:
+            text/plain:
+              schema:
+                type: string
+        '400':
+          description: 'Error: oauth_token https://securetoken.google.com/pagoda-oboarding-dev:Op4h13AQozM4CikngfHiFVC2xhf2
+            has already been used to register an account. You can only register 1
+            account per oauth_token'
+          content:
+            text/plain:
+              schema:
+                type: string
+        '403':
+          description: 'Invalid account_id: invalid_account_id.near'
+          content:
+            text/plain:
+              schema:
+                type: string
+        '500':
+          description: |-
+            Error creating oauth token https://securetoken.google.com/pagoda-oboarding-dev:Op4h13AQozM4CikngfHiFVC2xhf2 in Relayer DB:
+            {err:?}
+          content:
+            text/plain:
+              schema:
+                type: string
+  "/get_allowance":
+    get:
+      tags:
+        - crate
+      operationId: get_allowance
+      requestBody:
+        content:
+          application/json:
+            schema:
+              "$ref": "#/components/schemas/AccountIdJson"
+        required: true
+      responses:
+        '200':
+          description: '90000000000000'
+          content:
+            text/plain:
+              schema:
+                type: string
+        '500':
+          description: 'Error getting allowance for account_id example.near in Relayer
+            DB: err_msg'
+          content:
+            text/plain:
+              schema:
+                type: string
+  "/register_account_and_allowance":
+    post:
+      tags:
+        - crate
+      operationId: register_account_and_allowance
+      requestBody:
+        content:
+          application/json:
+            schema:
+              "$ref": "#/components/schemas/AccountIdAllowanceOauthJson"
+        required: true
+      responses:
+        '201':
+          description: 'Added Oauth token {oauth_token: https://securetoken.google.com/pagoda-oboarding-dev:Op4h13AQozM4CikngfHiFVC2xhf2,
+            account_id: example.near, allowance: 90000000000000 to Relayer DB'
+          content:
+            text/plain:
+              schema:
+                type: string
+        '500':
+          description: 'Error: oauth_token https://securetoken.google.com/pagoda-oboarding-dev:Op4h13AQozM4CikngfHiFVC2xhf2
+            has already been used to register an account. You can only register 1
+            account per oauth_token'
+          content:
+            text/plain:
+              schema:
+                type: string
+  "/relay":
+    post:
+      tags:
+        - crate
+      operationId: relay
+      requestBody:
+        content:
+          application/octet-stream:
+            schema:
+              type: string
+              format: binary
+        required: true
+      responses:
+        '201':
+          description: Relayed and sent transaction ...
+          content:
+            text/plain:
+              schema:
+                type: string
+        '400':
+          description: Error deserializing payload data object ...
+          content:
+            text/plain:
+              schema:
+                type: string
+        '500':
+          description: 'Error signing transaction: ...'
+          content:
+            text/plain:
+              schema:
+                type: string
+  "/send_meta_tx":
+    post:
+      tags:
+        - crate
+      operationId: send_meta_tx
+      requestBody:
+        content:
+          application/json:
+            schema:
+              "$ref": "#/components/schemas/SignedDelegateAction"
+        required: true
+      responses:
+        '201':
+          description: Relayed and sent transaction ...
+          content:
+            text/plain:
+              schema:
+                type: string
+        '400':
+          description: Error deserializing payload data object ...
+          content:
+            text/plain:
+              schema:
+                type: string
+        '500':
+          description: 'Error signing transaction: ...'
+          content:
+            text/plain:
+              schema:
+                type: string
+  "/update_all_allowances":
+    post:
+      tags:
+        - crate
+      operationId: update_all_allowances
+      requestBody:
+        content:
+          application/json:
+            schema:
+              "$ref": "#/components/schemas/AllowanceJson"
+        required: true
+      responses:
+        '200':
+          description: Updated 321 keys in Relayer DB
+          content:
+            text/plain:
+              schema:
+                type: string
+        '500':
+          description: 'Error updating allowance for key example.near: err_msg'
+          content:
+            text/plain:
+              schema:
+                type: string
+  "/update_allowance":
+    post:
+      tags:
+        - crate
+      operationId: update_allowance
+      requestBody:
+        content:
+          application/json:
+            schema:
+              "$ref": "#/components/schemas/AccountIdAllowanceJson"
+        required: true
+      responses:
+        '201':
+          description: 'Relayer DB updated for {account_id: example.near,allowance:
+            90000000000000}'
+          content:
+            text/plain:
+              schema:
+                type: string
+        '500':
+          description: |-
+            Error updating account_id example.near with allowance 90000000000000 in Relayer DB:
+            {db_result:?}
+          content:
+            text/plain:
+              schema:
+                type: string
+components:
+  schemas:
+    AccountIdAllowanceJson:
+      type: object
+      required:
+        - account_id
+        - allowance
+      properties:
+        account_id:
+          type: string
+          example: example.near
+        allowance:
+          type: integer
+          format: int64
+          example: 900000000
+          minimum: 0
+    AccountIdAllowanceOauthJson:
+      type: object
+      required:
+        - account_id
+        - allowance
+        - oauth_token
+      properties:
+        account_id:
+          type: string
+          example: example.near
+        allowance:
+          type: integer
+          format: int64
+          example: 900000000
+          minimum: 0
+        oauth_token:
+          type: string
+          example: https://securetoken.google.com/pagoda-oboarding-dev:Op4h13AQozM4CikngfHiFVC2xhf2
+    AccountIdAllowanceOauthSDAJson:
+      type: object
+      required:
+        - account_id
+        - allowance
+        - oauth_token
+        - signed_delegate_action
+      properties:
+        account_id:
+          type: string
+          example: example.near
+        allowance:
+          type: integer
+          format: int64
+          example: 900000000
+          minimum: 0
+        oauth_token:
+          type: string
+          example: https://securetoken.google.com/pagoda-oboarding-dev:Op4h13AQozM4CikngfHiFVC2xhf2
+        signed_delegate_action:
+          "$ref": "#/components/schemas/SignedDelegateAction"
+    AccountIdJson:
+      type: object
+      required:
+        - account_id
+      properties:
+        account_id:
+          type: string
+          example: example.near
+    AllowanceJson:
+      type: object
+      required:
+        - allowance_in_gas
+      properties:
+        allowance_in_gas:
+          type: integer
+          format: int64
+          example: 900000000
+          minimum: 0
+    RelayError:
+      type: object
+      required:
+        - status_code
+        - message
+      properties:
+        message:
+          type: string
+          example: AccountId example.near does not have enough remaining gas allowance.
+        status_code:
+          "$ref": "#/components/schemas/StatusCode"
+tags:
+  - name: relayer
+    description: APIs for creating accounts, managing allowances, and relaying meta
+      transactions
