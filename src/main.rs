@@ -755,21 +755,45 @@ async fn send_meta_tx_nopoll(data: Json<SignedDelegateAction>) -> impl IntoRespo
     ),
 )]
 async fn send_meta_tx_async(data: Json<SignedDelegateAction>) -> impl IntoResponse {
-    tokio::spawn(async {
-        let relayer_response = process_signed_delegate_action_noretry_async(
-            // deserialize SignedDelegateAction using serde json
-            data.0,
-        )
-        .await;
-        let response = match relayer_response {
-            Ok(response) => response.into_response(),
-            Err(err) => (err.status_code, err.message).into_response(),
-        };
-        debug!("Async Relayer response: {:?}", response);
-    });
-    // TODO separate txn pre-validation logic and sending txn in process_signed_delegate_action
+    // Directly await the asynchronous operation without detaching it as a separate task.
+    let relayer_response = process_signed_delegate_action_noretry_async(data.0).await;
+
+    // Generate the response based on the outcome of the above operation.
+    let response = match relayer_response {
+        Ok(response) => {
+            // Assuming `response` is the actual content you want to return.
+            // Adjust the `.into_response()` method as necessary to fit your response format.
+            response.into_response()
+        }
+        Err(err) => {
+            // Construct an error response from your error type.
+            // You might need to adjust `(err.status_code, err.message)` to match the actual structure of your error.
+            (err.status_code, err.message).into_response()
+        }
+    };
+
+    // Log the response for debugging.
+    debug!("Async Relayer response: {:?}", response);
+
+    // Return the generated response directly.
+    response
+
+    // tokio::spawn(async {
+    //     let relayer_response = process_signed_delegate_action_noretry_async(
+    //         // deserialize SignedDelegateAction using serde json
+    //         data.0,
+    //     )
+    //     .await;
+    //     let response = match relayer_response {
+    //         Ok(response) => response.into_response(),
+    //         Err(err) => (err.status_code, err.message).into_response(),
+    //     };
+    //     debug!("Async Relayer response: {:?}", response);
+    // });
+
+    // TODO separate method with txn pre-validation logic and sending txn in process_signed_delegate_action
     // only respond with ACCEPTED if txn passes pre-validation
-    StatusCode::ACCEPTED.into_response()
+    // StatusCode::ACCEPTED.into_response()
 }
 
 #[instrument]
