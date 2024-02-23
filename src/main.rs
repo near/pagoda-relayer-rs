@@ -13,8 +13,10 @@ use axum::{
 use config::{Config, File as ConfigFile};
 use near_crypto::InMemorySigner;
 use near_fetch::signer::{ExposeAccountId, KeyRotatingSigner};
+// use near_jsonrpc_client::methods::broadcast_tx_async::RpcBroadcastTxAsyncRequest;
 use near_jsonrpc_client::methods::broadcast_tx_commit::RpcBroadcastTxCommitRequest;
 use near_primitives::delegate_action::SignedDelegateAction;
+use near_primitives::hash::CryptoHash;
 use near_primitives::transaction::{Action, FunctionCallAction, Transaction};
 use near_primitives::types::AccountId;
 use near_primitives::views::{
@@ -774,7 +776,7 @@ async fn send_meta_tx_async(data: Json<SignedDelegateAction>) -> impl IntoRespon
 async fn process_signed_delegate_action(
     signed_delegate_action: &SignedDelegateAction,
 ) -> Result<String, RelayError> {
-    process_signed_delegate_action_inner(
+    filter_and_send_signed_delegate_action(
         signed_delegate_action.clone(),
         |receiver_id, actions| async move {
             match RPC_CLIENT.send_tx(&*SIGNER, &receiver_id, actions).await {
@@ -802,7 +804,7 @@ async fn process_signed_delegate_action(
 pub async fn process_signed_delegate_action_big_timeout(
     signed_delegate_action: SignedDelegateAction,
 ) -> Result<String, RelayError> {
-    process_signed_delegate_action_inner(
+    filter_and_send_signed_delegate_action(
         signed_delegate_action,
         |receiver_id, actions| async move {
             let hash = RPC_CLIENT
@@ -858,7 +860,7 @@ pub async fn process_signed_delegate_action_big_timeout(
 async fn process_signed_delegate_action_noretry_async(
     signed_delegate_action: SignedDelegateAction,
 ) -> Result<String, RelayError> {
-    process_signed_delegate_action_inner(
+    filter_and_send_signed_delegate_action(
         signed_delegate_action,
         |receiver_id, actions| async move {
             let (nonce, block_hash, _) = RPC_CLIENT
@@ -871,6 +873,7 @@ async fn process_signed_delegate_action_noretry_async(
                 receipts_outcome,
                 ..
             } = RPC_CLIENT_NOFETCH
+                // TODO change to RpcBroadcastTxAsyncRequest
                 .call(&RpcBroadcastTxCommitRequest {
                     signed_transaction: Transaction {
                         nonce,
@@ -898,7 +901,7 @@ async fn process_signed_delegate_action_noretry_async(
     .await
 }
 
-async fn process_signed_delegate_action_inner<F>(
+async fn filter_and_send_signed_delegate_action<F>(
     signed_delegate_action: SignedDelegateAction,
     _f: impl Fn(AccountId, Vec<Action>) -> F,
 ) -> Result<String, RelayError>
@@ -978,10 +981,12 @@ where
                     }
                 }
                 Action::CreateAccount(_) => debug!("CreateAccount action"),
-                Action::Transfer(_) => return Err(RelayError {
+                Action::Transfer(_) => {
+                    return Err(RelayError {
                         status_code: StatusCode::BAD_REQUEST,
                         message: "Transfer action type is not allowed.".to_string(),
-                    }),
+                    })
+                }
                 _ => {
                     return Err(RelayError {
                         status_code: StatusCode::BAD_REQUEST,

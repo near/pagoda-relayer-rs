@@ -12,7 +12,7 @@ color-eyre = "0.6"
 config = "*"
 dirs = "5.0.1"
 linked-hash-map = { version = "0.5", features = ["serde_impl"] }
-near-fetch = "0.1.2"
+near-fetch = "0.2.0"
 near-crypto = "0.17.0"
 near-jsonrpc-client = "0.6.0"
 near-jsonrpc-primitives = "0.17.0"
