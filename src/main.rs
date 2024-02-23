@@ -13,7 +13,7 @@ use axum::{
 use config::{Config, File as ConfigFile};
 use near_crypto::InMemorySigner;
 use near_fetch::signer::{ExposeAccountId, KeyRotatingSigner};
-// use near_jsonrpc_client::methods::broadcast_tx_async::RpcBroadcastTxAsyncRequest;
+use near_jsonrpc_client::methods::broadcast_tx_async::RpcBroadcastTxAsyncRequest;
 use near_jsonrpc_client::methods::broadcast_tx_commit::RpcBroadcastTxCommitRequest;
 use near_primitives::delegate_action::SignedDelegateAction;
 use near_primitives::hash::CryptoHash;
@@ -860,21 +860,15 @@ pub async fn process_signed_delegate_action_big_timeout(
 async fn process_signed_delegate_action_noretry_async(
     signed_delegate_action: SignedDelegateAction,
 ) -> Result<String, RelayError> {
-    filter_and_send_signed_delegate_action(
+    let result: Result<String, RelayError> = filter_and_send_signed_delegate_action_async(
         signed_delegate_action,
         |receiver_id, actions| async move {
             let (nonce, block_hash, _) = RPC_CLIENT
                 .fetch_nonce(&*SIGNER.account_id(), &*SIGNER.public_key())
                 .await
                 .map_err(|e| format!("Error fetching nonce: {:?}", e))?;
-            let FinalExecutionOutcomeView {
-                status,
-                transaction_outcome,
-                receipts_outcome,
-                ..
-            } = RPC_CLIENT_NOFETCH
-                // TODO change to RpcBroadcastTxAsyncRequest
-                .call(&RpcBroadcastTxCommitRequest {
+            let txn_hash = RPC_CLIENT_NOFETCH
+                .call(&RpcBroadcastTxAsyncRequest {
                     signed_transaction: Transaction {
                         nonce,
                         block_hash,
@@ -891,14 +885,257 @@ async fn process_signed_delegate_action_noretry_async(
                     error!("{err_msg}");
                     err_msg
                 })?;
-            Ok(TransactionResult {
-                status,
-                transaction_outcome,
-                receipts_outcome,
-            })
+            Ok(txn_hash)
         },
     )
-    .await
+    .await;
+
+    match result {
+        Ok(txn_hash) => Ok(txn_hash),
+        Err(err) => Err(err),
+    }
+}
+
+// TODO refactor out common filtering code
+async fn filter_and_send_signed_delegate_action_async<F>(
+    signed_delegate_action: SignedDelegateAction,
+    _f: impl Fn(AccountId, Vec<Action>) -> F,
+) -> Result<String, RelayError>
+where
+    F: Future<Output = Result<CryptoHash, String>>,
+{
+    debug!(
+        "Deserialized SignedDelegateAction object: {:#?}",
+        signed_delegate_action
+    );
+
+    // create Transaction from SignedDelegateAction
+    let signer_account_id: AccountId = RELAYER_ACCOUNT_ID.parse().unwrap();
+    // the receiver of the txn is the sender of the signed delegate action
+    let receiver_id = &signed_delegate_action.delegate_action.sender_id;
+    let da_receiver_id = &signed_delegate_action.delegate_action.receiver_id;
+    // check that the delegate action receiver_id is in the whitelisted_contracts
+    let is_whitelisted_da_receiver = WHITELISTED_CONTRACTS
+        .iter()
+        .any(|s| s == da_receiver_id.as_str());
+    if USE_EXCHANGE.clone() {
+        let non_delegate_actions: Vec<Action> =
+            signed_delegate_action.delegate_action.get_actions();
+        if *USE_WHITELISTED_DELEGATE_ACTION_RECEIVER_IDS {
+            // check if the delegate action receiver_id (account sender_id) if a whitelisted delegate action receiver
+            let is_whitelisted_sender = WHITELISTED_DELEGATE_ACTION_RECEIVER_IDS
+                .iter()
+                .any(|s| s == receiver_id.as_str());
+            if !is_whitelisted_sender {
+                return Err(RelayError {
+                    status_code: StatusCode::BAD_REQUEST,
+                    message: "Delegate Action Sender_id {receiver_id} is not whitelisted"
+                        .to_string(),
+                });
+            }
+        }
+        for non_delegate_action in non_delegate_actions {
+            match non_delegate_action.clone() {
+                Action::FunctionCall(FunctionCallAction {
+                    method_name,
+                    deposit,
+                    ..
+                }) => {
+                    debug!("method_name: {:?}", method_name);
+                    debug!("deposit: {:?}", deposit);
+                    if !is_whitelisted_da_receiver {
+                        return Err(RelayError {
+                            status_code: StatusCode::BAD_REQUEST,
+                            message:
+                                "Delegate Action receiver_id {da_receiver_id} is not whitelisted"
+                                    .to_string(),
+                        });
+                    }
+                    match method_name.as_str() {
+                        FT_TRANSFER_METHOD_NAME => {
+                            if deposit != FT_TRANSFER_ATTACHMENT_DEPOSIT_AMOUNT {
+                                return Err(RelayError {
+                                    status_code: StatusCode::BAD_REQUEST,
+                                    message: "Ft transfer requires 1 yocto attached.".to_string(),
+                                });
+                            }
+                        }
+                        STORAGE_DEPOSIT_METHOD_NAME => {
+                            if deposit != STORAGE_DEPOSIT_AMOUNT_FT {
+                                return Err(RelayError {
+                                    status_code: StatusCode::BAD_REQUEST,
+                                    message: "Attached less or more than allowed storage_deposit amount allowed.".to_string(),
+                                });
+                            }
+                        }
+                        _ => {
+                            return Err(RelayError {
+                                status_code: StatusCode::BAD_REQUEST,
+                                message: "Method name not allowed.".to_string(),
+                            });
+                        }
+                    }
+                }
+                Action::CreateAccount(_) => debug!("CreateAccount action"),
+                Action::Transfer(_) => {
+                    return Err(RelayError {
+                        status_code: StatusCode::BAD_REQUEST,
+                        message: "Transfer action type is not allowed.".to_string(),
+                    })
+                }
+                _ => {
+                    return Err(RelayError {
+                        status_code: StatusCode::BAD_REQUEST,
+                        message: "This action type is not allowed.".to_string(),
+                    })
+                }
+            }
+        }
+    }
+    if !*USE_FASTAUTH_FEATURES && !is_whitelisted_da_receiver && *USE_WHITELISTED_CONTRACTS {
+        let err_msg = format!("Delegate Action receiver_id {da_receiver_id} is not whitelisted",);
+        warn!("{err_msg}");
+        return Err(RelayError {
+            status_code: StatusCode::BAD_REQUEST,
+            message: err_msg,
+        });
+    }
+    // check the sender_id in whitelist if applicable
+    if *USE_WHITELISTED_DELEGATE_ACTION_RECEIVER_IDS && !*USE_FASTAUTH_FEATURES {
+        // check if the delegate action receiver_id (account sender_id) if a whitelisted delegate action receiver
+        let is_whitelisted_sender = WHITELISTED_DELEGATE_ACTION_RECEIVER_IDS
+            .iter()
+            .any(|s| s == receiver_id.as_str());
+        if !is_whitelisted_sender {
+            let err_msg = format!(
+                "Delegate Action receiver_id {da_receiver_id} or sender_id {receiver_id} is not whitelisted",
+            );
+            warn!("{err_msg}");
+            return Err(RelayError {
+                status_code: StatusCode::BAD_REQUEST,
+                message: err_msg,
+            });
+        }
+    }
+    if !is_whitelisted_da_receiver && *USE_FASTAUTH_FEATURES && *USE_WHITELISTED_CONTRACTS {
+        // check if sender id and receiver id are the same AND (AddKey or DeleteKey action)
+        let non_delegate_action = signed_delegate_action
+            .delegate_action
+            .actions
+            .get(0)
+            .ok_or_else(|| {
+                let err_msg = "DelegateAction must have at least one NonDelegateAction";
+                warn!("{err_msg}");
+                RelayError {
+                    status_code: StatusCode::BAD_REQUEST,
+                    message: err_msg.to_string(),
+                }
+            })?;
+
+        let contains_key_action = matches!(
+            (*non_delegate_action).clone().into(),
+            Action::AddKey(_) | Action::DeleteKey(_)
+        );
+        // check if the receiver_id (delegate action sender_id) if a whitelisted delegate action receiver
+        let is_whitelisted_sender = WHITELISTED_DELEGATE_ACTION_RECEIVER_IDS
+            .iter()
+            .any(|s| s == receiver_id.as_str());
+        if (receiver_id != da_receiver_id || !contains_key_action) && !is_whitelisted_sender {
+            let err_msg = format!(
+                "Delegate Action receiver_id {da_receiver_id} or sender_id {receiver_id} is not whitelisted OR \
+                (they do not match AND the NonDelegateAction is not AddKey or DeleteKey)",
+            );
+            warn!("{err_msg}");
+            return Err(RelayError {
+                status_code: StatusCode::BAD_REQUEST,
+                message: err_msg,
+            });
+        }
+    }
+
+    // Check if the SignedDelegateAction includes a FunctionCallAction that transfers FTs to BURN_ADDRESS
+    if *USE_PAY_WITH_FT {
+        let non_delegate_actions = signed_delegate_action.delegate_action.get_actions();
+        let treasury_payments: Vec<Action> = non_delegate_actions
+            .into_iter()
+            .filter(|action| {
+                if let Action::FunctionCall(FunctionCallAction { ref args, .. }) = action {
+                    debug!("args: {:?}", args);
+
+                    // convert to ascii lowercase
+                    let args_ascii = args.to_ascii_lowercase();
+                    debug!("args_ascii: {:?}", args_ascii);
+
+                    // Convert to UTF-8 string
+                    let args_str = String::from_utf8_lossy(&args_ascii);
+                    debug!("args_str: {:?}", args_str);
+
+                    // Parse to JSON (assuming args are serialized as JSON)
+                    let args_json: Value = serde_json::from_str(&args_str).unwrap_or_else(|err| {
+                        error!("Failed to parse JSON: {}", err);
+                        // Provide a default Value
+                        Value::Null
+                    });
+                    debug!("args_json: {:?}", args_json);
+
+                    // get the receiver_id from the json without the escape chars
+                    let receiver_id = args_json["receiver_id"].as_str().unwrap_or_default();
+                    debug!("receiver_id: {receiver_id}");
+                    let burn_address = BURN_ADDRESS.to_string();
+                    debug!("BURN_ADDRESS.to_string(): {burn_address:?}");
+
+                    // Check if receiver_id in args contain BURN_ADDRESS
+                    if receiver_id == burn_address {
+                        debug!("SignedDelegateAction contains the BURN_ADDRESS MATCH");
+                        return true;
+                    }
+                }
+
+                false
+            })
+            .collect();
+        if treasury_payments.is_empty() {
+            let err_msg = "No treasury payment found in this transaction";
+            warn!("{err_msg}");
+            return Err(RelayError {
+                status_code: StatusCode::BAD_REQUEST,
+                message: err_msg.to_string(),
+            });
+        }
+    }
+
+    // Check the sender's remaining gas allowance in Redis
+    let end_user_account: &AccountId = &signed_delegate_action.delegate_action.sender_id;
+    let remaining_allowance: u64 = get_remaining_allowance(end_user_account).await.unwrap_or(0);
+    if remaining_allowance < TXN_GAS_ALLOWANCE {
+        let err_msg = format!(
+            "AccountId {} does not have enough remaining gas allowance.",
+            end_user_account.as_str()
+        );
+        error!("{err_msg}");
+        return Err(RelayError {
+            status_code: StatusCode::BAD_REQUEST,
+            message: err_msg,
+        });
+    }
+
+    let actions = vec![Action::Delegate(signed_delegate_action.clone())];
+    let txn_hash = RPC_CLIENT
+        .send_tx_async(&*SIGNER, receiver_id, actions)
+        .await
+        .map_err(|err| {
+            let err_msg = format!("Error signing transaction: {err:?}");
+            error!("{err_msg}");
+            RelayError {
+                status_code: StatusCode::INTERNAL_SERVER_ERROR,
+                message: err_msg,
+            }
+        })?;
+
+    // TODO we have no idea how much gas is being burnt in this txn
+    // - can't use this endpoint with redis for now
+
+    Ok(txn_hash.to_string())
 }
 
 async fn filter_and_send_signed_delegate_action<F>(
