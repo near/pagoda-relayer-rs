@@ -1,5 +1,5 @@
 # No Filters config
-# This is a config for a relayer that covers gas for a whitelisted set of users' transactions with no filters
+# This is a config for a relayer that covers gas for all user transactions to all contracts with no filters
 # To prevent abuse, this should only be used if there's only a secure backend calling the relayer
 
 # Please note this is for reference only and you should be updating the values in the `config.toml` file found in the `pagoda-relayer-rs` directory.

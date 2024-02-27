@@ -933,11 +933,29 @@ where
         signed_delegate_action
     );
 
-    // create Transaction from SignedDelegateAction
     let signer_account_id: AccountId = RELAYER_ACCOUNT_ID.parse().unwrap();
     // the receiver of the txn is the sender of the signed delegate action
     let receiver_id = &signed_delegate_action.delegate_action.sender_id;
     let da_receiver_id = &signed_delegate_action.delegate_action.receiver_id;
+
+    if !*USE_WHITELISTED_CONTRACTS && !*USE_WHITELISTED_DELEGATE_ACTION_RECEIVER_IDS {
+        let actions = vec![Action::Delegate(signed_delegate_action.clone())];
+        let txn_hash = RPC_CLIENT
+            .send_tx_async(&*SIGNER, receiver_id, actions)
+            .await
+            .map_err(|err| {
+                let err_msg = format!("Error signing transaction: {err:?}");
+                error!("{err_msg}");
+                RelayError {
+                    status_code: StatusCode::INTERNAL_SERVER_ERROR,
+                    message: err_msg,
+                }
+            })?;
+        debug!("Transaction hash: {txn_hash}");
+
+        return Ok(txn_hash.to_string());
+    }
+
     // check that the delegate action receiver_id is in the whitelisted_contracts
     let is_whitelisted_da_receiver = WHITELISTED_CONTRACTS
         .iter()
@@ -1174,11 +1192,49 @@ where
         signed_delegate_action
     );
 
-    // create Transaction from SignedDelegateAction
     let signer_account_id: AccountId = RELAYER_ACCOUNT_ID.parse().unwrap();
     // the receiver of the txn is the sender of the signed delegate action
     let receiver_id = &signed_delegate_action.delegate_action.sender_id;
     let da_receiver_id = &signed_delegate_action.delegate_action.receiver_id;
+
+    if !*USE_WHITELISTED_CONTRACTS && !*USE_WHITELISTED_DELEGATE_ACTION_RECEIVER_IDS {
+        let actions = vec![Action::Delegate(signed_delegate_action.clone())];
+        let execution = RPC_CLIENT
+            .send_tx(&*SIGNER, receiver_id, actions)
+            .await
+            .map_err(|err| {
+                let err_msg = format!("Error signing transaction: {err:?}");
+                error!("{err_msg}");
+                RelayError {
+                    status_code: StatusCode::INTERNAL_SERVER_ERROR,
+                    message: err_msg,
+                }
+            })?;
+
+        let status = &execution.status;
+        let response_msg = match status {
+            FinalExecutionStatus::Failure(_) => "Error sending transaction",
+            _ => "Relayed and sent transaction",
+        };
+        let status_msg = json!({
+            "message": response_msg,
+            "status": &execution.status,
+            "Transaction Outcome": &execution.transaction_outcome,
+            "Receipts Outcome": &execution.receipts_outcome,
+        });
+
+        return if let FinalExecutionStatus::Failure(_) = status {
+            error!("Error message: \n{status_msg:?}");
+            Err(RelayError {
+                status_code: StatusCode::INTERNAL_SERVER_ERROR,
+                message: status_msg.to_string(),
+            })
+        } else {
+            info!("Success message: \n{status_msg:?}");
+            Ok(status_msg.to_string())
+        };
+    }
+
     // check that the delegate action receiver_id is in the whitelisted_contracts
     let is_whitelisted_da_receiver = WHITELISTED_CONTRACTS
         .iter()
