@@ -37,13 +37,9 @@ social_db_contract_id = "v1.social08.testnet"
 # mainnet
 # network = "mainnet"
 # rpc_url = "https://rpc.mainnet.near.org"
-# wallet_url = "https://wallet.mainnet.near.org"
-# explorer_transaction_url = "https://explorer.mainnet.near.org/transactions/"
 # rpc_api_key = ""
 
 # testnet
 network = "testnet"
-rpc_url = "https://archival-rpc.testnet.near.org"
-wallet_url = "https://wallet.testnet.near.org"
-explorer_transaction_url = "https://explorer.testnet.near.org/transactions/"
+rpc_url = "https://rpc.testnet.near.org"
 rpc_api_key = ""
