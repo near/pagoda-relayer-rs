@@ -4,7 +4,7 @@ mod rpc_conf;
 mod shared_storage;
 
 use axum::{
-    extract::Json,
+    extract::{Json, State},
     http::StatusCode,
     response::IntoResponse,
     routing::{get, post},
@@ -32,11 +32,11 @@ use serde_json::{json, Value};
 use std::fmt;
 use std::fmt::{Debug, Display, Formatter};
 use std::future::Future;
-use std::net::SocketAddr;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::string::ToString;
 use std::time::Duration;
+use std::{net::SocketAddr, sync::Arc};
 use tokio::time::sleep;
 use tower_http::trace::TraceLayer;
 use tracing::{debug, error, info, instrument, warn};
@@ -47,13 +47,11 @@ use utoipa_rapidoc::RapiDoc;
 use utoipa_swagger_ui::SwaggerUi;
 
 use crate::error::RelayError;
-use crate::redis_fns::{
-    calculate_total_gas_burned, get_oauth_token_in_redis, get_remaining_allowance,
-    set_account_and_allowance_in_redis, set_oauth_token_in_redis, update_remaining_allowance,
-};
+use crate::redis_fns::*;
 use crate::rpc_conf::NetworkConfig;
-#[cfg(feature = "shared_storage")]
 use crate::shared_storage::SharedStoragePoolManager;
+#[cfg(feature = "shared_storage")]
+use crate::shared_storage::*;
 
 // transaction cost in Gas (10^21yN or 10Tgas or 0.001N)
 const TXN_GAS_ALLOWANCE: u64 = 10_000_000_000_000;
@@ -62,6 +60,72 @@ const FT_TRANSFER_METHOD_NAME: &str = "ft_transfer";
 const STORAGE_DEPOSIT_METHOD_NAME: &str = "storage_deposit";
 const STORAGE_DEPOSIT_AMOUNT_FT: u128 = 1250000000000000000000;
 const FT_TRANSFER_ATTACHMENT_DEPOSIT_AMOUNT: u128 = 1;
+
+#[derive(Debug, Clone, serde::Deserialize)]
+struct RelayerConfiguration {
+    #[serde(rename = "network")]
+    network_env: String,
+    #[serde(flatten)]
+    network_config: NetworkConfig,
+    ip_address: [u8; 4],
+    port: u16,
+    relayer_account_id: String,
+    shared_storage_account_id: String,
+    keys_filename: PathBuf,
+    shared_storage_keys_filename: PathBuf,
+    #[serde(default)]
+    use_whitelisted_contracts: bool,
+    whitelisted_contracts: Vec<AccountId>,
+    #[serde(default)]
+    use_whitelisted_senders: bool,
+    whitelisted_senders: Vec<String>,
+    #[serde(default)]
+    use_redis: bool,
+    redis_url: String,
+    #[serde(default)]
+    use_fastauth_features: bool,
+    #[serde(default)]
+    use_pay_with_ft: bool,
+    burn_address: AccountId,
+    #[serde(default)]
+    use_shared_storage: bool,
+    social_db_contract_id: AccountId,
+    #[serde(default)]
+    flametrace_performance: bool,
+}
+
+fn create_redis_pool(config: &RelayerConfiguration) -> Pool<RedisConnectionManager> {
+    let manager = RedisConnectionManager::new(config.redis_url.clone()).unwrap();
+    Pool::builder().build(manager).unwrap()
+}
+
+#[cfg(feature = "shared_storage")]
+fn create_shared_storage_pool(
+    config: &RelayerConfiguration,
+    rpc_client: Arc<near_fetch::Client>,
+) -> SharedStoragePoolManager {
+    let signer =
+        InMemorySigner::from_file(&config.shared_storage_keys_filename).unwrap_or_else(|err| {
+            panic!(
+                "failed to get signing keys={:?}: {err:?}",
+                config.shared_storage_keys_filename
+            )
+        });
+    SharedStoragePoolManager::new(
+        signer,
+        Arc::clone(&rpc_client),
+        config.social_db_contract_id.clone(),
+        config.shared_storage_account_id.parse().unwrap(),
+    )
+}
+
+#[derive(Debug)]
+struct AppState {
+    config: RelayerConfiguration,
+    rpc_client: Arc<near_fetch::Client>,
+    shared_storage_pool: Option<SharedStoragePoolManager>,
+    redis_pool: Option<Pool<RedisConnectionManager>>, // TODO make this optional
+}
 
 // load config from toml and setup json rpc client
 static LOCAL_CONF: Lazy<Config> = Lazy::new(|| {
@@ -74,8 +138,6 @@ static NETWORK_ENV: Lazy<String> = Lazy::new(|| LOCAL_CONF.get("network").unwrap
 static NETWORK_CONFIG: Lazy<NetworkConfig> = Lazy::new(|| NetworkConfig {
     rpc_url: LOCAL_CONF.get("rpc_url").unwrap(),
     rpc_api_key: LOCAL_CONF.get("rpc_api_key").unwrap(),
-    wallet_url: LOCAL_CONF.get("wallet_url").unwrap(),
-    explorer_transaction_url: LOCAL_CONF.get("explorer_transaction_url").unwrap(),
 });
 static RPC_CLIENT: Lazy<near_fetch::Client> = Lazy::new(|| NETWORK_CONFIG.rpc_client());
 static RPC_CLIENT_NOFETCH: Lazy<near_jsonrpc_client::JsonRpcClient> =
@@ -88,22 +150,14 @@ static RELAYER_ACCOUNT_ID: Lazy<String> =
 static SHARED_STORAGE_ACCOUNT_ID: Lazy<String> =
     Lazy::new(|| LOCAL_CONF.get("shared_storage_account_id").unwrap());
 static SIGNER: Lazy<KeyRotatingSigner> = Lazy::new(|| {
-    let paths = LOCAL_CONF
-        .get::<Vec<String>>("keys_filenames")
-        .expect("Failed to read 'keys_filenames' from config");
-    KeyRotatingSigner::from_signers(paths.iter().map(|path| {
-        InMemorySigner::from_file(Path::new(path))
-            .unwrap_or_else(|err| panic!("failed to read signing keys from {path}: {err:?}"))
-    }))
-    // TODO uncomment below (new) and remove above (old) before merging into develop branch
-    // let path = LOCAL_CONF
-    //     .get::<String>("keys_filename")
-    //     .expect("Failed to read 'keys_filename' from config");
-    // let keys_file = std::fs::File::open(path).expect("Failed to open keys file");
-    // let signers: Vec<InMemorySigner> =
-    //     serde_json::from_reader(keys_file).expect("Failed to parse keys file");
-    //
-    // KeyRotatingSigner::from_signers(signers)
+    let path = LOCAL_CONF
+        .get::<String>("keys_filename")
+        .expect("Failed to read 'keys_filename' from config");
+    let keys_file = std::fs::File::open(path).expect("Failed to open keys file");
+    let signers: Vec<InMemorySigner> =
+        serde_json::from_reader(keys_file).expect("Failed to parse keys file");
+
+    KeyRotatingSigner::from_signers(signers)
 });
 #[cfg(feature = "shared_storage")]
 static SHARED_STORAGE_KEYS_FILENAME: Lazy<String> =
@@ -147,7 +201,7 @@ static SHARED_STORAGE_POOL: Lazy<SharedStoragePoolManager> = Lazy::new(|| {
         });
     SharedStoragePoolManager::new(
         signer,
-        &RPC_CLIENT,
+        Arc::new(*RPC_CLIENT),
         social_db_id.parse().unwrap(),
         SHARED_STORAGE_ACCOUNT_ID.parse().unwrap(),
     )
@@ -251,8 +305,16 @@ struct TransactionResult {
 
 #[tokio::main]
 async fn main() {
+    // load config
+    let config: RelayerConfiguration = Config::builder()
+        .add_source(ConfigFile::with_name("config.toml"))
+        .build()
+        .unwrap()
+        .try_deserialize()
+        .unwrap();
+
     // initialize tracing (aka logging)
-    if *FLAMETRACE_PERFORMANCE {
+    if config.flametrace_performance {
         setup_global_subscriber();
         info!("default tracing setup with flametrace performance ENABLED");
     } else {
@@ -262,8 +324,13 @@ async fn main() {
         info!("default tracing setup with flametrace performance DISABLED");
     }
 
+    // initialize RPC client and shared storage pool
+    let rpc_client = Arc::new(config.network_config.rpc_client());
+    let mut shared_storage_pool = None;
+    let mut redis_pool = None;
+
     // initialize our shared storage pool manager if using fastauth features or using shared storage
-    if *USE_FASTAUTH_FEATURES || *USE_SHARED_STORAGE {
+    if config.use_fastauth_features || config.use_shared_storage {
         #[cfg(any(feature = "fastauth_features", feature = "shared_storage"))]
         if let Err(err) = SHARED_STORAGE_POOL.check_and_spawn_pool().await {
             let err_msg = format!("Error initializing shared storage pool: {err}");
@@ -274,6 +341,23 @@ async fn main() {
             info!("shared storage pool initialized");
         }
     }
+
+    // if fastauth enabled, initialize whitelisted senders with "infinite" allowance in relayer DB
+    if config.use_fastauth_features {
+        #[cfg(feature = "fastauth_features")]
+        init_senders_infinite_allowance_fastauth().await;
+    }
+
+    if config.use_redis {
+        redis_pool = Some(create_redis_pool(&config));
+    }
+
+    let app_state = Arc::new(AppState {
+        config: config.clone(),
+        rpc_client,
+        shared_storage_pool,
+        redis_pool,
+    });
 
     //TODO: not secure, allow only for testnet, whitelist endpoint etc. for mainnet
     let cors_layer = tower_http::cors::CorsLayer::permissive();
@@ -315,12 +399,6 @@ async fn main() {
     )]
     struct ApiDoc;
 
-    // if fastauth enabled, initialize whitelisted senders with "infinite" allowance in relayer DB
-    if *USE_FASTAUTH_FEATURES {
-        #[cfg(feature = "fastauth_features")]
-        init_senders_infinite_allowance_fastauth().await;
-    }
-
     // build our application with a route
     let app = Router::new()
         .merge(SwaggerUi::new("/swagger-ui").url("/api-docs/openapi.json", ApiDoc::openapi()))
@@ -341,11 +419,12 @@ async fn main() {
         .route("/register_account", post(register_account_and_allowance))
         // See https://docs.rs/tower-http/0.1.1/tower_http/trace/index.html for more details.
         .layer(TraceLayer::new_for_http())
-        .layer(cors_layer);
+        .layer(cors_layer)
+        .with_state(Arc::clone(&app_state));
 
     // run our app with hyper
     // `axum::Server` is a re-export of `hyper::Server`
-    let addr: SocketAddr = SocketAddr::from((*IP_ADDRESS, *PORT));
+    let addr: SocketAddr = SocketAddr::from((config.ip_address, config.port));
     info!("listening on {}", addr);
     axum::Server::bind(&addr)
         .serve(app.into_make_service())
