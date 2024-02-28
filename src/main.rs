@@ -1154,23 +1154,6 @@ where
         }
     }
 
-    if *USE_REDIS {
-        // Check the sender's remaining gas allowance in Redis
-        let end_user_account: &AccountId = &signed_delegate_action.delegate_action.sender_id;
-        let remaining_allowance: u64 = get_remaining_allowance(end_user_account).await.unwrap_or(0);
-        if remaining_allowance < TXN_GAS_ALLOWANCE {
-            let err_msg = format!(
-                "AccountId {} does not have enough remaining gas allowance.",
-                end_user_account.as_str()
-            );
-            error!("{err_msg}");
-            return Err(RelayError {
-                status_code: StatusCode::BAD_REQUEST,
-                message: err_msg,
-            });
-        }
-    }
-
     let actions = vec![Action::Delegate(signed_delegate_action.clone())];
     let txn_hash = RPC_CLIENT
         .send_tx_async(&*SIGNER, receiver_id, actions)
@@ -1184,8 +1167,7 @@ where
             }
         })?;
 
-    // TODO we have no idea how much gas is being burnt in this txn
-    // - can't use this endpoint with redis for now
+    // TODO we have no idea how much gas is being burnt in this txn - can't use async with redis
 
     Ok(txn_hash.to_string())
 }
