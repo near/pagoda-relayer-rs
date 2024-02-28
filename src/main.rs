@@ -33,7 +33,6 @@ use std::fmt;
 use std::fmt::{Debug, Display, Formatter};
 use std::future::Future;
 use std::net::SocketAddr;
-#[cfg(feature = "shared_storage")]
 use std::path::Path;
 use std::str::FromStr;
 use std::string::ToString;
@@ -89,14 +88,22 @@ static RELAYER_ACCOUNT_ID: Lazy<String> =
 static SHARED_STORAGE_ACCOUNT_ID: Lazy<String> =
     Lazy::new(|| LOCAL_CONF.get("shared_storage_account_id").unwrap());
 static SIGNER: Lazy<KeyRotatingSigner> = Lazy::new(|| {
-    let path = LOCAL_CONF
-        .get::<String>("keys_filename")
-        .expect("Failed to read 'keys_filename' from config");
-    let keys_file = std::fs::File::open(path).expect("Failed to open keys file");
-    let signers: Vec<InMemorySigner> =
-        serde_json::from_reader(keys_file).expect("Failed to parse keys file");
-
-    KeyRotatingSigner::from_signers(signers)
+    let paths = LOCAL_CONF
+        .get::<Vec<String>>("keys_filenames")
+        .expect("Failed to read 'keys_filenames' from config");
+    KeyRotatingSigner::from_signers(paths.iter().map(|path| {
+        InMemorySigner::from_file(Path::new(path))
+            .unwrap_or_else(|err| panic!("failed to read signing keys from {path}: {err:?}"))
+    }))
+    // TODO uncomment below (new) and remove above (old) before merging into develop branch
+    // let path = LOCAL_CONF
+    //     .get::<String>("keys_filename")
+    //     .expect("Failed to read 'keys_filename' from config");
+    // let keys_file = std::fs::File::open(path).expect("Failed to open keys file");
+    // let signers: Vec<InMemorySigner> =
+    //     serde_json::from_reader(keys_file).expect("Failed to parse keys file");
+    //
+    // KeyRotatingSigner::from_signers(signers)
 });
 #[cfg(feature = "shared_storage")]
 static SHARED_STORAGE_KEYS_FILENAME: Lazy<String> =
@@ -971,8 +978,9 @@ where
             if !is_whitelisted_sender {
                 return Err(RelayError {
                     status_code: StatusCode::BAD_REQUEST,
-                    message: "Delegate Action Sender_id {receiver_id} is not whitelisted"
-                        .to_string(),
+                    message: format!(
+                        "Delegate Action Sender_id {receiver_id:?} is not whitelisted"
+                    ),
                 });
             }
         }
@@ -988,9 +996,9 @@ where
                     if !is_whitelisted_da_receiver {
                         return Err(RelayError {
                             status_code: StatusCode::BAD_REQUEST,
-                            message:
-                                "Delegate Action receiver_id {da_receiver_id} is not whitelisted"
-                                    .to_string(),
+                            message: format!(
+                                "Delegate Action Sender_id {receiver_id:?} is not whitelisted"
+                            ),
                         });
                     }
                     match method_name.as_str() {
@@ -1146,19 +1154,21 @@ where
         }
     }
 
-    // Check the sender's remaining gas allowance in Redis
-    let end_user_account: &AccountId = &signed_delegate_action.delegate_action.sender_id;
-    let remaining_allowance: u64 = get_remaining_allowance(end_user_account).await.unwrap_or(0);
-    if remaining_allowance < TXN_GAS_ALLOWANCE {
-        let err_msg = format!(
-            "AccountId {} does not have enough remaining gas allowance.",
-            end_user_account.as_str()
-        );
-        error!("{err_msg}");
-        return Err(RelayError {
-            status_code: StatusCode::BAD_REQUEST,
-            message: err_msg,
-        });
+    if *USE_REDIS {
+        // Check the sender's remaining gas allowance in Redis
+        let end_user_account: &AccountId = &signed_delegate_action.delegate_action.sender_id;
+        let remaining_allowance: u64 = get_remaining_allowance(end_user_account).await.unwrap_or(0);
+        if remaining_allowance < TXN_GAS_ALLOWANCE {
+            let err_msg = format!(
+                "AccountId {} does not have enough remaining gas allowance.",
+                end_user_account.as_str()
+            );
+            error!("{err_msg}");
+            return Err(RelayError {
+                status_code: StatusCode::BAD_REQUEST,
+                message: err_msg,
+            });
+        }
     }
 
     let actions = vec![Action::Delegate(signed_delegate_action.clone())];
