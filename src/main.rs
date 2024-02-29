@@ -1,4 +1,5 @@
 mod error;
+mod lock_pool;
 mod redis_fns;
 mod rpc_conf;
 mod shared_storage;
@@ -52,6 +53,7 @@ use crate::rpc_conf::NetworkConfig;
 use crate::shared_storage::SharedStoragePoolManager;
 #[cfg(feature = "shared_storage")]
 use crate::shared_storage::*;
+use lock_pool::LockPool;
 
 // transaction cost in Gas (10^21yN or 10Tgas or 0.001N)
 const TXN_GAS_ALLOWANCE: u64 = 10_000_000_000_000;
@@ -134,80 +136,15 @@ static LOCAL_CONF: Lazy<Config> = Lazy::new(|| {
         .build()
         .unwrap()
 });
-static NETWORK_ENV: Lazy<String> = Lazy::new(|| LOCAL_CONF.get("network").unwrap());
-static NETWORK_CONFIG: Lazy<NetworkConfig> = Lazy::new(|| NetworkConfig {
-    rpc_url: LOCAL_CONF.get("rpc_url").unwrap(),
-    rpc_api_key: LOCAL_CONF.get("rpc_api_key").unwrap(),
-});
-static RPC_CLIENT: Lazy<near_fetch::Client> = Lazy::new(|| NETWORK_CONFIG.rpc_client());
-static RPC_CLIENT_NOFETCH: Lazy<near_jsonrpc_client::JsonRpcClient> =
-    Lazy::new(|| NETWORK_CONFIG.raw_rpc_client());
-static IP_ADDRESS: Lazy<[u8; 4]> = Lazy::new(|| LOCAL_CONF.get("ip_address").unwrap());
-static PORT: Lazy<u16> = Lazy::new(|| LOCAL_CONF.get("port").unwrap());
-static RELAYER_ACCOUNT_ID: Lazy<String> =
-    Lazy::new(|| LOCAL_CONF.get("relayer_account_id").unwrap());
-#[cfg(feature = "shared_storage")]
-static SHARED_STORAGE_ACCOUNT_ID: Lazy<String> =
-    Lazy::new(|| LOCAL_CONF.get("shared_storage_account_id").unwrap());
-static SIGNER: Lazy<KeyRotatingSigner> = Lazy::new(|| {
+static SIGNER: Lazy<LockPool<InMemorySigner>> = Lazy::new(|| {
     let path = LOCAL_CONF
         .get::<String>("keys_filename")
         .expect("Failed to read 'keys_filename' from config");
     let keys_file = std::fs::File::open(path).expect("Failed to open keys file");
     let signers: Vec<InMemorySigner> =
         serde_json::from_reader(keys_file).expect("Failed to parse keys file");
-
-    KeyRotatingSigner::from_signers(signers)
+    LockPool::new(signers)
 });
-#[cfg(feature = "shared_storage")]
-static SHARED_STORAGE_KEYS_FILENAME: Lazy<String> =
-    Lazy::new(|| LOCAL_CONF.get("shared_storage_keys_filename").unwrap());
-static WHITELISTED_CONTRACTS: Lazy<Vec<String>> =
-    Lazy::new(|| LOCAL_CONF.get("whitelisted_contracts").unwrap());
-static USE_WHITELISTED_CONTRACTS: Lazy<bool> =
-    Lazy::new(|| LOCAL_CONF.get("use_whitelisted_contracts").unwrap_or(false));
-static USE_WHITELISTED_DELEGATE_ACTION_RECEIVER_IDS: Lazy<bool> = Lazy::new(|| {
-    LOCAL_CONF
-        .get("use_whitelisted_delegate_action_receiver_ids")
-        .unwrap_or(false)
-});
-static WHITELISTED_DELEGATE_ACTION_RECEIVER_IDS: Lazy<Vec<String>> = Lazy::new(|| {
-    LOCAL_CONF
-        .get("whitelisted_delegate_action_receiver_ids")
-        .unwrap()
-});
-static USE_REDIS: Lazy<bool> = Lazy::new(|| LOCAL_CONF.get("use_redis").unwrap_or(false));
-static REDIS_POOL: Lazy<Pool<RedisConnectionManager>> = Lazy::new(|| {
-    let redis_cnxn_url: String = LOCAL_CONF.get("redis_url").unwrap();
-    let manager = RedisConnectionManager::new(redis_cnxn_url).unwrap();
-    Pool::builder().build(manager).unwrap()
-});
-static USE_EXCHANGE: Lazy<bool> = Lazy::new(|| LOCAL_CONF.get("use_exchange").unwrap_or(false));
-static ALLOWED_ACTIONS: Lazy<Vec<String>> =
-    Lazy::new(|| LOCAL_CONF.get("allowed_actions").unwrap());
-static USE_FASTAUTH_FEATURES: Lazy<bool> =
-    Lazy::new(|| LOCAL_CONF.get("use_fastauth_features").unwrap_or(false));
-static USE_PAY_WITH_FT: Lazy<bool> =
-    Lazy::new(|| LOCAL_CONF.get("use_pay_with_ft").unwrap_or(false));
-static BURN_ADDRESS: Lazy<AccountId> = Lazy::new(|| LOCAL_CONF.get("burn_address").unwrap());
-static USE_SHARED_STORAGE: Lazy<bool> =
-    Lazy::new(|| LOCAL_CONF.get("use_shared_storage").unwrap_or(false));
-#[cfg(feature = "shared_storage")]
-static SHARED_STORAGE_POOL: Lazy<SharedStoragePoolManager> = Lazy::new(|| {
-    let social_db_id: String = LOCAL_CONF.get("social_db_contract_id").unwrap();
-    let signer = InMemorySigner::from_file(Path::new(SHARED_STORAGE_KEYS_FILENAME.as_str()))
-        .unwrap_or_else(|err| {
-            panic!("failed to get signing keys={SHARED_STORAGE_KEYS_FILENAME:?}: {err:?}")
-        });
-    SharedStoragePoolManager::new(
-        signer,
-        Arc::new(*RPC_CLIENT),
-        social_db_id.parse().unwrap(),
-        SHARED_STORAGE_ACCOUNT_ID.parse().unwrap(),
-    )
-});
-static FLAMETRACE_PERFORMANCE: Lazy<bool> =
-    Lazy::new(|| LOCAL_CONF.get("flametrace_performance").unwrap_or(false));
 
 #[derive(Clone, Debug, Deserialize, ToSchema)]
 struct AccountIdAllowanceOauthSDAJson {
@@ -332,20 +269,24 @@ async fn main() {
     // initialize our shared storage pool manager if using fastauth features or using shared storage
     if config.use_fastauth_features || config.use_shared_storage {
         #[cfg(any(feature = "fastauth_features", feature = "shared_storage"))]
-        if let Err(err) = SHARED_STORAGE_POOL.check_and_spawn_pool().await {
-            let err_msg = format!("Error initializing shared storage pool: {err}");
-            error!("{err_msg}");
-            tracing::error!(err_msg);
-            return;
-        } else {
-            info!("shared storage pool initialized");
+        if config.use_fastauth_features || config.use_shared_storage {
+            let pool = create_shared_storage_pool(&config, Arc::clone(&rpc_client));
+            if let Err(err) = pool.check_and_spawn_pool().await {
+                let err_msg = format!("Error initializing shared storage pool: {err}");
+                error!("{err_msg}");
+                tracing::error!(err_msg);
+                return;
+            } else {
+                shared_storage_pool = Some(pool);
+                info!("shared storage pool initialized");
+            }
         }
     }
 
     // if fastauth enabled, initialize whitelisted senders with "infinite" allowance in relayer DB
     if config.use_fastauth_features {
         #[cfg(feature = "fastauth_features")]
-        init_senders_infinite_allowance_fastauth().await;
+        init_senders_infinite_allowance_fastauth(&config, &redis_pool.as_ref().unwrap()).await;
     }
 
     if config.use_redis {
@@ -445,11 +386,15 @@ fn setup_global_subscriber() -> impl Drop {
 }
 
 #[cfg(feature = "fastauth_features")]
-async fn init_senders_infinite_allowance_fastauth() {
+async fn init_senders_infinite_allowance_fastauth(
+    config: &RelayerConfiguration,
+    redis_pool: &Pool<RedisConnectionManager>,
+) {
     let max_allowance = u64::MAX;
-    for whitelisted_sender in WHITELISTED_DELEGATE_ACTION_RECEIVER_IDS.iter() {
+    for whitelisted_sender in config.whitelisted_senders.iter() {
         let redis_result =
-            set_account_and_allowance_in_redis(whitelisted_sender, &max_allowance).await;
+            set_account_and_allowance_in_redis(redis_pool, whitelisted_sender, &max_allowance)
+                .await;
         if let Err(err) = redis_result {
             error!(
                 "Error setting allowance for account_id {} with allowance {} in Relayer DB: {:?}",
@@ -475,7 +420,10 @@ async fn init_senders_infinite_allowance_fastauth() {
     )
 )]
 #[instrument]
-async fn get_allowance(account_id_json: Json<AccountIdJson>) -> impl IntoResponse {
+async fn get_allowance(
+    State(state): State<Arc<AppState>>,
+    account_id_json: Json<AccountIdJson>,
+) -> impl IntoResponse {
     // convert str account_id val from json to AccountId so I can reuse get_remaining_allowance fn
     let Ok(account_id_val) = AccountId::from_str(&account_id_json.account_id) else {
         return (
@@ -484,7 +432,7 @@ async fn get_allowance(account_id_json: Json<AccountIdJson>) -> impl IntoRespons
         )
             .into_response();
     };
-    match get_remaining_allowance(&account_id_val).await {
+    match get_remaining_allowance(&state.redis_pool.as_ref().unwrap(), &account_id_val).await {
         Ok(allowance) => (
             StatusCode::OK,
             allowance.to_string(), // TODO: LP return in json format
@@ -522,6 +470,7 @@ async fn get_allowance(account_id_json: Json<AccountIdJson>) -> impl IntoRespons
 )]
 #[instrument]
 async fn create_account_atomic(
+    State(state): State<Arc<AppState>>,
     account_id_allowance_oauth_sda: Json<AccountIdAllowanceOauthSDAJson>,
 ) -> impl IntoResponse {
     /*
@@ -547,7 +496,7 @@ async fn create_account_atomic(
     */
 
     // check if the oauth_token has already been used and is a key in Redis
-    match get_oauth_token_in_redis(oauth_token).await {
+    match get_oauth_token_in_redis(&state.redis_pool.as_ref().unwrap(), oauth_token).await {
         Ok(is_oauth_token_in_redis) => {
             if is_oauth_token_in_redis {
                 let err_msg = format!(
@@ -566,7 +515,12 @@ async fn create_account_atomic(
             return (StatusCode::INTERNAL_SERVER_ERROR, err_msg).into_response();
         }
     }
-    let redis_result = set_account_and_allowance_in_redis(account_id, allowance_in_gas).await;
+    let redis_result = set_account_and_allowance_in_redis(
+        &state.redis_pool.as_ref().unwrap(),
+        account_id,
+        allowance_in_gas,
+    )
+    .await;
     let Ok(_) = redis_result else {
         let err_msg = format!(
             "Error creating account_id {account_id} with allowance {allowance_in_gas} in Relayer DB:\n{redis_result:?}"
@@ -581,10 +535,10 @@ async fn create_account_atomic(
        if it succeeds, then add oauth token to redis and allocate shared storage
        after updated redis and adding shared storage, finally return success msg
     */
-    let create_account_sda_result = if *USE_FASTAUTH_FEATURES {
-        process_signed_delegate_action_big_timeout(sda.clone()).await
+    let create_account_sda_result = if state.config.use_fastauth_features {
+        process_signed_delegate_action_big_timeout(state.clone(), sda).await
     } else {
-        process_signed_delegate_action(sda).await
+        process_signed_delegate_action(state.clone(), sda).await
     };
 
     if let Err(err) = create_account_sda_result {
@@ -598,7 +552,7 @@ async fn create_account_atomic(
     };
 
     // allocate shared storage for account_id if shared storage is being used
-    if *USE_FASTAUTH_FEATURES || *USE_SHARED_STORAGE {
+    if state.config.use_fastauth_features || state.config.use_shared_storage {
         #[cfg(any(feature = "fastauth_features", feature = "shared_storage"))]
         if let Err(err) = SHARED_STORAGE_POOL
             .allocate_default(account_id.clone())
@@ -611,7 +565,7 @@ async fn create_account_atomic(
     }
 
     // add oauth token to redis (key: oauth_token, val: true)
-    match set_oauth_token_in_redis(oauth_token).await {
+    match set_oauth_token_in_redis(&state.redis_pool.as_ref().unwrap(), oauth_token).await {
         Ok(_) => {
             let ok_msg = format!(
                 "Added Oauth token {oauth_token:?} for account_id {account_id:?} \
@@ -641,12 +595,19 @@ post,
     ),
 )]
 #[instrument]
-async fn update_allowance(account_id_allowance: Json<AccountIdAllowanceJson>) -> impl IntoResponse {
+async fn update_allowance(
+    State(state): State<Arc<AppState>>,
+    account_id_allowance: Json<AccountIdAllowanceJson>,
+) -> impl IntoResponse {
     let account_id: &String = &account_id_allowance.account_id;
     let allowance_in_gas: &u64 = &account_id_allowance.allowance;
 
-    let redis_result = set_account_and_allowance_in_redis(account_id, allowance_in_gas).await;
-
+    let redis_result = set_account_and_allowance_in_redis(
+        &state.redis_pool.as_ref().unwrap(),
+        account_id,
+        allowance_in_gas,
+    )
+    .await;
     let Ok(_) = redis_result else {
         let err_msg = format!(
             "Error updating account_id {account_id} with allowance {allowance_in_gas} in Relayer DB:\
@@ -670,9 +631,17 @@ async fn update_allowance(account_id_allowance: Json<AccountIdAllowanceJson>) ->
     ),
 )]
 #[instrument]
-async fn update_all_allowances(Json(allowance_json): Json<AllowanceJson>) -> impl IntoResponse {
+async fn update_all_allowances(
+    State(state): State<Arc<AppState>>,
+    Json(allowance_json): Json<AllowanceJson>,
+) -> impl IntoResponse {
     let allowance_in_gas = allowance_json.allowance_in_gas;
-    let redis_response = update_all_allowances_in_redis(allowance_in_gas).await;
+    let redis_response = update_all_allowances_in_redis(
+        &state.redis_pool.as_ref().unwrap(),
+        &state.config.network_env,
+        allowance_in_gas,
+    )
+    .await;
     match redis_response {
         Ok(response) => response.into_response(),
         Err(err) => (err.status_code, err.message).into_response(),
@@ -691,13 +660,14 @@ async fn update_all_allowances(Json(allowance_json): Json<AllowanceJson>) -> imp
 )]
 #[instrument]
 async fn register_account_and_allowance(
+    State(state): State<Arc<AppState>>,
     account_id_allowance_oauth: Json<AccountIdAllowanceOauthJson>,
 ) -> impl IntoResponse {
     let account_id: &String = &account_id_allowance_oauth.account_id;
     let allowance_in_gas: &u64 = &account_id_allowance_oauth.allowance;
     let oauth_token: &String = &account_id_allowance_oauth.oauth_token;
     // check if the oauth_token has already been used and is a key in Relayer DB
-    match get_oauth_token_in_redis(oauth_token).await {
+    match get_oauth_token_in_redis(&state.redis_pool.as_ref().unwrap(), oauth_token).await {
         Ok(is_oauth_token_in_redis) => {
             if is_oauth_token_in_redis {
                 let err_msg = format!(
@@ -717,8 +687,12 @@ async fn register_account_and_allowance(
             return (StatusCode::INTERNAL_SERVER_ERROR, err_msg).into_response();
         }
     }
-    let redis_result = set_account_and_allowance_in_redis(account_id, allowance_in_gas).await;
-
+    let redis_result = set_account_and_allowance_in_redis(
+        &state.redis_pool.as_ref().unwrap(),
+        account_id,
+        allowance_in_gas,
+    )
+    .await;
     let Ok(_) = redis_result else {
         let err_msg = format!(
             "Error creating account_id {account_id} with allowance {allowance_in_gas} in Relayer DB:\
@@ -734,17 +708,19 @@ async fn register_account_and_allowance(
         return (StatusCode::BAD_REQUEST, err_msg).into_response();
     };
     #[cfg(feature = "shared_storage")]
-    if let Err(err) = SHARED_STORAGE_POOL
-        .allocate_default(account_id.clone())
-        .await
-    {
-        let err_msg = format!("Error allocating storage for account {account_id}: {err:?}");
-        error!("{err_msg}");
-        return (StatusCode::INTERNAL_SERVER_ERROR, err_msg).into_response();
+    if let Some(ref shared_storage_pool) = state.shared_storage_pool {
+        if let Err(err) = shared_storage_pool
+            .allocate_default(account_id.clone())
+            .await
+        {
+            let err_msg = format!("Error allocating storage for account {account_id}: {err:?}");
+            error!("{err_msg}");
+            return (StatusCode::INTERNAL_SERVER_ERROR, err_msg).into_response();
+        }
     }
 
     // add oauth token to redis (key: oauth_token, val: true)
-    match set_oauth_token_in_redis(oauth_token).await {
+    match set_oauth_token_in_redis(&state.redis_pool.as_ref().unwrap(), oauth_token).await {
         Ok(_) => {
             let ok_msg = format!("Added Oauth token {account_id_allowance_oauth:?} to Relayer DB");
             info!("{ok_msg}");
@@ -1603,8 +1579,10 @@ where
     }
 }
 
-pub async fn get_redis_cnxn() -> Result<PooledConnection<RedisConnectionManager>, RedisError> {
-    let conn_result = REDIS_POOL.get();
+pub async fn get_redis_cnxn(
+    redis_pool: &Pool<RedisConnectionManager>,
+) -> Result<PooledConnection<RedisConnectionManager>, RedisError> {
+    let conn_result = redis_pool.get();
     let conn: PooledConnection<RedisConnectionManager> = match conn_result {
         Ok(conn) => conn,
         Err(e) => {
@@ -1616,9 +1594,13 @@ pub async fn get_redis_cnxn() -> Result<PooledConnection<RedisConnectionManager>
     Ok(conn)
 }
 
-pub async fn update_all_allowances_in_redis(allowance_in_gas: u64) -> Result<String, RelayError> {
+pub async fn update_all_allowances_in_redis(
+    redis_pool: &Pool<RedisConnectionManager>,
+    network_env: &str,
+    allowance_in_gas: u64,
+) -> Result<String, RelayError> {
     // Get a connection to Redis from the pool
-    let mut redis_conn = match get_redis_cnxn().await {
+    let mut redis_conn = match get_redis_cnxn(redis_pool).await {
         Ok(conn) => conn,
         Err(e) => {
             let err_msg = format!("Error getting Relayer DB connection from the pool: {e}");
@@ -1631,7 +1613,7 @@ pub async fn update_all_allowances_in_redis(allowance_in_gas: u64) -> Result<Str
     };
 
     // Fetch all keys that match the network env (.near for mainnet, .testnet for testnet, etc)
-    let network = match &(&*NETWORK_ENV)[..] {
+    let network = match network_env {
         "mainnet" => "near",
         a => a,
     };
@@ -1673,6 +1655,52 @@ pub async fn update_all_allowances_in_redis(allowance_in_gas: u64) -> Result<Str
 /**
 --------------------------- Testing below here ---------------------------
  */
+
+#[cfg(test)]
+fn test_configuration() -> RelayerConfiguration {
+    RelayerConfiguration {
+        burn_address: "burn_address.near".parse().unwrap(),
+        social_db_contract_id: "social_db.near".parse().unwrap(),
+        network_config: NetworkConfig {
+            rpc_url: "https://rpc.testnet.near.org".parse().unwrap(),
+            rpc_api_key: None,
+        },
+        flametrace_performance: false,
+        network_env: "testnet".to_string(),
+        redis_url: "redis://127.0.0.1:6379".to_string(),
+        relayer_account_id: "relayer.testnet".to_string(),
+        shared_storage_account_id: "shared_storage.testnet".to_string(),
+        ip_address: [127, 0, 0, 1],
+        port: 3030,
+        keys_filename: "./account_keys/nomnomnom.testnet.json".parse().unwrap(),
+        // shared_storage_keys_filename: "relayer-test.testnet.json".parse().unwrap(),
+        shared_storage_keys_filename: "./account_keys/nomnomnom.testnet.json".parse().unwrap(),
+        use_fastauth_features: true,
+        use_pay_with_ft: true,
+        use_redis: true,
+        use_shared_storage: false,
+        use_whitelisted_senders: true,
+        whitelisted_contracts: vec!["whitelisted_contract_1.near".parse().unwrap()],
+        whitelisted_senders: vec!["arrr_me.testnet".parse().unwrap()],
+        use_whitelisted_contracts: false,
+    }
+}
+#[cfg(test)]
+fn test_state() -> State<Arc<AppState>> {
+    let config = test_configuration();
+    let rpc_client = Arc::new(config.network_config.rpc_client());
+    let shared_storage_pool = config
+        .use_shared_storage
+        .then(|| create_shared_storage_pool(&config, Arc::clone(&rpc_client)));
+    let redis_pool = create_redis_pool(&config);
+    State(Arc::new(AppState {
+        config,
+        shared_storage_pool,
+        rpc_client,
+        redis_pool: Some(redis_pool),
+    }))
+}
+
 #[cfg(test)]
 mod test {
     use axum::body::{BoxBody, HttpBody};
