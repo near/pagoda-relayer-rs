@@ -94,6 +94,8 @@ struct RelayerConfiguration {
     social_db_contract_id: AccountId,
     #[serde(default)]
     flametrace_performance: bool,
+    #[serde(default)]
+    use_exchange: bool,
 }
 
 fn create_redis_pool(config: &RelayerConfiguration) -> Pool<RedisConnectionManager> {
@@ -125,6 +127,7 @@ fn create_shared_storage_pool(
 struct AppState {
     config: RelayerConfiguration,
     rpc_client: Arc<near_fetch::Client>,
+    rpc_client_nofetch: Arc<near_jsonrpc_client::JsonRpcClient>,
     shared_storage_pool: Option<SharedStoragePoolManager>,
     redis_pool: Option<Pool<RedisConnectionManager>>, // TODO make this optional
 }
@@ -263,6 +266,7 @@ async fn main() {
 
     // initialize RPC client and shared storage pool
     let rpc_client = Arc::new(config.network_config.rpc_client());
+    let rpc_client_nofetch = Arc::new(config.network_config.rpc_client_nofetch());
     let mut shared_storage_pool = None;
     let mut redis_pool = None;
 
@@ -296,6 +300,7 @@ async fn main() {
     let app_state = Arc::new(AppState {
         config: config.clone(),
         rpc_client,
+        rpc_client_nofetch,
         shared_storage_pool,
         redis_pool,
     });
@@ -536,9 +541,9 @@ async fn create_account_atomic(
        after updated redis and adding shared storage, finally return success msg
     */
     let create_account_sda_result = if state.config.use_fastauth_features {
-        process_signed_delegate_action_big_timeout(state.clone(), sda).await
+        process_signed_delegate_action_big_timeout(state.as_ref(), sda.clone()).await
     } else {
-        process_signed_delegate_action(state.clone(), sda).await
+        process_signed_delegate_action(state.as_ref(), sda).await
     };
 
     if let Err(err) = create_account_sda_result {
@@ -554,7 +559,8 @@ async fn create_account_atomic(
     // allocate shared storage for account_id if shared storage is being used
     if state.config.use_fastauth_features || state.config.use_shared_storage {
         #[cfg(any(feature = "fastauth_features", feature = "shared_storage"))]
-        if let Err(err) = SHARED_STORAGE_POOL
+        if let Err(err) = state
+            .shared_storage_pool
             .allocate_default(account_id.clone())
             .await
         {
@@ -746,11 +752,11 @@ async fn register_account_and_allowance(
     ),
 )]
 #[instrument]
-async fn relay(data: Json<Vec<u8>>) -> impl IntoResponse {
+async fn relay(State(state): State<Arc<AppState>>, data: Json<Vec<u8>>) -> impl IntoResponse {
     // deserialize SignedDelegateAction using borsh
     match SignedDelegateAction::try_from_slice(&data.0) {
         Ok(signed_delegate_action) => {
-            match process_signed_delegate_action(&signed_delegate_action).await {
+            match process_signed_delegate_action(state.as_ref(), &signed_delegate_action).await {
                 Ok(response) => response.into_response(),
                 Err(err) => (err.status_code, err.message).into_response(),
             }
@@ -774,9 +780,12 @@ async fn relay(data: Json<Vec<u8>>) -> impl IntoResponse {
     ),
 )]
 #[instrument]
-async fn send_meta_tx(data: Json<SignedDelegateAction>) -> impl IntoResponse {
+async fn send_meta_tx(
+    State(state): State<Arc<AppState>>,
+    data: Json<SignedDelegateAction>,
+) -> impl IntoResponse {
     let relayer_response = process_signed_delegate_action(
-        // deserialize SignedDelegateAction using serde json
+        &state, // deserialize SignedDelegateAction using serde json
         &data.0,
     )
     .await;
@@ -796,12 +805,12 @@ async fn send_meta_tx(data: Json<SignedDelegateAction>) -> impl IntoResponse {
         (status = 500, description = "Error signing transaction: ...", body = String),
     ),
 )]
-async fn send_meta_tx_nopoll(data: Json<SignedDelegateAction>) -> impl IntoResponse {
-    let relayer_response = process_signed_delegate_action_noretry_async(
-        // deserialize SignedDelegateAction using serde json
-        data.0,
-    )
-    .await;
+async fn send_meta_tx_nopoll(
+    State(state): State<Arc<AppState>>,
+    data: Json<SignedDelegateAction>,
+) -> impl IntoResponse {
+    let relayer_response =
+        process_signed_delegate_action_noretry_async(state.as_ref(), data.0).await;
     match relayer_response {
         Ok(response) => response.into_response(),
         Err(err) => (err.status_code, err.message).into_response(),
@@ -816,9 +825,13 @@ async fn send_meta_tx_nopoll(data: Json<SignedDelegateAction>) -> impl IntoRespo
         (status = 202, description = "Relayed and sent transaction ...", body = String),
     ),
 )]
-async fn send_meta_tx_async(data: Json<SignedDelegateAction>) -> impl IntoResponse {
+async fn send_meta_tx_async(
+    State(state): State<Arc<AppState>>,
+    data: Json<SignedDelegateAction>,
+) -> impl IntoResponse {
     // Directly await the asynchronous operation without detaching it as a separate task.
-    let relayer_response = process_signed_delegate_action_noretry_async(data.0).await;
+    let relayer_response =
+        process_signed_delegate_action_noretry_async(state.as_ref(), data.0).await;
 
     // Generate the response based on the outcome of the above operation.
     let response = match relayer_response {
@@ -860,12 +873,18 @@ async fn send_meta_tx_async(data: Json<SignedDelegateAction>) -> impl IntoRespon
 
 #[instrument]
 async fn process_signed_delegate_action(
+    state: &AppState,
     signed_delegate_action: &SignedDelegateAction,
 ) -> Result<String, RelayError> {
     filter_and_send_signed_delegate_action(
+        state,
         signed_delegate_action.clone(),
         |receiver_id, actions| async move {
-            match RPC_CLIENT.send_tx(&*SIGNER, &receiver_id, actions).await {
+            match state
+                .rpc_client
+                .send_tx(&*SIGNER, &receiver_id, actions)
+                .await
+            {
                 Err(err) => {
                     let err_msg: String = format!("Error signing transaction: {:?}", err);
                     error!("{err_msg}");
@@ -888,12 +907,15 @@ async fn process_signed_delegate_action(
 }
 
 pub async fn process_signed_delegate_action_big_timeout(
+    state: &AppState,
     signed_delegate_action: SignedDelegateAction,
 ) -> Result<String, RelayError> {
     filter_and_send_signed_delegate_action(
+        state,
         signed_delegate_action,
         |receiver_id, actions| async move {
-            let hash = RPC_CLIENT
+            let hash = state
+                .rpc_client
                 .send_tx_async(&*SIGNER, &receiver_id, actions)
                 .await
                 .map_err(|err| {
@@ -906,7 +928,11 @@ pub async fn process_signed_delegate_action_big_timeout(
             const MAX_RETRIES: usize = 300;
             for _retry_no in 1..=MAX_RETRIES {
                 let second = Duration::from_secs(1);
-                let res = match RPC_CLIENT.tx_async_status(SIGNER.account_id(), hash).await {
+                let res = match state
+                    .rpc_client
+                    .tx_async_status(SIGNER.account_id(), hash)
+                    .await
+                {
                     Ok(res) => res,
                     // The node is unstable, wait a second and try again
                     Err(_) => {
@@ -944,16 +970,20 @@ pub async fn process_signed_delegate_action_big_timeout(
 }
 
 async fn process_signed_delegate_action_noretry_async(
+    state: &AppState,
     signed_delegate_action: SignedDelegateAction,
 ) -> Result<String, RelayError> {
     let result: Result<String, RelayError> = filter_and_send_signed_delegate_action_async(
+        state,
         signed_delegate_action,
         |receiver_id, actions| async move {
-            let (nonce, block_hash, _) = RPC_CLIENT
+            let (nonce, block_hash, _) = state
+                .rpc_client
                 .fetch_nonce(&*SIGNER.account_id(), &*SIGNER.public_key())
                 .await
                 .map_err(|e| format!("Error fetching nonce: {:?}", e))?;
-            let txn_hash = RPC_CLIENT_NOFETCH
+            let txn_hash = state
+                .rpc_client_nofetch
                 .call(&RpcBroadcastTxAsyncRequest {
                     signed_transaction: Transaction {
                         nonce,
@@ -984,6 +1014,7 @@ async fn process_signed_delegate_action_noretry_async(
 
 // TODO refactor out common filtering code
 async fn filter_and_send_signed_delegate_action_async<F>(
+    state: &AppState,
     signed_delegate_action: SignedDelegateAction,
     _f: impl Fn(AccountId, Vec<Action>) -> F,
 ) -> Result<String, RelayError>
@@ -995,14 +1026,15 @@ where
         signed_delegate_action
     );
 
-    let signer_account_id: AccountId = RELAYER_ACCOUNT_ID.parse().unwrap();
+    let signer_account_id: AccountId = state.config.relayer_account_id.parse().unwrap();
     // the receiver of the txn is the sender of the signed delegate action
     let receiver_id = &signed_delegate_action.delegate_action.sender_id;
     let da_receiver_id = &signed_delegate_action.delegate_action.receiver_id;
 
-    if !*USE_WHITELISTED_CONTRACTS && !*USE_WHITELISTED_DELEGATE_ACTION_RECEIVER_IDS {
+    if !state.config.use_whitelisted_contracts && !state.config.use_whitelisted_senders {
         let actions = vec![Action::Delegate(signed_delegate_action.clone())];
-        let txn_hash = RPC_CLIENT
+        let txn_hash = state
+            .rpc_client
             .send_tx_async(&*SIGNER, receiver_id, actions)
             .await
             .map_err(|err| {
@@ -1019,15 +1051,19 @@ where
     }
 
     // check that the delegate action receiver_id is in the whitelisted_contracts
-    let is_whitelisted_da_receiver = WHITELISTED_CONTRACTS
+    let is_whitelisted_da_receiver = state
+        .config
+        .whitelisted_contracts
         .iter()
         .any(|s| s == da_receiver_id.as_str());
-    if USE_EXCHANGE.clone() {
+    if state.config.use_exchange.clone() {
         let non_delegate_actions: Vec<Action> =
             signed_delegate_action.delegate_action.get_actions();
-        if *USE_WHITELISTED_DELEGATE_ACTION_RECEIVER_IDS {
+        if state.config.use_whitelisted_senders {
             // check if the delegate action receiver_id (account sender_id) if a whitelisted delegate action receiver
-            let is_whitelisted_sender = WHITELISTED_DELEGATE_ACTION_RECEIVER_IDS
+            let is_whitelisted_sender = state
+                .config
+                .whitelisted_senders
                 .iter()
                 .any(|s| s == receiver_id.as_str());
             if !is_whitelisted_sender {
@@ -1097,7 +1133,10 @@ where
             }
         }
     }
-    if !*USE_FASTAUTH_FEATURES && !is_whitelisted_da_receiver && *USE_WHITELISTED_CONTRACTS {
+    if !state.config.use_fastauth_features
+        && !is_whitelisted_da_receiver
+        && state.config.use_whitelisted_contracts
+    {
         let err_msg = format!("Delegate Action receiver_id {da_receiver_id} is not whitelisted",);
         warn!("{err_msg}");
         return Err(RelayError {
@@ -1106,9 +1145,11 @@ where
         });
     }
     // check the sender_id in whitelist if applicable
-    if *USE_WHITELISTED_DELEGATE_ACTION_RECEIVER_IDS && !*USE_FASTAUTH_FEATURES {
+    if state.config.use_whitelisted_senders && !state.config.use_fastauth_features {
         // check if the delegate action receiver_id (account sender_id) if a whitelisted delegate action receiver
-        let is_whitelisted_sender = WHITELISTED_DELEGATE_ACTION_RECEIVER_IDS
+        let is_whitelisted_sender = state
+            .config
+            .whitelisted_senders
             .iter()
             .any(|s| s == receiver_id.as_str());
         if !is_whitelisted_sender {
@@ -1122,7 +1163,10 @@ where
             });
         }
     }
-    if !is_whitelisted_da_receiver && *USE_FASTAUTH_FEATURES && *USE_WHITELISTED_CONTRACTS {
+    if !is_whitelisted_da_receiver
+        && state.config.use_fastauth_features
+        && state.config.use_whitelisted_contracts
+    {
         // check if sender id and receiver id are the same AND (AddKey or DeleteKey action)
         let non_delegate_action = signed_delegate_action
             .delegate_action
@@ -1142,7 +1186,9 @@ where
             Action::AddKey(_) | Action::DeleteKey(_)
         );
         // check if the receiver_id (delegate action sender_id) if a whitelisted delegate action receiver
-        let is_whitelisted_sender = WHITELISTED_DELEGATE_ACTION_RECEIVER_IDS
+        let is_whitelisted_sender = state
+            .config
+            .whitelisted_senders
             .iter()
             .any(|s| s == receiver_id.as_str());
         if (receiver_id != da_receiver_id || !contains_key_action) && !is_whitelisted_sender {
@@ -1159,7 +1205,7 @@ where
     }
 
     // Check if the SignedDelegateAction includes a FunctionCallAction that transfers FTs to BURN_ADDRESS
-    if *USE_PAY_WITH_FT {
+    if state.config.use_pay_with_ft {
         let non_delegate_actions = signed_delegate_action.delegate_action.get_actions();
         let treasury_payments: Vec<Action> = non_delegate_actions
             .into_iter()
@@ -1186,7 +1232,7 @@ where
                     // get the receiver_id from the json without the escape chars
                     let receiver_id = args_json["receiver_id"].as_str().unwrap_or_default();
                     debug!("receiver_id: {receiver_id}");
-                    let burn_address = BURN_ADDRESS.to_string();
+                    let burn_address = state.config.burn_address.to_string();
                     debug!("BURN_ADDRESS.to_string(): {burn_address:?}");
 
                     // Check if receiver_id in args contain BURN_ADDRESS
@@ -1210,7 +1256,8 @@ where
     }
 
     let actions = vec![Action::Delegate(signed_delegate_action.clone())];
-    let txn_hash = RPC_CLIENT
+    let txn_hash = state
+        .rpc_client
         .send_tx_async(&*SIGNER, receiver_id, actions)
         .await
         .map_err(|err| {
@@ -1228,6 +1275,7 @@ where
 }
 
 async fn filter_and_send_signed_delegate_action<F>(
+    state: &State,
     signed_delegate_action: SignedDelegateAction,
     _f: impl Fn(AccountId, Vec<Action>) -> F,
 ) -> Result<String, RelayError>
@@ -1239,14 +1287,15 @@ where
         signed_delegate_action
     );
 
-    let signer_account_id: AccountId = RELAYER_ACCOUNT_ID.parse().unwrap();
+    let signer_account_id: AccountId = state.config.relayer_account_id.parse().unwrap();
     // the receiver of the txn is the sender of the signed delegate action
     let receiver_id = &signed_delegate_action.delegate_action.sender_id;
     let da_receiver_id = &signed_delegate_action.delegate_action.receiver_id;
 
-    if !*USE_WHITELISTED_CONTRACTS && !*USE_WHITELISTED_DELEGATE_ACTION_RECEIVER_IDS {
+    if !state.config.use_whitelisted_contracts && !state.config.use_whitelisted_seners {
         let actions = vec![Action::Delegate(signed_delegate_action.clone())];
-        let execution = RPC_CLIENT
+        let execution = state
+            .rpc_client
             .send_tx(&*SIGNER, receiver_id, actions)
             .await
             .map_err(|err| {
@@ -1283,15 +1332,19 @@ where
     }
 
     // check that the delegate action receiver_id is in the whitelisted_contracts
-    let is_whitelisted_da_receiver = WHITELISTED_CONTRACTS
+    let is_whitelisted_da_receiver = state
+        .config
+        .whitelisted_contracts
         .iter()
         .any(|s| s == da_receiver_id.as_str());
-    if USE_EXCHANGE.clone() {
+    if state.config.use_exchange.clone() {
         let non_delegate_actions: Vec<Action> =
             signed_delegate_action.delegate_action.get_actions();
-        if *USE_WHITELISTED_DELEGATE_ACTION_RECEIVER_IDS {
+        if *state.config.use_whitelisted_senders {
             // check if the delegate action receiver_id (account sender_id) if a whitelisted delegate action receiver
-            let is_whitelisted_sender = WHITELISTED_DELEGATE_ACTION_RECEIVER_IDS
+            let is_whitelisted_sender = state
+                .config
+                .whitelisted_senders
                 .iter()
                 .any(|s| s == receiver_id.as_str());
             if !is_whitelisted_sender {
@@ -1360,7 +1413,10 @@ where
             }
         }
     }
-    if !*USE_FASTAUTH_FEATURES && !is_whitelisted_da_receiver && *USE_WHITELISTED_CONTRACTS {
+    if !state.config.use_fastauth_features
+        && !is_whitelisted_da_receiver
+        && state.config.use_whitelisted_contracts
+    {
         let err_msg = format!("Delegate Action receiver_id {da_receiver_id} is not whitelisted",);
         warn!("{err_msg}");
         return Err(RelayError {
@@ -1369,9 +1425,11 @@ where
         });
     }
     // check the sender_id in whitelist if applicable
-    if *USE_WHITELISTED_DELEGATE_ACTION_RECEIVER_IDS && !*USE_FASTAUTH_FEATURES {
+    if state.config.use_whitelisted_senders && !state.config.use_fastauth_features {
         // check if the delegate action receiver_id (account sender_id) if a whitelisted delegate action receiver
-        let is_whitelisted_sender = WHITELISTED_DELEGATE_ACTION_RECEIVER_IDS
+        let is_whitelisted_sender = state
+            .config
+            .whitelisted_senders
             .iter()
             .any(|s| s == receiver_id.as_str());
         if !is_whitelisted_sender {
@@ -1385,7 +1443,10 @@ where
             });
         }
     }
-    if !is_whitelisted_da_receiver && *USE_FASTAUTH_FEATURES && *USE_WHITELISTED_CONTRACTS {
+    if !is_whitelisted_da_receiver
+        && *state.config.use_fastauth_features
+        && state.config.use_whitelisted_contracts
+    {
         // check if sender id and receiver id are the same AND (AddKey or DeleteKey action)
         let non_delegate_action = signed_delegate_action
             .delegate_action
@@ -1405,7 +1466,9 @@ where
             Action::AddKey(_) | Action::DeleteKey(_)
         );
         // check if the receiver_id (delegate action sender_id) if a whitelisted delegate action receiver
-        let is_whitelisted_sender = WHITELISTED_DELEGATE_ACTION_RECEIVER_IDS
+        let is_whitelisted_sender = state
+            .config
+            .whitelisted_senders
             .iter()
             .any(|s| s == receiver_id.as_str());
         if (receiver_id != da_receiver_id || !contains_key_action) && !is_whitelisted_sender {
@@ -1422,7 +1485,7 @@ where
     }
 
     // Check if the SignedDelegateAction includes a FunctionCallAction that transfers FTs to BURN_ADDRESS
-    if *USE_PAY_WITH_FT {
+    if state.config.use_pay_with_ft {
         let non_delegate_actions = signed_delegate_action.delegate_action.get_actions();
         let treasury_payments: Vec<Action> = non_delegate_actions
             .into_iter()
@@ -1449,7 +1512,7 @@ where
                     // get the receiver_id from the json without the escape chars
                     let receiver_id = args_json["receiver_id"].as_str().unwrap_or_default();
                     debug!("receiver_id: {receiver_id}");
-                    let burn_address = BURN_ADDRESS.to_string();
+                    let burn_address = state.config.burn_address.to_string();
                     debug!("BURN_ADDRESS.to_string(): {burn_address:?}");
 
                     // Check if receiver_id in args contain BURN_ADDRESS
@@ -1472,10 +1535,12 @@ where
         }
     }
 
-    if *USE_REDIS {
+    if state.config.use_redis {
         // Check the sender's remaining gas allowance in Redis
         let end_user_account: &AccountId = &signed_delegate_action.delegate_action.sender_id;
-        let remaining_allowance: u64 = get_remaining_allowance(end_user_account).await.unwrap_or(0);
+        let remaining_allowance: u64 = get_remaining_allowance(state.as_ref(), end_user_account)
+            .await
+            .unwrap_or(0);
         if remaining_allowance < TXN_GAS_ALLOWANCE {
             let err_msg = format!(
                 "AccountId {} does not have enough remaining gas allowance.",
@@ -1489,7 +1554,8 @@ where
         }
 
         let actions = vec![Action::Delegate(signed_delegate_action.clone())];
-        let execution = RPC_CLIENT
+        let execution = state
+            .rpc_client
             .send_tx(&*SIGNER, receiver_id, actions)
             .await
             .map_err(|err| {
@@ -1516,18 +1582,21 @@ where
         let gas_used_in_yn =
             calculate_total_gas_burned(&execution.transaction_outcome, &execution.receipts_outcome);
         debug!("total gas burnt in yN: {}", gas_used_in_yn);
-        let new_allowance =
-            update_remaining_allowance(&signer_account_id, gas_used_in_yn, remaining_allowance)
-                .await
-                .map_err(|err| {
-                    let err_msg =
-                        format!("Updating redis remaining allowance errored out: {err:?}");
-                    error!("{err_msg}");
-                    RelayError {
-                        status_code: StatusCode::INTERNAL_SERVER_ERROR,
-                        message: err_msg,
-                    }
-                })?;
+        let new_allowance = update_remaining_allowance(
+            state.as_ref(),
+            &signer_account_id,
+            gas_used_in_yn,
+            remaining_allowance,
+        )
+        .await
+        .map_err(|err| {
+            let err_msg = format!("Updating redis remaining allowance errored out: {err:?}");
+            error!("{err_msg}");
+            RelayError {
+                status_code: StatusCode::INTERNAL_SERVER_ERROR,
+                message: err_msg,
+            }
+        })?;
         info!("Updated remaining allowance for account {signer_account_id}: {new_allowance}",);
 
         if let FinalExecutionStatus::Failure(_) = status {
@@ -1542,7 +1611,8 @@ where
         }
     } else {
         let actions = vec![Action::Delegate(signed_delegate_action.clone())];
-        let execution = RPC_CLIENT
+        let execution = state
+            .rpc_client
             .send_tx(&*SIGNER, receiver_id, actions)
             .await
             .map_err(|err| {
@@ -1689,6 +1759,7 @@ fn test_configuration() -> RelayerConfiguration {
 fn test_state() -> State<Arc<AppState>> {
     let config = test_configuration();
     let rpc_client = Arc::new(config.network_config.rpc_client());
+    let rpc_client_nofetch = Arc::new(config.network_config.rpc_client_nofetch());
     let shared_storage_pool = config
         .use_shared_storage
         .then(|| create_shared_storage_pool(&config, Arc::clone(&rpc_client)));
@@ -1697,6 +1768,7 @@ fn test_state() -> State<Arc<AppState>> {
         config,
         shared_storage_pool,
         rpc_client,
+        rpc_client_nofetch,
         redis_pool: Some(redis_pool),
     }))
 }
