@@ -266,7 +266,7 @@ async fn main() {
 
     // initialize RPC client and shared storage pool
     let rpc_client = Arc::new(config.network_config.rpc_client());
-    let rpc_client_nofetch = Arc::new(config.network_config.rpc_client_nofetch());
+    let rpc_client_nofetch = Arc::new(config.network_config.raw_rpc_client());
     let mut shared_storage_pool = None;
     let mut redis_pool = None;
 
@@ -561,6 +561,8 @@ async fn create_account_atomic(
         #[cfg(any(feature = "fastauth_features", feature = "shared_storage"))]
         if let Err(err) = state
             .shared_storage_pool
+            .as_ref()
+            .unwrap()
             .allocate_default(account_id.clone())
             .await
         {
@@ -1055,7 +1057,7 @@ where
         .config
         .whitelisted_contracts
         .iter()
-        .any(|s| s == da_receiver_id.as_str());
+        .any(|s| s.as_str() == da_receiver_id.as_str());
     if state.config.use_exchange.clone() {
         let non_delegate_actions: Vec<Action> =
             signed_delegate_action.delegate_action.get_actions();
@@ -1275,7 +1277,7 @@ where
 }
 
 async fn filter_and_send_signed_delegate_action<F>(
-    state: &State,
+    state: &AppState,
     signed_delegate_action: SignedDelegateAction,
     _f: impl Fn(AccountId, Vec<Action>) -> F,
 ) -> Result<String, RelayError>
@@ -1292,7 +1294,7 @@ where
     let receiver_id = &signed_delegate_action.delegate_action.sender_id;
     let da_receiver_id = &signed_delegate_action.delegate_action.receiver_id;
 
-    if !state.config.use_whitelisted_contracts && !state.config.use_whitelisted_seners {
+    if !state.config.use_whitelisted_contracts && !state.config.use_whitelisted_senders {
         let actions = vec![Action::Delegate(signed_delegate_action.clone())];
         let execution = state
             .rpc_client
@@ -1336,11 +1338,11 @@ where
         .config
         .whitelisted_contracts
         .iter()
-        .any(|s| s == da_receiver_id.as_str());
+        .any(|s| s.as_str() == da_receiver_id.as_str());
     if state.config.use_exchange.clone() {
         let non_delegate_actions: Vec<Action> =
             signed_delegate_action.delegate_action.get_actions();
-        if *state.config.use_whitelisted_senders {
+        if state.config.use_whitelisted_senders {
             // check if the delegate action receiver_id (account sender_id) if a whitelisted delegate action receiver
             let is_whitelisted_sender = state
                 .config
@@ -1444,7 +1446,7 @@ where
         }
     }
     if !is_whitelisted_da_receiver
-        && *state.config.use_fastauth_features
+        && state.config.use_fastauth_features
         && state.config.use_whitelisted_contracts
     {
         // check if sender id and receiver id are the same AND (AddKey or DeleteKey action)
@@ -1538,9 +1540,10 @@ where
     if state.config.use_redis {
         // Check the sender's remaining gas allowance in Redis
         let end_user_account: &AccountId = &signed_delegate_action.delegate_action.sender_id;
-        let remaining_allowance: u64 = get_remaining_allowance(state.as_ref(), end_user_account)
-            .await
-            .unwrap_or(0);
+        let remaining_allowance: u64 =
+            get_remaining_allowance(&state.redis_pool.unwrap(), end_user_account)
+                .await
+                .unwrap_or(0);
         if remaining_allowance < TXN_GAS_ALLOWANCE {
             let err_msg = format!(
                 "AccountId {} does not have enough remaining gas allowance.",
@@ -1583,7 +1586,7 @@ where
             calculate_total_gas_burned(&execution.transaction_outcome, &execution.receipts_outcome);
         debug!("total gas burnt in yN: {}", gas_used_in_yn);
         let new_allowance = update_remaining_allowance(
-            state.as_ref(),
+            &state.redis_pool.unwrap(),
             &signer_account_id,
             gas_used_in_yn,
             remaining_allowance,
@@ -1759,7 +1762,7 @@ fn test_configuration() -> RelayerConfiguration {
 fn test_state() -> State<Arc<AppState>> {
     let config = test_configuration();
     let rpc_client = Arc::new(config.network_config.rpc_client());
-    let rpc_client_nofetch = Arc::new(config.network_config.rpc_client_nofetch());
+    let rpc_client_nofetch = Arc::new(config.network_config.raw_rpc_client());
     let shared_storage_pool = config
         .use_shared_storage
         .then(|| create_shared_storage_pool(&config, Arc::clone(&rpc_client)));
