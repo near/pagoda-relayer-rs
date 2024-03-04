@@ -1,5 +1,4 @@
 mod error;
-mod lock_pool;
 mod redis_fns;
 mod rpc_conf;
 mod shared_storage;
@@ -48,13 +47,11 @@ use utoipa_rapidoc::RapiDoc;
 use utoipa_swagger_ui::SwaggerUi;
 
 use crate::error::RelayError;
-use crate::lock_pool::LockPoolGuard;
 use crate::redis_fns::*;
 use crate::rpc_conf::NetworkConfig;
 use crate::shared_storage::SharedStoragePoolManager;
 #[cfg(feature = "shared_storage")]
 use crate::shared_storage::*;
-use lock_pool::LockPool;
 
 // transaction cost in Gas (10^21yN or 10Tgas or 0.001N)
 const TXN_GAS_ALLOWANCE: u64 = 10_000_000_000_000;
@@ -1521,7 +1518,7 @@ where
         // Check the sender's remaining gas allowance in Redis
         let end_user_account: &AccountId = &signed_delegate_action.delegate_action.sender_id;
         let remaining_allowance: u64 =
-            get_remaining_allowance(&state.redis_pool.unwrap(), end_user_account)
+            get_remaining_allowance(&state.redis_pool.clone().unwrap(), end_user_account)
                 .await
                 .unwrap_or(0);
         if remaining_allowance < TXN_GAS_ALLOWANCE {
@@ -1566,7 +1563,7 @@ where
             calculate_total_gas_burned(&execution.transaction_outcome, &execution.receipts_outcome);
         debug!("total gas burnt in yN: {}", gas_used_in_yn);
         let new_allowance = update_remaining_allowance(
-            &state.redis_pool.unwrap(),
+            &state.redis_pool.clone().unwrap(),
             &signer_account_id,
             gas_used_in_yn,
             remaining_allowance,
