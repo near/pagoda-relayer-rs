@@ -1,5 +1,7 @@
 use std::{ops::Deref, sync::Arc};
 
+use near_primitives::types::AccountId;
+
 #[derive(Debug, Clone)]
 pub struct LockPool<T> {
     pub(self) send: flume::Sender<Arc<T>>,
@@ -53,6 +55,37 @@ impl<T> LockPool<T> {
         }
     }
 }
+
+// TODO remove after fix
+// Attempted fix to the following error:
+/*
+error[E0277]: the trait bound `LockPool<InMemorySigner>: Signer` is not satisfied
+   --> src/main.rs:864:26
+    |
+864 |                 .send_tx(&*SIGNER, &receiver_id, actions)
+    |                          ^^^^^^^^ the trait `Signer` is not implemented for `LockPool<InMemorySigner>`
+    |
+    = help: the following other types implement trait `Signer`:
+              EmptySigner
+              KeyRotatingSigner
+              InMemorySigner
+    = note: required for `LockPool<InMemorySigner>` to implement `SignerExt`
+    = note: required for the cast from `&LockPool<InMemorySigner>` to `&dyn SignerExt`
+ */
+// trait ExposeAccountId {
+//     fn account_id(&self) -> AccountId;
+// }
+// // Implement `ExposeAccountId` for `LockPool<T>` where `T: ExposeAccountId`
+// impl<T: ExposeAccountId> ExposeAccountId for LockPool<T> {
+//     fn account_id(&self) -> AccountId {
+//         // Here you need to decide how to handle the fact that `LockPool` may contain multiple instances of `T`.
+//         // For example, you might always fetch an instance from the pool and use it to get the `AccountId`,
+//         // or you might have a default or static `AccountId` that's used for the pool as a whole.
+//         // This is a simplified example where we just fetch an instance and use it.
+//         let guard = self.request_blocking(); // or use `request` in async contexts
+//         guard.account_id()
+//     }
+// }
 
 #[tokio::test]
 async fn test() {
