@@ -675,9 +675,9 @@ async fn register_account_and_allowance(
     path = "/relay",
     request_body = Vec<u8>,
     responses(
-        (status = 201, description = "Relayed and sent transaction ...", body = String),
-        (status = 400, description = "Error deserializing payload data object ...", body = String),
-        (status = 500, description = "Error signing transaction: ...", body = String),
+        (status = 201, description = "--DEPRECATED--Relayed and sent transaction ...", body = String),
+        (status = 400, description = "--DEPRECATED--Error deserializing payload data object ...", body = String),
+        (status = 500, description = "--DEPRECATED--Error signing transaction: ...", body = String),
     ),
 )]
 #[instrument]
@@ -703,7 +703,7 @@ async fn relay(data: Json<Vec<u8>>) -> impl IntoResponse {
     path = "/send_meta_tx",
     request_body = SignedDelegateAction,
     responses(
-        (status = 201, description = "Relayed and sent transaction ...", body = String),
+        (status = 200, description = "Relayed and sent transaction ...", body = String),
         (status = 400, description = "Error deserializing payload data object ...", body = String),
         (status = 500, description = "Error signing transaction: ...", body = String),
     ),
@@ -748,7 +748,9 @@ async fn send_meta_tx_nopoll(data: Json<SignedDelegateAction>) -> impl IntoRespo
     path = "/send_meta_tx_async",
     request_body = SignedDelegateAction,
     responses(
-        (status = 202, description = "Relayed and sent transaction ...", body = String),
+        (status = 200, description = "transaction hash", body = String),
+        (status = 400, description = "Error deserializing payload data object ...", body = String),
+        (status = 500, description = "Error signing transaction: ...", body = String),
     ),
 )]
 async fn send_meta_tx_async(data: Json<SignedDelegateAction>) -> impl IntoResponse {
@@ -758,39 +760,14 @@ async fn send_meta_tx_async(data: Json<SignedDelegateAction>) -> impl IntoRespon
     // Generate the response based on the outcome of the above operation.
     let response = match relayer_response {
         Ok(response) => {
-            // Assuming `response` is the actual content you want to return.
-            // Adjust the `.into_response()` method as necessary to fit your response format.
+            // `response` is the tx hash
             response.into_response()
         }
-        Err(err) => {
-            // Construct an error response from your error type.
-            // You might need to adjust `(err.status_code, err.message)` to match the actual structure of your error.
-            (err.status_code, err.message).into_response()
-        }
+        Err(err) => (err.status_code, err.message).into_response(),
     };
-
-    // Log the response for debugging.
     debug!("Async Relayer response: {:?}", response);
 
-    // Return the generated response directly.
     response
-
-    // tokio::spawn(async {
-    //     let relayer_response = process_signed_delegate_action_noretry_async(
-    //         // deserialize SignedDelegateAction using serde json
-    //         data.0,
-    //     )
-    //     .await;
-    //     let response = match relayer_response {
-    //         Ok(response) => response.into_response(),
-    //         Err(err) => (err.status_code, err.message).into_response(),
-    //     };
-    //     debug!("Async Relayer response: {:?}", response);
-    // });
-
-    // TODO separate method with txn pre-validation logic and sending txn in process_signed_delegate_action
-    // only respond with ACCEPTED if txn passes pre-validation
-    // StatusCode::ACCEPTED.into_response()
 }
 
 #[instrument]
