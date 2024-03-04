@@ -133,21 +133,22 @@ struct AppState {
     redis_pool: Option<Pool<RedisConnectionManager>>,
 }
 
-// load config from toml and setup LockPool Signer
+// load config from toml and setup jsonrpc client
 static LOCAL_CONF: Lazy<Config> = Lazy::new(|| {
     Config::builder()
         .add_source(ConfigFile::with_name("config.toml"))
         .build()
         .unwrap()
 });
-static SIGNER: Lazy<LockPool<InMemorySigner>> = Lazy::new(|| {
+static SIGNER: Lazy<KeyRotatingSigner> = Lazy::new(|| {
     let path = LOCAL_CONF
         .get::<String>("keys_filename")
         .expect("Failed to read 'keys_filename' from config");
     let keys_file = std::fs::File::open(path).expect("Failed to open keys file");
     let signers: Vec<InMemorySigner> =
         serde_json::from_reader(keys_file).expect("Failed to parse keys file");
-    LockPool::new(signers)
+
+    KeyRotatingSigner::from_signers(signers)
 });
 
 #[derive(Clone, Debug, Deserialize, ToSchema)]
@@ -953,71 +954,35 @@ async fn process_signed_delegate_action_noretry_async(
     state: &AppState,
     signed_delegate_action: SignedDelegateAction,
 ) -> Result<String, RelayError> {
-    let signer: LockPoolGuard<InMemorySigner> = SIGNER.request().await;
-    // Clone `account_id` and `public_key` so they can be moved into the async block without issue
-    let account_id: AccountId = signer.to_owned().account_id.clone();
-    let public_key: PublicKey = signer.to_owned().public_key.clone();
-
-    // It's crucial to ensure that any data or functionality from `signer` needed inside the async block
-    // is accessed outside the block and moved in as needed.
-
-    // tODO : Fix this
-    /*
-        error: lifetime may not live long enough
-       --> src/main.rs:973:13
-        |
-    968 |           move |receiver_id, actions| {
-        |           ---------------------------
-        |           |                         |
-        |           |                         return type of closure `[async block@src/main.rs:973:13: 999:14]` contains a lifetime `'2`
-        |           lifetime `'1` represents this closure's body
-    ...
-    973 | /             async move {
-    974 | |                 let (nonce, block_hash, _) = state
-    975 | |                     .rpc_client
-    976 | |                     .fetch_nonce(&account_id, &public_key)
-    ...   |
-    998 | |                 Ok(txn_hash)
-    999 | |             }
-        | |_____________^ returning this value requires that `'1` must outlive `'2`
-        |
-         */
-
     let result: Result<String, RelayError> = filter_and_send_signed_delegate_action_async(
         state,
         signed_delegate_action,
-        move |receiver_id, actions| {
-            // Note: Use `move` here to explicitly move the clones into the closure
-            let account_id = account_id.clone(); // Clone again to use inside async block
-            let public_key = public_key.clone();
-            let signer_ref = &signer; // Attempt to capture a reference to `signer` if your logic allows
-            async move {
-                let (nonce, block_hash, _) = state
-                    .rpc_client
-                    .fetch_nonce(&account_id, &public_key)
-                    .await
-                    .map_err(|e| format!("Error fetching nonce: {:?}", e))?;
-                let txn_hash = state
-                    .rpc_client_nofetch
-                    .call(&RpcBroadcastTxAsyncRequest {
-                        signed_transaction: Transaction {
-                            nonce,
-                            block_hash,
-                            signer_id: account_id,
-                            public_key,
-                            receiver_id: receiver_id.clone(),
-                            actions: actions.clone(),
-                        }
-                        .sign(signer_ref.as_signer()), // Use the method or data extracted from `signer` here
-                    })
-                    .await
-                    .map_err(|err| {
-                        let err_msg: String = format!("Error signing transaction: {:?}", err);
-                        error!("{err_msg}");
-                        err_msg
-                    })?;
-                Ok(txn_hash)
-            }
+        |receiver_id, actions| async move {
+            let (nonce, block_hash, _) = state
+                .rpc_client
+                .fetch_nonce(&*SIGNER.account_id(), &*SIGNER.public_key())
+                .await
+                .map_err(|e| format!("Error fetching nonce: {:?}", e))?;
+            let txn_hash = state
+                .rpc_client_nofetch
+                .call(&RpcBroadcastTxAsyncRequest {
+                    signed_transaction: Transaction {
+                        nonce,
+                        block_hash,
+                        signer_id: SIGNER.account_id().clone(),
+                        public_key: SIGNER.public_key().clone(),
+                        receiver_id: receiver_id.clone(),
+                        actions: actions.clone(),
+                    }
+                    .sign(SIGNER.current_signer()),
+                })
+                .await
+                .map_err(|err| {
+                    let err_msg: String = format!("Error signing transaction: {:?}", err);
+                    error!("{err_msg}");
+                    err_msg
+                })?;
+            Ok(txn_hash)
         },
     )
     .await;
@@ -1043,8 +1008,6 @@ where
         signed_delegate_action
     );
 
-    let signer: InMemorySigner = SIGNER.request().await.into();
-
     let signer_account_id: AccountId = state.config.relayer_account_id.parse().unwrap();
     // the receiver of the txn is the sender of the signed delegate action
     let receiver_id = &signed_delegate_action.delegate_action.sender_id;
@@ -1054,7 +1017,7 @@ where
         let actions = vec![Action::Delegate(signed_delegate_action.clone())];
         let txn_hash = state
             .rpc_client
-            .send_tx_async(&signer, receiver_id, actions)
+            .send_tx_async(&*SIGNER, receiver_id, actions)
             .await
             .map_err(|err| {
                 let err_msg = format!("Error signing transaction: {err:?}");
@@ -1277,7 +1240,7 @@ where
     let actions = vec![Action::Delegate(signed_delegate_action.clone())];
     let txn_hash = state
         .rpc_client
-        .send_tx_async(&signer, receiver_id, actions)
+        .send_tx_async(&*SIGNER, receiver_id, actions)
         .await
         .map_err(|err| {
             let err_msg = format!("Error signing transaction: {err:?}");
@@ -1306,8 +1269,6 @@ where
         signed_delegate_action
     );
 
-    let signer: InMemorySigner = SIGNER.request().await.into();
-
     let signer_account_id: AccountId = state.config.relayer_account_id.parse().unwrap();
     // the receiver of the txn is the sender of the signed delegate action
     let receiver_id = &signed_delegate_action.delegate_action.sender_id;
@@ -1317,7 +1278,7 @@ where
         let actions = vec![Action::Delegate(signed_delegate_action.clone())];
         let execution = state
             .rpc_client
-            .send_tx(&signer, receiver_id, actions)
+            .send_tx(&*SIGNER, receiver_id, actions)
             .await
             .map_err(|err| {
                 let err_msg = format!("Error signing transaction: {err:?}");
@@ -1578,7 +1539,7 @@ where
         let actions = vec![Action::Delegate(signed_delegate_action.clone())];
         let execution = state
             .rpc_client
-            .send_tx(&signer, receiver_id, actions)
+            .send_tx(&*SIGNER, receiver_id, actions)
             .await
             .map_err(|err| {
                 let err_msg = format!("Error signing transaction: {err:?}");
@@ -1635,7 +1596,7 @@ where
         let actions = vec![Action::Delegate(signed_delegate_action.clone())];
         let execution = state
             .rpc_client
-            .send_tx(&signer, receiver_id, actions)
+            .send_tx(&*SIGNER, receiver_id, actions)
             .await
             .map_err(|err| {
                 let err_msg = format!("Error signing transaction: {err:?}");
