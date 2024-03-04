@@ -74,8 +74,6 @@ static NETWORK_ENV: Lazy<String> = Lazy::new(|| LOCAL_CONF.get("network").unwrap
 static NETWORK_CONFIG: Lazy<NetworkConfig> = Lazy::new(|| NetworkConfig {
     rpc_url: LOCAL_CONF.get("rpc_url").unwrap(),
     rpc_api_key: LOCAL_CONF.get("rpc_api_key").unwrap(),
-    wallet_url: LOCAL_CONF.get("wallet_url").unwrap(),
-    explorer_transaction_url: LOCAL_CONF.get("explorer_transaction_url").unwrap(),
 });
 static RPC_CLIENT: Lazy<near_fetch::Client> = Lazy::new(|| NETWORK_CONFIG.rpc_client());
 static RPC_CLIENT_NOFETCH: Lazy<near_jsonrpc_client::JsonRpcClient> =
@@ -88,22 +86,14 @@ static RELAYER_ACCOUNT_ID: Lazy<String> =
 static SHARED_STORAGE_ACCOUNT_ID: Lazy<String> =
     Lazy::new(|| LOCAL_CONF.get("shared_storage_account_id").unwrap());
 static SIGNER: Lazy<KeyRotatingSigner> = Lazy::new(|| {
-    let paths = LOCAL_CONF
-        .get::<Vec<String>>("keys_filenames")
-        .expect("Failed to read 'keys_filenames' from config");
-    KeyRotatingSigner::from_signers(paths.iter().map(|path| {
-        InMemorySigner::from_file(Path::new(path))
-            .unwrap_or_else(|err| panic!("failed to read signing keys from {path}: {err:?}"))
-    }))
-    // TODO uncomment below (new) and remove above (old) before merging into develop branch
-    // let path = LOCAL_CONF
-    //     .get::<String>("keys_filename")
-    //     .expect("Failed to read 'keys_filename' from config");
-    // let keys_file = std::fs::File::open(path).expect("Failed to open keys file");
-    // let signers: Vec<InMemorySigner> =
-    //     serde_json::from_reader(keys_file).expect("Failed to parse keys file");
-    //
-    // KeyRotatingSigner::from_signers(signers)
+    let path = LOCAL_CONF
+        .get::<String>("keys_filename")
+        .expect("Failed to read 'keys_filename' from config");
+    let keys_file = std::fs::File::open(path).expect("Failed to open keys file");
+    let signers: Vec<InMemorySigner> =
+        serde_json::from_reader(keys_file).expect("Failed to parse keys file");
+
+    KeyRotatingSigner::from_signers(signers)
 });
 #[cfg(feature = "shared_storage")]
 static SHARED_STORAGE_KEYS_FILENAME: Lazy<String> =
