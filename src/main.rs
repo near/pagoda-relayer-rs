@@ -53,6 +53,7 @@ use crate::shared_storage::SharedStoragePoolManager;
 #[cfg(feature = "shared_storage")]
 use crate::shared_storage::*;
 
+// CONSTANTS
 // transaction cost in Gas (10^21yN or 10Tgas or 0.001N)
 const TXN_GAS_ALLOWANCE: u64 = 10_000_000_000_000;
 const YN_TO_GAS: u128 = 1_000_000_000;
@@ -61,39 +62,239 @@ const STORAGE_DEPOSIT_METHOD_NAME: &str = "storage_deposit";
 const STORAGE_DEPOSIT_AMOUNT_FT: u128 = 1250000000000000000000;
 const FT_TRANSFER_ATTACHMENT_DEPOSIT_AMOUNT: u128 = 1;
 
-#[derive(Debug, Clone, serde::Deserialize)]
+// CONFIGURATION
+#[derive(Debug, Clone, Deserialize)]
 struct RelayerConfiguration {
-    #[serde(rename = "network")]
+    #[serde(rename = "network", default = "default_network_env")]
     network_env: String,
-    #[serde(flatten)]
+    #[serde(flatten, default)]
     network_config: NetworkConfig,
+    #[serde(default = "default_ip_address")]
     ip_address: [u8; 4],
+    #[serde(default = "default_port")]
     port: u16,
+    #[serde(default = "default_relayer_account_id")]
     relayer_account_id: String,
+    #[serde(default = "default_shared_storage_account_id")]
     shared_storage_account_id: String,
+    #[serde(default = "default_keys_filename")]
     keys_filename: PathBuf,
+    #[serde(default = "default_shared_storage_keys_filename")]
     shared_storage_keys_filename: PathBuf,
     #[serde(default)]
     use_whitelisted_contracts: bool,
-    whitelisted_contracts: Vec<AccountId>,
+    #[serde(default)]
+    whitelisted_contracts: Vec<String>, // Assuming AccountId is a type alias for String
     #[serde(default)]
     use_whitelisted_senders: bool,
+    #[serde(default)]
     whitelisted_senders: Vec<String>,
     #[serde(default)]
     use_redis: bool,
+    #[serde(default = "default_redis_url")]
     redis_url: String,
     #[serde(default)]
     use_fastauth_features: bool,
     #[serde(default)]
     use_pay_with_ft: bool,
-    burn_address: AccountId,
+    #[serde(default = "default_burn_address")]
+    burn_address: String, // Assuming AccountId is a type alias for String
     #[serde(default)]
     use_shared_storage: bool,
-    social_db_contract_id: AccountId,
+    #[serde(default = "default_social_db_contract_id")]
+    social_db_contract_id: String, // Assuming AccountId is a type alias for String
     #[serde(default)]
     flametrace_performance: bool,
     #[serde(default)]
     use_exchange: bool,
+}
+// Default functions for fields requiring complex defaults
+fn default_network_env() -> String {
+    "testnet".to_string()
+}
+fn default_ip_address() -> [u8; 4] {
+    [127, 0, 0, 1]
+}
+fn default_port() -> u16 {
+    3030
+}
+fn default_relayer_account_id() -> String {
+    "nomnomnom.testnet".to_string()
+}
+fn default_shared_storage_account_id() -> String {
+    "shared_storage.testnet".to_string()
+}
+fn default_keys_filename() -> PathBuf {
+    "./account_keys/nomnomnom.testnet.json".parse().unwrap()
+}
+fn default_shared_storage_keys_filename() -> PathBuf {
+    "./account_keys/shared_storage.testnet.json"
+        .parse()
+        .unwrap()
+}
+fn default_redis_url() -> String {
+    "redis://127.0.0.1:6379".to_string()
+}
+fn default_burn_address() -> String {
+    "default_relayer.testnet".to_string()
+} // Assuming AccountId is a type alias for String
+fn default_social_db_contract_id() -> String {
+    "social_db.testnet".to_string()
+} // Assuming AccountId is a type alias for String
+
+impl Default for RelayerConfiguration {
+    fn default() -> Self {
+        Self {
+            network_env: default_network_env(),
+            network_config: NetworkConfig {
+                rpc_url: "https://rpc.testnet.near.org".parse().unwrap(),
+                rpc_api_key: None,
+            },
+            ip_address: default_ip_address(),
+            port: default_port(),
+            relayer_account_id: default_relayer_account_id(),
+            shared_storage_account_id: default_shared_storage_account_id(),
+            keys_filename: default_keys_filename(),
+            shared_storage_keys_filename: default_shared_storage_keys_filename(),
+            use_whitelisted_contracts: false,
+            whitelisted_contracts: vec![],
+            use_whitelisted_senders: false,
+            whitelisted_senders: vec![],
+            use_redis: false,
+            redis_url: default_redis_url(),
+            use_fastauth_features: false,
+            use_pay_with_ft: false,
+            use_shared_storage: false,
+            burn_address: default_burn_address(),
+            social_db_contract_id: default_social_db_contract_id(),
+            flametrace_performance: false,
+            use_exchange: false,
+        }
+    }
+}
+impl RelayerConfiguration {
+    fn check_and_announce_defaults(&self) {
+        let default = RelayerConfiguration::default();
+
+        if self.network_env == default.network_env {
+            println!("Using DEFAULT network environment: {}", default.network_env);
+        }
+
+        if (self.network_config.rpc_url == default.network_config.rpc_url)
+            && (self.network_config.rpc_api_key == default.network_config.rpc_api_key)
+        {
+            println!(
+                "Using DEFAULT network configuration with rpc_url: {}",
+                self.network_config.rpc_url
+            );
+        }
+
+        if self.ip_address == default.ip_address {
+            println!("Using DEFAULT IP address: {:?}", default.ip_address);
+        }
+
+        if self.port == default.port {
+            println!("Using DEFAULT port: {}", default.port);
+        }
+
+        if self.relayer_account_id == default.relayer_account_id {
+            println!(
+                "Using DEFAULT relayer account ID: {}",
+                default.relayer_account_id
+            );
+        }
+
+        if self.shared_storage_account_id == default.shared_storage_account_id {
+            println!(
+                "Using DEFAULT shared storage account ID: {}",
+                default.shared_storage_account_id
+            );
+        }
+
+        if self.keys_filename == default.keys_filename {
+            println!("Using DEFAULT keys filename: {:?}", default.keys_filename);
+        }
+
+        if self.shared_storage_keys_filename == default.shared_storage_keys_filename {
+            println!(
+                "Using DEFAULT shared storage keys filename: {:?}",
+                default.shared_storage_keys_filename
+            );
+        }
+
+        if self.use_whitelisted_contracts == default.use_whitelisted_contracts {
+            println!(
+                "Using DEFAULT for use_whitelisted_contracts: {}",
+                default.use_whitelisted_contracts
+            );
+        }
+
+        if self.whitelisted_contracts.is_empty() {
+            println!("Using DEFAULT (empty) whitelisted_contracts list");
+        }
+
+        if self.use_whitelisted_senders == default.use_whitelisted_senders {
+            println!(
+                "Using DEFAULT for use_whitelisted_senders: {}",
+                default.use_whitelisted_senders
+            );
+        }
+
+        if self.whitelisted_senders.is_empty() {
+            println!("Using DEFAULT (empty) whitelisted_senders list");
+        }
+
+        if self.use_redis == default.use_redis {
+            println!("Using DEFAULT for use_redis: {}", default.use_redis);
+        }
+
+        if self.redis_url == default.redis_url {
+            println!("Using DEFAULT Redis URL: {}", default.redis_url);
+        }
+
+        if self.use_fastauth_features == default.use_fastauth_features {
+            println!(
+                "Using DEFAULT for use_fastauth_features: {}",
+                default.use_fastauth_features
+            );
+        }
+
+        if self.use_pay_with_ft == default.use_pay_with_ft {
+            println!(
+                "Using DEFAULT for use_pay_with_ft: {}",
+                default.use_pay_with_ft
+            );
+        }
+
+        if self.use_shared_storage == default.use_shared_storage {
+            println!(
+                "Using DEFAULT for use_shared_storage: {}",
+                default.use_shared_storage
+            );
+        }
+
+        if self.burn_address == default.burn_address {
+            println!("Using DEFAULT burn address: {}", default.burn_address);
+        }
+
+        if self.social_db_contract_id == default.social_db_contract_id {
+            println!(
+                "Using DEFAULT social db contract ID: {}",
+                default.social_db_contract_id
+            );
+        }
+
+        if self.flametrace_performance == default.flametrace_performance {
+            println!(
+                "Using DEFAULT for flametrace_performance: {}",
+                default.flametrace_performance
+            );
+        }
+
+        if self.use_exchange == default.use_exchange {
+            println!("Using DEFAULT for use_exchange: {}", default.use_exchange);
+        }
+    }
 }
 
 fn create_redis_pool(config: &RelayerConfiguration) -> Pool<RedisConnectionManager> {
@@ -245,12 +446,15 @@ struct TransactionResult {
 #[tokio::main]
 async fn main() {
     // load config
-    let config: RelayerConfiguration = Config::builder()
+    let mut toml_config = Config::builder()
         .add_source(ConfigFile::with_name("config.toml"))
         .build()
-        .unwrap()
-        .try_deserialize()
         .unwrap();
+
+    let config: RelayerConfiguration = toml_config.try_deserialize().unwrap();
+
+    // After deserialization, check for defaults and notify
+    config.check_and_announce_defaults();
 
     // initialize tracing (aka logging)
     if config.flametrace_performance {
