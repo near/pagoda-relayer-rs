@@ -884,7 +884,8 @@ async fn process_signed_delegate_action(
     .await
 }
 
-pub async fn process_signed_delegate_action_big_timeout(
+// TODO remove this when `send_tx` jsonrpc method is live in 1.37 release
+async fn process_signed_delegate_action_big_timeout(
     state: &AppState,
     signed_delegate_action: SignedDelegateAction,
 ) -> Result<String, RelayError> {
@@ -957,7 +958,7 @@ async fn process_signed_delegate_action_noretry_async(
         |receiver_id, actions| async move {
             let (nonce, block_hash, _) = state
                 .rpc_client
-                .fetch_nonce(&*SIGNER.account_id(), &*SIGNER.public_key())
+                .fetch_nonce(SIGNER.account_id(), SIGNER.public_key())
                 .await
                 .map_err(|e| format!("Error fetching nonce: {:?}", e))?;
             let txn_hash = state
@@ -991,42 +992,17 @@ async fn process_signed_delegate_action_noretry_async(
     }
 }
 
-// TODO refactor out common filtering code
-async fn filter_and_send_signed_delegate_action_async<F>(
+fn validate_signed_delegate_action(
     state: &AppState,
-    signed_delegate_action: SignedDelegateAction,
-    _f: impl Fn(AccountId, Vec<Action>) -> F,
-) -> Result<String, RelayError>
-where
-    F: Future<Output = Result<CryptoHash, String>>,
-{
-    debug!(
-        "Deserialized SignedDelegateAction object: {:#?}",
-        signed_delegate_action
-    );
-
-    let signer_account_id: AccountId = state.config.relayer_account_id.parse().unwrap();
+    signed_delegate_action: &SignedDelegateAction,
+) -> Result<(), RelayError> {
     // the receiver of the txn is the sender of the signed delegate action
     let receiver_id = &signed_delegate_action.delegate_action.sender_id;
     let da_receiver_id = &signed_delegate_action.delegate_action.receiver_id;
 
+    // if we are not using whitelisted contracts or senders, then no validation needed
     if !state.config.use_whitelisted_contracts && !state.config.use_whitelisted_senders {
-        let actions = vec![Action::Delegate(signed_delegate_action.clone())];
-        let txn_hash = state
-            .rpc_client
-            .send_tx_async(&*SIGNER, receiver_id, actions)
-            .await
-            .map_err(|err| {
-                let err_msg = format!("Error signing transaction: {err:?}");
-                error!("{err_msg}");
-                RelayError {
-                    status_code: StatusCode::INTERNAL_SERVER_ERROR,
-                    message: err_msg,
-                }
-            })?;
-        debug!("Transaction hash: {txn_hash}");
-
-        return Ok(txn_hash.to_string());
+        return Ok(());
     }
 
     // check that the delegate action receiver_id is in the whitelisted_contracts
@@ -1227,15 +1203,41 @@ where
         if treasury_payments.is_empty() {
             let err_msg = "No treasury payment found in this transaction";
             warn!("{err_msg}");
-            return Err(RelayError {
+            Err(RelayError {
                 status_code: StatusCode::BAD_REQUEST,
                 message: err_msg.to_string(),
-            });
+            })
+        } else {
+            Ok(())
         }
+    } else {
+        Ok(())
+    }
+}
+
+// TODO refactor out common filtering code
+async fn filter_and_send_signed_delegate_action_async<F>(
+    state: &AppState,
+    signed_delegate_action: SignedDelegateAction,
+    _f: impl Fn(AccountId, Vec<Action>) -> F,
+) -> Result<String, RelayError>
+where
+    F: Future<Output = Result<CryptoHash, String>>,
+{
+    debug!(
+        "Deserialized SignedDelegateAction object: {:#?}",
+        signed_delegate_action
+    );
+
+    let validation_result: Result<(), RelayError> =
+        validate_signed_delegate_action(state, &signed_delegate_action);
+    if let Err(err) = validation_result {
+        return Err(err);
     }
 
-    let actions = vec![Action::Delegate(signed_delegate_action.clone())];
-    let txn_hash = state
+    let receiver_id: &AccountId = &signed_delegate_action.delegate_action.receiver_id;
+    let actions: Vec<Action> = vec![Action::Delegate(signed_delegate_action.clone())];
+    let txn_hash: CryptoHash = state
         .rpc_client
         .send_tx_async(&*SIGNER, receiver_id, actions)
         .await
@@ -1266,254 +1268,17 @@ where
         signed_delegate_action
     );
 
-    let signer_account_id: AccountId = state.config.relayer_account_id.parse().unwrap();
-    // the receiver of the txn is the sender of the signed delegate action
-    let receiver_id = &signed_delegate_action.delegate_action.sender_id;
-    let da_receiver_id = &signed_delegate_action.delegate_action.receiver_id;
-
-    if !state.config.use_whitelisted_contracts && !state.config.use_whitelisted_senders {
-        let actions = vec![Action::Delegate(signed_delegate_action.clone())];
-        let execution = state
-            .rpc_client
-            .send_tx(&*SIGNER, receiver_id, actions)
-            .await
-            .map_err(|err| {
-                let err_msg = format!("Error signing transaction: {err:?}");
-                error!("{err_msg}");
-                RelayError {
-                    status_code: StatusCode::INTERNAL_SERVER_ERROR,
-                    message: err_msg,
-                }
-            })?;
-
-        let status = &execution.status;
-        let response_msg = match status {
-            FinalExecutionStatus::Failure(_) => "Error sending transaction",
-            _ => "Relayed and sent transaction",
-        };
-        let status_msg = json!({
-            "message": response_msg,
-            "status": &execution.status,
-            "Transaction Outcome": &execution.transaction_outcome,
-            "Receipts Outcome": &execution.receipts_outcome,
-        });
-
-        return if let FinalExecutionStatus::Failure(_) = status {
-            error!("Error message: \n{status_msg:?}");
-            Err(RelayError {
-                status_code: StatusCode::INTERNAL_SERVER_ERROR,
-                message: status_msg.to_string(),
-            })
-        } else {
-            info!("Success message: \n{status_msg:?}");
-            Ok(status_msg.to_string())
-        };
+    let validation_result: Result<(), RelayError> =
+        validate_signed_delegate_action(state, &signed_delegate_action);
+    if let Err(err) = validation_result {
+        return Err(err);
     }
 
-    // check that the delegate action receiver_id is in the whitelisted_contracts
-    let is_whitelisted_da_receiver = state
-        .config
-        .whitelisted_contracts
-        .iter()
-        .any(|s| s.as_str() == da_receiver_id.as_str());
-    if state.config.use_exchange.clone() {
-        let non_delegate_actions: Vec<Action> =
-            signed_delegate_action.delegate_action.get_actions();
-        if state.config.use_whitelisted_senders {
-            // check if the delegate action receiver_id (account sender_id) if a whitelisted delegate action receiver
-            let is_whitelisted_sender = state
-                .config
-                .whitelisted_senders
-                .iter()
-                .any(|s| s == receiver_id.as_str());
-            if !is_whitelisted_sender {
-                return Err(RelayError {
-                    status_code: StatusCode::BAD_REQUEST,
-                    message: "Delegate Action Sender_id {receiver_id} is not whitelisted"
-                        .to_string(),
-                });
-            }
-        }
-        for non_delegate_action in non_delegate_actions {
-            match non_delegate_action.clone() {
-                Action::FunctionCall(FunctionCallAction {
-                    method_name,
-                    deposit,
-                    ..
-                }) => {
-                    debug!("method_name: {:?}", method_name);
-                    debug!("deposit: {:?}", deposit);
-                    if !is_whitelisted_da_receiver {
-                        return Err(RelayError {
-                            status_code: StatusCode::BAD_REQUEST,
-                            message:
-                                "Delegate Action receiver_id {da_receiver_id} is not whitelisted"
-                                    .to_string(),
-                        });
-                    }
-                    match method_name.as_str() {
-                        FT_TRANSFER_METHOD_NAME => {
-                            if deposit != FT_TRANSFER_ATTACHMENT_DEPOSIT_AMOUNT {
-                                return Err(RelayError {
-                                    status_code: StatusCode::BAD_REQUEST,
-                                    message: "Ft transfer requires 1 yocto attached.".to_string(),
-                                });
-                            }
-                        }
-                        STORAGE_DEPOSIT_METHOD_NAME => {
-                            if deposit != STORAGE_DEPOSIT_AMOUNT_FT {
-                                return Err(RelayError {
-                                status_code: StatusCode::BAD_REQUEST,
-                                message: "Attached less or more than allowed storage_deposit amount allowed.".to_string(),
-                            });
-                            }
-                        }
-                        _ => {
-                            return Err(RelayError {
-                                status_code: StatusCode::BAD_REQUEST,
-                                message: "Method name not allowed.".to_string(),
-                            });
-                        }
-                    }
-                }
-                Action::CreateAccount(_) => debug!("CreateAccount action"),
-                Action::Transfer(_) => {
-                    return Err(RelayError {
-                        status_code: StatusCode::BAD_REQUEST,
-                        message: "Transfer action type is not allowed.".to_string(),
-                    })
-                }
-                _ => {
-                    return Err(RelayError {
-                        status_code: StatusCode::BAD_REQUEST,
-                        message: "This action type is not allowed.".to_string(),
-                    })
-                }
-            }
-        }
-    }
-    if !state.config.use_fastauth_features
-        && !is_whitelisted_da_receiver
-        && state.config.use_whitelisted_contracts
-    {
-        let err_msg = format!("Delegate Action receiver_id {da_receiver_id} is not whitelisted",);
-        warn!("{err_msg}");
-        return Err(RelayError {
-            status_code: StatusCode::BAD_REQUEST,
-            message: err_msg,
-        });
-    }
-    // check the sender_id in whitelist if applicable
-    if state.config.use_whitelisted_senders && !state.config.use_fastauth_features {
-        // check if the delegate action receiver_id (account sender_id) if a whitelisted delegate action receiver
-        let is_whitelisted_sender = state
-            .config
-            .whitelisted_senders
-            .iter()
-            .any(|s| s == receiver_id.as_str());
-        if !is_whitelisted_sender {
-            let err_msg = format!(
-                "Delegate Action receiver_id {da_receiver_id} or sender_id {receiver_id} is not whitelisted",
-            );
-            warn!("{err_msg}");
-            return Err(RelayError {
-                status_code: StatusCode::BAD_REQUEST,
-                message: err_msg,
-            });
-        }
-    }
-    if !is_whitelisted_da_receiver
-        && state.config.use_fastauth_features
-        && state.config.use_whitelisted_contracts
-    {
-        // check if sender id and receiver id are the same AND (AddKey or DeleteKey action)
-        let non_delegate_action = signed_delegate_action
-            .delegate_action
-            .actions
-            .get(0)
-            .ok_or_else(|| {
-                let err_msg = "DelegateAction must have at least one NonDelegateAction";
-                warn!("{err_msg}");
-                RelayError {
-                    status_code: StatusCode::BAD_REQUEST,
-                    message: err_msg.to_string(),
-                }
-            })?;
+    let signer_account_id: &AccountId = &signed_delegate_action.delegate_action.sender_id;
+    let receiver_id: &AccountId = &signed_delegate_action.delegate_action.receiver_id;
+    let actions: Vec<Action> = vec![Action::Delegate(signed_delegate_action.clone())];
 
-        let contains_key_action = matches!(
-            (*non_delegate_action).clone().into(),
-            Action::AddKey(_) | Action::DeleteKey(_)
-        );
-        // check if the receiver_id (delegate action sender_id) if a whitelisted delegate action receiver
-        let is_whitelisted_sender = state
-            .config
-            .whitelisted_senders
-            .iter()
-            .any(|s| s == receiver_id.as_str());
-        if (receiver_id != da_receiver_id || !contains_key_action) && !is_whitelisted_sender {
-            let err_msg = format!(
-                "Delegate Action receiver_id {da_receiver_id} or sender_id {receiver_id} is not whitelisted OR \
-                (they do not match AND the NonDelegateAction is not AddKey or DeleteKey)",
-            );
-            warn!("{err_msg}");
-            return Err(RelayError {
-                status_code: StatusCode::BAD_REQUEST,
-                message: err_msg,
-            });
-        }
-    }
-
-    // Check if the SignedDelegateAction includes a FunctionCallAction that transfers FTs to BURN_ADDRESS
-    if state.config.use_pay_with_ft {
-        let non_delegate_actions = signed_delegate_action.delegate_action.get_actions();
-        let treasury_payments: Vec<Action> = non_delegate_actions
-            .into_iter()
-            .filter(|action| {
-                if let Action::FunctionCall(FunctionCallAction { ref args, .. }) = action {
-                    debug!("args: {:?}", args);
-
-                    // convert to ascii lowercase
-                    let args_ascii = args.to_ascii_lowercase();
-                    debug!("args_ascii: {:?}", args_ascii);
-
-                    // Convert to UTF-8 string
-                    let args_str = String::from_utf8_lossy(&args_ascii);
-                    debug!("args_str: {:?}", args_str);
-
-                    // Parse to JSON (assuming args are serialized as JSON)
-                    let args_json: Value = serde_json::from_str(&args_str).unwrap_or_else(|err| {
-                        error!("Failed to parse JSON: {}", err);
-                        // Provide a default Value
-                        Value::Null
-                    });
-                    debug!("args_json: {:?}", args_json);
-
-                    // get the receiver_id from the json without the escape chars
-                    let receiver_id = args_json["receiver_id"].as_str().unwrap_or_default();
-                    debug!("receiver_id: {receiver_id}");
-                    let burn_address = state.config.burn_address.to_string();
-                    debug!("BURN_ADDRESS.to_string(): {burn_address:?}");
-
-                    // Check if receiver_id in args contain BURN_ADDRESS
-                    if receiver_id == burn_address {
-                        debug!("SignedDelegateAction contains the BURN_ADDRESS MATCH");
-                        return true;
-                    }
-                }
-
-                false
-            })
-            .collect();
-        if treasury_payments.is_empty() {
-            let err_msg = "No treasury payment found in this transaction";
-            warn!("{err_msg}");
-            return Err(RelayError {
-                status_code: StatusCode::BAD_REQUEST,
-                message: err_msg.to_string(),
-            });
-        }
-    }
-
+    // gas allowance redis specific validation
     if state.config.use_redis {
         // Check the sender's remaining gas allowance in Redis
         let end_user_account: &AccountId = &signed_delegate_action.delegate_action.sender_id;
@@ -1533,7 +1298,6 @@ where
             });
         }
 
-        let actions = vec![Action::Delegate(signed_delegate_action.clone())];
         let execution = state
             .rpc_client
             .send_tx(&*SIGNER, receiver_id, actions)
@@ -1590,7 +1354,6 @@ where
             Ok(status_msg.to_string())
         }
     } else {
-        let actions = vec![Action::Delegate(signed_delegate_action.clone())];
         let execution = state
             .rpc_client
             .send_tx(&*SIGNER, receiver_id, actions)
