@@ -1851,8 +1851,8 @@ mod tests {
         max_block_height: i32,
     ) -> SignedDelegateAction {
         let max_block_height: i32 = max_block_height;
-        let public_key: PublicKey = PublicKey::empty(KeyType::ED25519);
-        let signature: Signature = Signature::empty(KeyType::ED25519);
+        let public_key: PublicKey = PublicKey::empty(ED25519);
+        let signature: Signature = Signature::empty(ED25519);
         SignedDelegateAction {
             delegate_action: DelegateAction {
                 sender_id: sender_id.parse().unwrap(),
@@ -1869,7 +1869,7 @@ mod tests {
         }
     }
 
-    // TODO update with AppState
+    // TODO update with Mocked AppState
     // #[tokio::test]
     // // NOTE: uncomment ignore locally to run test bc redis doesn't work in github action build env
     // #[ignore]
@@ -1884,9 +1884,13 @@ mod tests {
     //
     //     // simulate calling the '/update_allowance' function with sender_id & allowance
     //     let allowance_in_gas: u64 = u64::MAX;
-    //     set_account_and_allowance_in_redis(/* &r2d2::Pool<r2d2_redis::RedisConnectionManager> */, &sender_id, &allowance_in_gas)
-    //         .await
-    //         .expect("Failed to update account and allowance in redis");
+    //     set_account_and_allowance_in_redis(
+    //         &create_test_redis_pool().await,
+    //         &sender_id,
+    //         &allowance_in_gas,
+    //     )
+    //     .await
+    //     .expect("Failed to update account and allowance in redis");
     //
     //     // Call the `/send_meta_tx` function happy path
     //     let signed_delegate_action = create_empty_signed_delegate_action(
@@ -1898,7 +1902,9 @@ mod tests {
     //     );
     //     let json_payload = Json(signed_delegate_action);
     //     println!("SignedDelegateAction Json Serialized (no borsh): {json_payload:?}");
-    //     let response: Response = send_meta_tx(json_payload).await.into_response();
+    //     let app_state = create_test_app_state_no_shared_storage().await;
+    //     // TODO mock the State<Arc<AppState>>
+    //     let response: Response = send_meta_tx(app_state, json_payload).await.into_response();
     //     let response_status: StatusCode = response.status();
     //     let body: BoxBody = response.into_body();
     //     let body_str: String = read_body_to_string(body).await.unwrap();
@@ -1927,7 +1933,10 @@ mod tests {
     //     println!(
     //         "SignedDelegateAction Json Serialized (no borsh) receiver_id not in whitelist: {non_whitelist_json_payload:?}"
     //     );
-    //     let err_response = send_meta_tx(non_whitelist_json_payload)
+    //     let app_state = create_test_app_state_no_shared_storage().await;
+    //     // TODO mock the State<Arc<AppState>>
+    //     let app_state: State<Arc<AppState>> = State::new(Arc::new(app_state));
+    //     let err_response = send_meta_tx(app_state, non_whitelist_json_payload)
     //         .await
     //         .into_response();
     //     let err_response_status = err_response.status();
@@ -1938,63 +1947,6 @@ mod tests {
     //         err_response_status == StatusCode::BAD_REQUEST
     //             || err_response_status == StatusCode::INTERNAL_SERVER_ERROR
     //     );
-    // }
-    //
-    // #[tokio::test]
-    // #[ignore]
-    // async fn test_relay_with_load() {
-    //     // tests assume testnet in config
-    //     // Test Transfer Action
-    //
-    //     let actions = vec![Action::Transfer(TransferAction { deposit: 1 })];
-    //     let account_id0: String = "nomnomnom.testnet".to_string();
-    //     let account_id1: String = "relayer_test0.testnet".to_string();
-    //     let mut sender_id: String = String::new();
-    //     let mut receiver_id: String = String::new();
-    //     let mut nonce: i32 = 1;
-    //     let max_block_height = 2_000_000_000;
-    //
-    //     let num_tests = 100;
-    //     let mut response_statuses = vec![];
-    //     let mut response_bodies = vec![];
-    //
-    //     // fire off all post requests in rapid succession and save the response status codes
-    //     for i in 0..num_tests {
-    //         if i % 2 == 0 {
-    //             sender_id.push_str(&account_id0);
-    //             receiver_id.push_str(&account_id1);
-    //         } else {
-    //             sender_id.push_str(&account_id1);
-    //             receiver_id.push_str(&account_id0);
-    //         }
-    //         // Call the `relay` function happy path
-    //         let signed_delegate_action = create_empty_signed_delegate_action(
-    //             sender_id.clone(),
-    //             receiver_id.clone(),
-    //             actions.clone(),
-    //             nonce,
-    //             max_block_height,
-    //         );
-    //         let json_payload = signed_delegate_action.try_to_vec().unwrap();
-    //         let response = relay(Json(json_payload)).await.into_response();
-    //         response_statuses.push(response.status());
-    //         let body: BoxBody = response.into_body();
-    //         let body_str: String = read_body_to_string(body).await.unwrap();
-    //         response_bodies.push(body_str);
-    //
-    //         // increment nonce & reset sender, receiver strs
-    //         nonce += 1;
-    //         sender_id.clear();
-    //         receiver_id.clear();
-    //     }
-    //
-    //     // all responses should be successful
-    //     for i in 0..response_statuses.len() {
-    //         let response_status = response_statuses[i];
-    //         println!("{response_status}");
-    //         println!("{}", response_bodies[i]);
-    //         assert_eq!(response_status, StatusCode::OK);
-    //     }
     // }
 
     /// Not actually a unit test, just a tests or helper fns for specific functionality
