@@ -1419,7 +1419,6 @@ fn validate_signed_delegate_action(
     }
 }
 
-// TODO refactor out common filtering code
 async fn filter_and_send_signed_delegate_action_async<F>(
     state: &AppState,
     signed_delegate_action: SignedDelegateAction,
@@ -1435,9 +1434,7 @@ where
 
     let validation_result: Result<(), RelayError> =
         validate_signed_delegate_action(state, &signed_delegate_action);
-    if let Err(err) = validation_result {
-        return Err(err);
-    }
+    validation_result?;
 
     let receiver_id: &AccountId = &signed_delegate_action.delegate_action.receiver_id;
     let actions: Vec<Action> = vec![Action::Delegate(signed_delegate_action.clone())];
@@ -1454,7 +1451,7 @@ where
             }
         })?;
 
-    // TODO we have no idea how much gas is being burnt in this txn - can't use async with redis
+    // TODO we have no idea how much gas is being burnt in this txn - shouldn't use async with redis
 
     Ok(txn_hash.to_string())
 }
@@ -1474,9 +1471,7 @@ where
 
     let validation_result: Result<(), RelayError> =
         validate_signed_delegate_action(state, &signed_delegate_action);
-    if let Err(err) = validation_result {
-        return Err(err);
-    }
+    validation_result?;
 
     let signer_account_id: &AccountId = &signed_delegate_action.delegate_action.sender_id;
     let receiver_id: &AccountId = &signed_delegate_action.delegate_action.receiver_id;
@@ -1667,4 +1662,367 @@ pub async fn update_all_allowances_in_redis(
     let success_msg: String = format!("Updated {num_keys:?} keys in Relayer DB");
     info!("{success_msg}");
     Ok(success_msg)
+}
+
+/* -------------------------------------- UNIT TESTS --------------------------------------
+===========================================================================================
+*/
+
+#[cfg(test)]
+mod tests {
+    use crate::{
+        create_redis_pool, get_redis_cnxn, update_all_allowances_in_redis,
+        validate_signed_delegate_action, AppState, RelayerConfiguration,
+    };
+    use axum::{
+        extract::{Json, State},
+        http::StatusCode,
+        response::IntoResponse,
+        routing::{get, post},
+        Router,
+    };
+    use config::{Config, File as ConfigFile};
+    use near_crypto::{InMemorySigner, KeyType, PublicKey, Signature, Signer};
+    use near_fetch::signer::{ExposeAccountId, KeyRotatingSigner, SignerExt};
+    use near_primitives::account::AccessKey;
+    use near_primitives::delegate_action::{
+        DelegateAction, NonDelegateAction, SignedDelegateAction,
+    };
+    use near_primitives::transaction::{
+        Action, AddKeyAction, FunctionCallAction, Transaction, TransferAction,
+    };
+    use near_primitives::types::Balance;
+    use near_primitives::views::ActionView::AddKey;
+    use near_primitives::views::{
+        ExecutionOutcomeWithIdView, FinalExecutionOutcomeView, FinalExecutionStatus,
+    };
+    use near_primitives::{borsh::BorshDeserialize, transaction::CreateAccountAction};
+    use r2d2::{Pool, PooledConnection};
+    use r2d2_redis::redis::{Commands, ErrorKind::IoError, RedisError};
+    use r2d2_redis::RedisConnectionManager;
+    use serde_json::{json, Value};
+    use std::fmt::{Debug, Display, Formatter};
+    use std::path::{Path, PathBuf};
+    use std::{net::SocketAddr, sync::Arc};
+    use tracing::{debug, error, info, instrument, warn};
+    use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
+    use utoipa::{OpenApi, ToSchema};
+
+    /// Helper function to create a test Redis pool
+    async fn create_test_redis_pool() -> Pool<RedisConnectionManager> {
+        let manager = RedisConnectionManager::new("redis://127.0.0.1:6379").unwrap();
+        Pool::builder().build(manager).unwrap()
+    }
+
+    /// Helper function to create a test AppState
+    async fn create_test_app_state_no_shared_storage() -> AppState {
+        let config = RelayerConfiguration::default();
+        let rpc_client = Arc::new(config.network_config.rpc_client());
+        let rpc_client_nofetch = Arc::new(config.network_config.raw_rpc_client());
+        let redis_pool = Some(create_test_redis_pool().await);
+
+        AppState {
+            config,
+            rpc_client,
+            rpc_client_nofetch,
+            shared_storage_pool: None,
+            redis_pool,
+        }
+    }
+
+    /// Helper function to create a test SignedDelegateAction
+    /// TODO add params like create_empty_signed_delegate_action fn
+    fn create_test_signed_delegate_action() -> SignedDelegateAction {
+        let seed: String =
+            "nuclear egg couch off antique brave cake wrap orchard snake prosper one".to_string();
+        let sender_account_id: AccountId = "relayer_test0.testnet".parse().unwrap();
+        let public_key = PublicKey::from_seed(ED25519, &seed.clone());
+        let signer = InMemorySigner::from_seed(sender_account_id.clone(), ED25519, &seed.clone());
+
+        let actions_transfer = vec![Action::Transfer(TransferAction {
+            deposit: 0.00000001 as Balance,
+        })];
+
+        let delegate_action = DelegateAction {
+            sender_id: sender_account_id.clone(),
+            receiver_id: "relayer_test1.testnet".parse().unwrap(),
+            actions: actions_transfer
+                .into_iter()
+                .map(|a| NonDelegateAction::try_from(a).unwrap())
+                .collect(),
+            nonce: 1 as Nonce,
+            max_block_height: 2000000000 as BlockHeight,
+            public_key,
+        };
+
+        let signature = signer.sign(&delegate_action.try_to_vec().unwrap());
+
+        SignedDelegateAction {
+            delegate_action,
+            signature,
+        }
+    }
+
+    #[tokio::test]
+    /// Tests that validate_signed_delegate_action returns Ok when no whitelisting is used
+    async fn test_validate_signed_delegate_action_no_whitelisting() {
+        let app_state = create_test_app_state_no_shared_storage().await;
+        let signed_delegate_action = create_test_signed_delegate_action();
+
+        let result = validate_signed_delegate_action(&app_state, &signed_delegate_action);
+
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    /// Tests that validate_signed_delegate_action returns an error when the receiver is not whitelisted
+    async fn test_validate_signed_delegate_action_receiver_not_whitelisted() {
+        let mut app_state = create_test_app_state_no_shared_storage().await;
+        app_state.config.use_whitelisted_contracts = true;
+        let signed_delegate_action = create_test_signed_delegate_action();
+
+        let result = validate_signed_delegate_action(&app_state, &signed_delegate_action);
+
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    /// Tests that validate_signed_delegate_action returns an error when the sender is not whitelisted
+    async fn test_validate_signed_delegate_action_sender_not_whitelisted() {
+        let mut app_state = create_test_app_state_no_shared_storage().await;
+        app_state.config.use_whitelisted_senders = true;
+        let signed_delegate_action = create_test_signed_delegate_action();
+
+        let result = validate_signed_delegate_action(&app_state, &signed_delegate_action);
+
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    /// Tests that get_redis_cnxn returns a valid Redis connection
+    async fn test_get_redis_cnxn() {
+        let redis_pool = create_test_redis_pool().await;
+        let result = get_redis_cnxn(&redis_pool).await;
+
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    /// Tests that update_all_allowances_in_redis updates all keys with the provided allowance
+    async fn test_update_all_allowances_in_redis() {
+        let redis_pool = create_test_redis_pool();
+        let allowance_in_gas = 1000000000;
+        let network_env = "testnet";
+
+        let result =
+            update_all_allowances_in_redis(&redis_pool.await, network_env, allowance_in_gas).await;
+
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    /// Tests that create_redis_pool creates a valid Redis pool
+    fn test_create_redis_pool() {
+        let config = RelayerConfiguration::default();
+        let redis_pool = create_redis_pool(&config);
+
+        assert!(redis_pool.get().is_ok());
+    }
+
+    // TODO Add more tests for other relevant functions here...
+
+    use axum::body::{BoxBody, HttpBody};
+    use axum::response::Response;
+    use base64::{engine::general_purpose::URL_SAFE_NO_PAD as BASE64_ENGINE, Engine};
+    use bytes::BytesMut;
+    use near_crypto::KeyType::ED25519;
+    use near_primitives::{
+        borsh::BorshSerialize,
+        types::{BlockHeight, Nonce},
+    };
+
+    use super::*;
+
+    fn create_empty_signed_delegate_action(
+        sender_id: String,
+        receiver_id: String,
+        actions: Vec<Action>,
+        nonce: i32,
+        max_block_height: i32,
+    ) -> SignedDelegateAction {
+        let max_block_height: i32 = max_block_height;
+        let public_key: PublicKey = PublicKey::empty(KeyType::ED25519);
+        let signature: Signature = Signature::empty(KeyType::ED25519);
+        SignedDelegateAction {
+            delegate_action: DelegateAction {
+                sender_id: sender_id.parse().unwrap(),
+                receiver_id: receiver_id.parse().unwrap(),
+                actions: actions
+                    .into_iter()
+                    .map(|a| NonDelegateAction::try_from(a).unwrap())
+                    .collect(),
+                nonce: nonce as Nonce,
+                max_block_height: max_block_height as BlockHeight,
+                public_key,
+            },
+            signature,
+        }
+    }
+
+    // TODO update with AppState
+    // #[tokio::test]
+    // // NOTE: uncomment ignore locally to run test bc redis doesn't work in github action build env
+    // #[ignore]
+    // async fn test_send_meta_tx() {
+    //     // tests assume testnet in config
+    //     // Test Transfer Action
+    //     let actions = vec![Action::Transfer(TransferAction { deposit: 1 })];
+    //     let sender_id: String = String::from("relayer_test0.testnet");
+    //     let receiver_id: String = String::from("relayer_test1.testnet");
+    //     let nonce: i32 = 1;
+    //     let max_block_height = 2_000_000_000;
+    //
+    //     // simulate calling the '/update_allowance' function with sender_id & allowance
+    //     let allowance_in_gas: u64 = u64::MAX;
+    //     set_account_and_allowance_in_redis(/* &r2d2::Pool<r2d2_redis::RedisConnectionManager> */, &sender_id, &allowance_in_gas)
+    //         .await
+    //         .expect("Failed to update account and allowance in redis");
+    //
+    //     // Call the `/send_meta_tx` function happy path
+    //     let signed_delegate_action = create_empty_signed_delegate_action(
+    //         sender_id.clone(),
+    //         receiver_id.clone(),
+    //         actions.clone(),
+    //         nonce,
+    //         max_block_height,
+    //     );
+    //     let json_payload = Json(signed_delegate_action);
+    //     println!("SignedDelegateAction Json Serialized (no borsh): {json_payload:?}");
+    //     let response: Response = send_meta_tx(json_payload).await.into_response();
+    //     let response_status: StatusCode = response.status();
+    //     let body: BoxBody = response.into_body();
+    //     let body_str: String = read_body_to_string(body).await.unwrap();
+    //     println!("Response body: {body_str:?}");
+    //     assert_eq!(response_status, StatusCode::OK);
+    // }
+    //
+    // #[tokio::test]
+    // async fn test_send_meta_tx_no_gas_allowance() {
+    //     let actions = vec![Action::Transfer(TransferAction { deposit: 1 })];
+    //     let sender_id: String = String::from("relayer_test0.testnet");
+    //     let receiver_id: String = String::from("arrr_me_not_in_whitelist");
+    //     let nonce: i32 = 54321;
+    //     let max_block_height = 2_000_000_123;
+    //
+    //     // Call the `send_meta_tx` function with a sender that has no gas allowance
+    //     // (and a receiver_id that isn't in whitelist)
+    //     let sda2 = create_empty_signed_delegate_action(
+    //         sender_id.clone(),
+    //         receiver_id.clone(),
+    //         actions.clone(),
+    //         nonce,
+    //         max_block_height,
+    //     );
+    //     let non_whitelist_json_payload = Json(sda2);
+    //     println!(
+    //         "SignedDelegateAction Json Serialized (no borsh) receiver_id not in whitelist: {non_whitelist_json_payload:?}"
+    //     );
+    //     let err_response = send_meta_tx(non_whitelist_json_payload)
+    //         .await
+    //         .into_response();
+    //     let err_response_status = err_response.status();
+    //     let body: BoxBody = err_response.into_body();
+    //     let body_str: String = read_body_to_string(body).await.unwrap();
+    //     println!("Response body: {body_str:?}");
+    //     assert!(
+    //         err_response_status == StatusCode::BAD_REQUEST
+    //             || err_response_status == StatusCode::INTERNAL_SERVER_ERROR
+    //     );
+    // }
+    //
+    // #[tokio::test]
+    // #[ignore]
+    // async fn test_relay_with_load() {
+    //     // tests assume testnet in config
+    //     // Test Transfer Action
+    //
+    //     let actions = vec![Action::Transfer(TransferAction { deposit: 1 })];
+    //     let account_id0: String = "nomnomnom.testnet".to_string();
+    //     let account_id1: String = "relayer_test0.testnet".to_string();
+    //     let mut sender_id: String = String::new();
+    //     let mut receiver_id: String = String::new();
+    //     let mut nonce: i32 = 1;
+    //     let max_block_height = 2_000_000_000;
+    //
+    //     let num_tests = 100;
+    //     let mut response_statuses = vec![];
+    //     let mut response_bodies = vec![];
+    //
+    //     // fire off all post requests in rapid succession and save the response status codes
+    //     for i in 0..num_tests {
+    //         if i % 2 == 0 {
+    //             sender_id.push_str(&account_id0);
+    //             receiver_id.push_str(&account_id1);
+    //         } else {
+    //             sender_id.push_str(&account_id1);
+    //             receiver_id.push_str(&account_id0);
+    //         }
+    //         // Call the `relay` function happy path
+    //         let signed_delegate_action = create_empty_signed_delegate_action(
+    //             sender_id.clone(),
+    //             receiver_id.clone(),
+    //             actions.clone(),
+    //             nonce,
+    //             max_block_height,
+    //         );
+    //         let json_payload = signed_delegate_action.try_to_vec().unwrap();
+    //         let response = relay(Json(json_payload)).await.into_response();
+    //         response_statuses.push(response.status());
+    //         let body: BoxBody = response.into_body();
+    //         let body_str: String = read_body_to_string(body).await.unwrap();
+    //         response_bodies.push(body_str);
+    //
+    //         // increment nonce & reset sender, receiver strs
+    //         nonce += 1;
+    //         sender_id.clear();
+    //         receiver_id.clear();
+    //     }
+    //
+    //     // all responses should be successful
+    //     for i in 0..response_statuses.len() {
+    //         let response_status = response_statuses[i];
+    //         println!("{response_status}");
+    //         println!("{}", response_bodies[i]);
+    //         assert_eq!(response_status, StatusCode::OK);
+    //     }
+    // }
+
+    /// Not actually a unit test, just a tests or helper fns for specific functionality
+    #[cfg(test)]
+    async fn read_body_to_string(
+        mut body: BoxBody,
+    ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
+        // helper fn to convert the awful BoxBody dtype into a String so I can view the darn msg
+        let mut bytes = BytesMut::new();
+        while let Some(chunk) = body.data().await {
+            bytes.extend_from_slice(&chunk?);
+        }
+        Ok(String::from_utf8(bytes.to_vec())?)
+    }
+
+    #[tokio::test]
+    async fn test_base64_encode_args() {
+        // NOTE this is how you encode the "args" in a function call
+        // replace with your own "args" to base64 encode
+        let ft_transfer_args_json = json!(
+            {"receiver_id":"guest-book.testnet","amount":"10"}
+        );
+        let add_message_args_json = json!(
+            {"text":"funny_joke"}
+        );
+        let ft_transfer_args_b64 = BASE64_ENGINE.encode(ft_transfer_args_json.to_string());
+        let add_message_args_b64 = BASE64_ENGINE.encode(add_message_args_json.to_string());
+        println!("ft_transfer_args_b64: {ft_transfer_args_b64}");
+        println!("add_message_args_b64: {add_message_args_b64}");
+    }
 }
