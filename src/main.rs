@@ -1730,6 +1730,7 @@ mod tests {
         use_whitelisted_senders: bool,
         whitelisted_contracts: Option<Vec<String>>,
         whitelisted_senders: Option<Vec<String>>,
+        use_exchange: bool,
     ) -> AppState {
         let mut config = RelayerConfiguration::default();
         config.use_whitelisted_contracts = use_whitelisted_contracts;
@@ -1812,7 +1813,7 @@ mod tests {
     #[tokio::test]
     /// Tests that validate_signed_delegate_action returns Ok when no whitelisting is used
     async fn test_validate_signed_delegate_action_no_whitelisting() {
-        let app_state = create_app_state(false, false, None, None).await;
+        let app_state = create_app_state(false, false, None, None, false).await;
         let signed_delegate_action = create_signed_delegate_action(None, None, None);
 
         let result = validate_signed_delegate_action(&app_state, &signed_delegate_action);
@@ -1823,7 +1824,7 @@ mod tests {
     #[tokio::test]
     /// Tests that validate_signed_delegate_action returns an error when the receiver is not whitelisted
     async fn test_validate_signed_delegate_action_receiver_not_whitelisted() {
-        let mut app_state = create_app_state(true, false, None, None).await;
+        let mut app_state = create_app_state(true, false, None, None, false).await;
         app_state.config.use_whitelisted_contracts = true;
         let signed_delegate_action = create_signed_delegate_action(None, None, None);
 
@@ -1835,7 +1836,7 @@ mod tests {
     #[tokio::test]
     /// Tests that validate_signed_delegate_action returns an error when the sender is not whitelisted
     async fn test_validate_signed_delegate_action_sender_not_whitelisted() {
-        let mut app_state = create_app_state(false, true, None, None).await;
+        let mut app_state = create_app_state(false, true, None, None, false).await;
         app_state.config.use_whitelisted_senders = true;
         let signed_delegate_action = create_signed_delegate_action(None, None, None);
 
@@ -1852,6 +1853,7 @@ mod tests {
             true,
             Some(vec!["relayer_test1.testnet".to_string()]),
             Some(vec!["relayer_test0.testnet".to_string()]),
+            false,
         )
         .await;
         let sda = create_signed_delegate_action(
@@ -1864,22 +1866,34 @@ mod tests {
         assert!(validate_signed_delegate_action(&state, &sda).is_ok());
     }
 
-    // #[tokio::test]
-    // /// Tests that validate_signed_delegate_action fails when the invalid method name is provided + use_exchange
-    // async fn test_validation_fails_for_invalid_method_name() {
-    //     let state = create_app_state(false, false, None, None);
-    //     let action = create_signed_delegate_action(
-    //         None,
-    //         None,
-    //         Some(vec![Action::FunctionCall(FunctionCallAction {
-    //             method_name: "invalid_method".to_string(),
-    //             "args: vec!["eyJyZWNlaXZlcl9pZCI6IjI4M2ZmZTM5NDY2YjE0NzhjYzJhODM1ZTYxN2NmZGUyYjBjNGQ4ZWZhZDNkNzkxYmQ0NDZhODI3ODkyMGI1ZDIiLCJhbW91bnQiOiIxMDAwMCJ9".to_string()],
-    //             gas: 30000000000000,
-    //             deposit: 1,
-    //         })]),
-    //     );
-    //     assert!(validate_signed_delegate_action(&state, &action).is_err());
-    // }
+    #[tokio::test]
+    /// Tests that validate_signed_delegate_action fails when the invalid method name is provided
+    /// use_exchange, use_whitelisted_senders are both true
+    async fn test_validation_fails_for_invalid_method_name_use_exchange() {
+        let state = create_app_state(false, true, None, None, true).await;
+        let action = create_signed_delegate_action(
+            None,
+            None,
+            Some(vec![Action::FunctionCall(FunctionCallAction {
+                method_name: "invalid_method".to_string(),
+                args: vec![],
+                gas: 30000000000000,
+                deposit: 1,
+            })]),
+        );
+        assert!(validate_signed_delegate_action(&state, &action).is_err());
+    }
+
+    #[tokio::test]
+    /// Tests that validate_signed_delegate_action fails when the invalid action type is provided
+    /// use_exchange, use_whitelisted_senders are both true
+    async fn test_validation_fails_for_disallowed_action_type_exchange() {
+        let state = create_app_state(false, true, None, None, true).await;
+        let action = create_signed_delegate_action(
+            None, None, None, // default action type is transfer, which is not allowed
+        );
+        assert!(validate_signed_delegate_action(&state, &action).is_err());
+    }
 
     #[tokio::test]
     /// Tests that get_redis_cnxn returns a valid Redis connection
@@ -1972,7 +1986,7 @@ mod tests {
         );
         let json_payload = Json(signed_delegate_action);
         println!("SignedDelegateAction Json Serialized (no borsh): {json_payload:?}");
-        let app_state = create_app_state(false, false, None, None).await;
+        let app_state = create_app_state(false, false, None, None, false).await;
         let axum_state: State<Arc<AppState>> = convert_app_state_to_arc_app_state(app_state);
         let response: Response = send_meta_tx(axum_state, json_payload).await.into_response();
         let response_status: StatusCode = response.status();
@@ -2003,7 +2017,7 @@ mod tests {
         println!(
             "SignedDelegateAction Json Serialized (no borsh) receiver_id not in whitelist: {non_whitelist_json_payload:?}"
         );
-        let app_state = create_app_state(false, false, None, None).await;
+        let app_state = create_app_state(false, false, None, None, false).await;
         let axum_state: State<Arc<AppState>> = convert_app_state_to_arc_app_state(app_state);
         let err_response = send_meta_tx(axum_state, non_whitelist_json_payload)
             .await
