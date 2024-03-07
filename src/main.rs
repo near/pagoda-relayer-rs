@@ -1670,21 +1670,27 @@ pub async fn update_all_allowances_in_redis(
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
     use crate::{
         create_redis_pool, get_redis_cnxn, update_all_allowances_in_redis,
         validate_signed_delegate_action, AppState, RelayerConfiguration,
     };
+
+    use axum::body::{BoxBody, HttpBody};
+    use axum::response::Response;
     use axum::{
         extract::{Json, State},
         http::StatusCode,
-        response::IntoResponse,
         routing::{get, post},
         Router,
     };
+    use base64::{engine::general_purpose::URL_SAFE_NO_PAD as BASE64_ENGINE, Engine};
+    use bytes::BytesMut;
     use config::{Config, File as ConfigFile};
+    use near_crypto::KeyType::ED25519;
     use near_crypto::{InMemorySigner, KeyType, PublicKey, Signature, Signer};
     use near_fetch::signer::{ExposeAccountId, KeyRotatingSigner, SignerExt};
-    use near_primitives::account::AccessKey;
     use near_primitives::delegate_action::{
         DelegateAction, NonDelegateAction, SignedDelegateAction,
     };
@@ -1697,6 +1703,10 @@ mod tests {
         ExecutionOutcomeWithIdView, FinalExecutionOutcomeView, FinalExecutionStatus,
     };
     use near_primitives::{borsh::BorshDeserialize, transaction::CreateAccountAction};
+    use near_primitives::{
+        borsh::BorshSerialize,
+        types::{BlockHeight, Nonce},
+    };
     use r2d2::{Pool, PooledConnection};
     use r2d2_redis::redis::{Commands, ErrorKind::IoError, RedisError};
     use r2d2_redis::RedisConnectionManager;
@@ -1715,8 +1725,21 @@ mod tests {
     }
 
     /// Helper function to create a test AppState
-    async fn create_test_app_state_no_shared_storage() -> AppState {
-        let config = RelayerConfiguration::default();
+    async fn create_app_state(
+        use_whitelisted_contracts: bool,
+        use_whitelisted_senders: bool,
+        whitelisted_contracts: Option<Vec<String>>,
+        whitelisted_senders: Option<Vec<String>>,
+    ) -> AppState {
+        let mut config = RelayerConfiguration::default();
+        config.use_whitelisted_contracts = use_whitelisted_contracts;
+        config.use_whitelisted_senders = use_whitelisted_senders;
+        if whitelisted_contracts.is_some() {
+            config.whitelisted_contracts = whitelisted_contracts.unwrap();
+        }
+        if whitelisted_senders.is_some() {
+            config.whitelisted_senders = whitelisted_senders.unwrap();
+        }
         let rpc_client = Arc::new(config.network_config.rpc_client());
         let rpc_client_nofetch = Arc::new(config.network_config.raw_rpc_client());
         let redis_pool = Some(create_test_redis_pool().await);
@@ -1731,29 +1754,45 @@ mod tests {
     }
 
     /// Helper function to create a test Arc State.
-    /// Complementary to create_test_app_state_no_shared_storage fn
+    /// Complementary to create_app_state fn
     fn convert_app_state_to_arc_app_state(app_state: AppState) -> State<Arc<AppState>> {
         let shared_state = Arc::new(app_state);
         State(shared_state.clone())
     }
 
     /// Helper function to create a test SignedDelegateAction
-    /// TODO add params like create_empty_signed_delegate_action fn
-    fn create_test_signed_delegate_action() -> SignedDelegateAction {
+    fn create_signed_delegate_action(
+        sender_id: Option<&str>,
+        receiver_id: Option<&str>,
+        actions: Option<Vec<Action>>,
+    ) -> SignedDelegateAction {
+        // dw, it's just a testnet account
         let seed: String =
             "nuclear egg couch off antique brave cake wrap orchard snake prosper one".to_string();
-        let sender_account_id: AccountId = "relayer_test0.testnet".parse().unwrap();
+        let mut sender_account_id: AccountId = "relayer_test0.testnet".parse().unwrap();
         let public_key = PublicKey::from_seed(ED25519, &seed.clone());
         let signer = InMemorySigner::from_seed(sender_account_id.clone(), ED25519, &seed.clone());
 
-        let actions_transfer = vec![Action::Transfer(TransferAction {
+        let mut receiver_account_id: AccountId = "relayer_test1.testnet".parse().unwrap();
+
+        let mut actions_vec = vec![Action::Transfer(TransferAction {
             deposit: 0.00000001 as Balance,
         })];
 
+        if sender_id.is_some() {
+            sender_account_id = sender_id.unwrap().parse().unwrap();
+        }
+        if receiver_id.is_some() {
+            receiver_account_id = receiver_id.unwrap().parse().unwrap();
+        }
+        if actions.is_some() {
+            actions_vec = actions.unwrap();
+        }
+
         let delegate_action = DelegateAction {
             sender_id: sender_account_id.clone(),
-            receiver_id: "relayer_test1.testnet".parse().unwrap(),
-            actions: actions_transfer
+            receiver_id: receiver_account_id,
+            actions: actions_vec
                 .into_iter()
                 .map(|a| NonDelegateAction::try_from(a).unwrap())
                 .collect(),
@@ -1773,8 +1812,8 @@ mod tests {
     #[tokio::test]
     /// Tests that validate_signed_delegate_action returns Ok when no whitelisting is used
     async fn test_validate_signed_delegate_action_no_whitelisting() {
-        let app_state = create_test_app_state_no_shared_storage().await;
-        let signed_delegate_action = create_test_signed_delegate_action();
+        let app_state = create_app_state(false, false, None, None).await;
+        let signed_delegate_action = create_signed_delegate_action(None, None, None);
 
         let result = validate_signed_delegate_action(&app_state, &signed_delegate_action);
 
@@ -1784,9 +1823,9 @@ mod tests {
     #[tokio::test]
     /// Tests that validate_signed_delegate_action returns an error when the receiver is not whitelisted
     async fn test_validate_signed_delegate_action_receiver_not_whitelisted() {
-        let mut app_state = create_test_app_state_no_shared_storage().await;
+        let mut app_state = create_app_state(true, false, None, None).await;
         app_state.config.use_whitelisted_contracts = true;
-        let signed_delegate_action = create_test_signed_delegate_action();
+        let signed_delegate_action = create_signed_delegate_action(None, None, None);
 
         let result = validate_signed_delegate_action(&app_state, &signed_delegate_action);
 
@@ -1796,14 +1835,51 @@ mod tests {
     #[tokio::test]
     /// Tests that validate_signed_delegate_action returns an error when the sender is not whitelisted
     async fn test_validate_signed_delegate_action_sender_not_whitelisted() {
-        let mut app_state = create_test_app_state_no_shared_storage().await;
+        let mut app_state = create_app_state(false, true, None, None).await;
         app_state.config.use_whitelisted_senders = true;
-        let signed_delegate_action = create_test_signed_delegate_action();
+        let signed_delegate_action = create_signed_delegate_action(None, None, None);
 
         let result = validate_signed_delegate_action(&app_state, &signed_delegate_action);
 
         assert!(result.is_err());
     }
+
+    #[tokio::test]
+    /// Tests that validate_signed_delegate_action returns success when the sender + receiver are whitelisted
+    async fn test_validation_with_whitelisted_contracts_and_sender() {
+        let state = create_app_state(
+            true,
+            true,
+            Some(vec!["relayer_test1.testnet".to_string()]),
+            Some(vec!["relayer_test0.testnet".to_string()]),
+        )
+        .await;
+        let sda = create_signed_delegate_action(
+            Some("relayer_test0.testnet"),
+            Some("relayer_test1.testnet"),
+            Some(vec![Action::Transfer(TransferAction {
+                deposit: 0.00000001 as Balance,
+            })]),
+        );
+        assert!(validate_signed_delegate_action(&state, &sda).is_ok());
+    }
+
+    // #[tokio::test]
+    // /// Tests that validate_signed_delegate_action fails when the invalid method name is provided + use_exchange
+    // async fn test_validation_fails_for_invalid_method_name() {
+    //     let state = create_app_state(false, false, None, None);
+    //     let action = create_signed_delegate_action(
+    //         None,
+    //         None,
+    //         Some(vec![Action::FunctionCall(FunctionCallAction {
+    //             method_name: "invalid_method".to_string(),
+    //             "args: vec!["eyJyZWNlaXZlcl9pZCI6IjI4M2ZmZTM5NDY2YjE0NzhjYzJhODM1ZTYxN2NmZGUyYjBjNGQ4ZWZhZDNkNzkxYmQ0NDZhODI3ODkyMGI1ZDIiLCJhbW91bnQiOiIxMDAwMCJ9".to_string()],
+    //             gas: 30000000000000,
+    //             deposit: 1,
+    //         })]),
+    //     );
+    //     assert!(validate_signed_delegate_action(&state, &action).is_err());
+    // }
 
     #[tokio::test]
     /// Tests that get_redis_cnxn returns a valid Redis connection
@@ -1837,18 +1913,6 @@ mod tests {
     }
 
     // TODO Add more tests for other relevant functions here...
-
-    use axum::body::{BoxBody, HttpBody};
-    use axum::response::Response;
-    use base64::{engine::general_purpose::URL_SAFE_NO_PAD as BASE64_ENGINE, Engine};
-    use bytes::BytesMut;
-    use near_crypto::KeyType::ED25519;
-    use near_primitives::{
-        borsh::BorshSerialize,
-        types::{BlockHeight, Nonce},
-    };
-
-    use super::*;
 
     fn create_empty_signed_delegate_action(
         sender_id: String,
@@ -1908,7 +1972,7 @@ mod tests {
         );
         let json_payload = Json(signed_delegate_action);
         println!("SignedDelegateAction Json Serialized (no borsh): {json_payload:?}");
-        let app_state = create_test_app_state_no_shared_storage().await;
+        let app_state = create_app_state(false, false, None, None).await;
         let axum_state: State<Arc<AppState>> = convert_app_state_to_arc_app_state(app_state);
         let response: Response = send_meta_tx(axum_state, json_payload).await.into_response();
         let response_status: StatusCode = response.status();
@@ -1939,7 +2003,7 @@ mod tests {
         println!(
             "SignedDelegateAction Json Serialized (no borsh) receiver_id not in whitelist: {non_whitelist_json_payload:?}"
         );
-        let app_state = create_test_app_state_no_shared_storage().await;
+        let app_state = create_app_state(false, false, None, None).await;
         let axum_state: State<Arc<AppState>> = convert_app_state_to_arc_app_state(app_state);
         let err_response = send_meta_tx(axum_state, non_whitelist_json_payload)
             .await
@@ -1954,7 +2018,7 @@ mod tests {
         );
     }
 
-    /// Not actually a unit test, just a tests or helper fns for specific functionality
+    /// Not actually a unit test of a specific fn, just tests or helper fns for specific functionality
     #[cfg(test)]
     async fn read_body_to_string(
         mut body: BoxBody,
