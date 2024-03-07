@@ -1730,6 +1730,13 @@ mod tests {
         }
     }
 
+    /// Helper function to create a test Arc State.
+    /// Complementary to create_test_app_state_no_shared_storage fn
+    fn convert_app_state_to_arc_app_state(app_state: AppState) -> State<Arc<AppState>> {
+        let shared_state = Arc::new(app_state);
+        State(shared_state.clone())
+    }
+
     /// Helper function to create a test SignedDelegateAction
     /// TODO add params like create_empty_signed_delegate_action fn
     fn create_test_signed_delegate_action() -> SignedDelegateAction {
@@ -1869,85 +1876,83 @@ mod tests {
         }
     }
 
-    // TODO update with Mocked AppState
-    // #[tokio::test]
-    // // NOTE: uncomment ignore locally to run test bc redis doesn't work in github action build env
-    // #[ignore]
-    // async fn test_send_meta_tx() {
-    //     // tests assume testnet in config
-    //     // Test Transfer Action
-    //     let actions = vec![Action::Transfer(TransferAction { deposit: 1 })];
-    //     let sender_id: String = String::from("relayer_test0.testnet");
-    //     let receiver_id: String = String::from("relayer_test1.testnet");
-    //     let nonce: i32 = 1;
-    //     let max_block_height = 2_000_000_000;
-    //
-    //     // simulate calling the '/update_allowance' function with sender_id & allowance
-    //     let allowance_in_gas: u64 = u64::MAX;
-    //     set_account_and_allowance_in_redis(
-    //         &create_test_redis_pool().await,
-    //         &sender_id,
-    //         &allowance_in_gas,
-    //     )
-    //     .await
-    //     .expect("Failed to update account and allowance in redis");
-    //
-    //     // Call the `/send_meta_tx` function happy path
-    //     let signed_delegate_action = create_empty_signed_delegate_action(
-    //         sender_id.clone(),
-    //         receiver_id.clone(),
-    //         actions.clone(),
-    //         nonce,
-    //         max_block_height,
-    //     );
-    //     let json_payload = Json(signed_delegate_action);
-    //     println!("SignedDelegateAction Json Serialized (no borsh): {json_payload:?}");
-    //     let app_state = create_test_app_state_no_shared_storage().await;
-    //     // TODO mock the State<Arc<AppState>>
-    //     let response: Response = send_meta_tx(app_state, json_payload).await.into_response();
-    //     let response_status: StatusCode = response.status();
-    //     let body: BoxBody = response.into_body();
-    //     let body_str: String = read_body_to_string(body).await.unwrap();
-    //     println!("Response body: {body_str:?}");
-    //     assert_eq!(response_status, StatusCode::OK);
-    // }
-    //
-    // #[tokio::test]
-    // async fn test_send_meta_tx_no_gas_allowance() {
-    //     let actions = vec![Action::Transfer(TransferAction { deposit: 1 })];
-    //     let sender_id: String = String::from("relayer_test0.testnet");
-    //     let receiver_id: String = String::from("arrr_me_not_in_whitelist");
-    //     let nonce: i32 = 54321;
-    //     let max_block_height = 2_000_000_123;
-    //
-    //     // Call the `send_meta_tx` function with a sender that has no gas allowance
-    //     // (and a receiver_id that isn't in whitelist)
-    //     let sda2 = create_empty_signed_delegate_action(
-    //         sender_id.clone(),
-    //         receiver_id.clone(),
-    //         actions.clone(),
-    //         nonce,
-    //         max_block_height,
-    //     );
-    //     let non_whitelist_json_payload = Json(sda2);
-    //     println!(
-    //         "SignedDelegateAction Json Serialized (no borsh) receiver_id not in whitelist: {non_whitelist_json_payload:?}"
-    //     );
-    //     let app_state = create_test_app_state_no_shared_storage().await;
-    //     // TODO mock the State<Arc<AppState>>
-    //     let app_state: State<Arc<AppState>> = State::new(Arc::new(app_state));
-    //     let err_response = send_meta_tx(app_state, non_whitelist_json_payload)
-    //         .await
-    //         .into_response();
-    //     let err_response_status = err_response.status();
-    //     let body: BoxBody = err_response.into_body();
-    //     let body_str: String = read_body_to_string(body).await.unwrap();
-    //     println!("Response body: {body_str:?}");
-    //     assert!(
-    //         err_response_status == StatusCode::BAD_REQUEST
-    //             || err_response_status == StatusCode::INTERNAL_SERVER_ERROR
-    //     );
-    // }
+    #[tokio::test]
+    // NOTE: uncomment ignore locally to run test bc redis doesn't work in github action build env
+    #[ignore]
+    async fn test_send_meta_tx() {
+        // tests assume testnet in config
+        // Test Transfer Action
+        let actions = vec![Action::Transfer(TransferAction { deposit: 1 })];
+        let sender_id: String = String::from("relayer_test0.testnet");
+        let receiver_id: String = String::from("relayer_test1.testnet");
+        let nonce: i32 = 1;
+        let max_block_height = 2_000_000_000;
+
+        // simulate calling the '/update_allowance' function with sender_id & allowance
+        let allowance_in_gas: u64 = u64::MAX;
+        set_account_and_allowance_in_redis(
+            &create_test_redis_pool().await,
+            &sender_id,
+            &allowance_in_gas,
+        )
+        .await
+        .expect("Failed to update account and allowance in redis");
+
+        // Call the `/send_meta_tx` function happy path
+        let signed_delegate_action = create_empty_signed_delegate_action(
+            sender_id.clone(),
+            receiver_id.clone(),
+            actions.clone(),
+            nonce,
+            max_block_height,
+        );
+        let json_payload = Json(signed_delegate_action);
+        println!("SignedDelegateAction Json Serialized (no borsh): {json_payload:?}");
+        let app_state = create_test_app_state_no_shared_storage().await;
+        let axum_state: State<Arc<AppState>> = convert_app_state_to_arc_app_state(app_state);
+        let response: Response = send_meta_tx(axum_state, json_payload).await.into_response();
+        let response_status: StatusCode = response.status();
+        let body: BoxBody = response.into_body();
+        let body_str: String = read_body_to_string(body).await.unwrap();
+        println!("Response body: {body_str:?}");
+        assert_eq!(response_status, StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn test_send_meta_tx_no_gas_allowance() {
+        let actions = vec![Action::Transfer(TransferAction { deposit: 1 })];
+        let sender_id: String = String::from("relayer_test0.testnet");
+        let receiver_id: String = String::from("arrr_me_not_in_whitelist");
+        let nonce: i32 = 54321;
+        let max_block_height = 2_000_000_123;
+
+        // Call the `send_meta_tx` function with a sender that has no gas allowance
+        // (and a receiver_id that isn't in whitelist)
+        let sda2 = create_empty_signed_delegate_action(
+            sender_id.clone(),
+            receiver_id.clone(),
+            actions.clone(),
+            nonce,
+            max_block_height,
+        );
+        let non_whitelist_json_payload = Json(sda2);
+        println!(
+            "SignedDelegateAction Json Serialized (no borsh) receiver_id not in whitelist: {non_whitelist_json_payload:?}"
+        );
+        let app_state = create_test_app_state_no_shared_storage().await;
+        let axum_state: State<Arc<AppState>> = convert_app_state_to_arc_app_state(app_state);
+        let err_response = send_meta_tx(axum_state, non_whitelist_json_payload)
+            .await
+            .into_response();
+        let err_response_status = err_response.status();
+        let body: BoxBody = err_response.into_body();
+        let body_str: String = read_body_to_string(body).await.unwrap();
+        println!("Response body: {body_str:?}");
+        assert!(
+            err_response_status == StatusCode::BAD_REQUEST
+                || err_response_status == StatusCode::INTERNAL_SERVER_ERROR
+        );
+    }
 
     /// Not actually a unit test, just a tests or helper fns for specific functionality
     #[cfg(test)]
