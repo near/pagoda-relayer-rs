@@ -951,9 +951,9 @@ async fn register_account_and_allowance(
     path = "/relay",
     request_body = Vec<u8>,
     responses(
-    (status = 201, description = "--DEPRECATED--Relayed and sent transaction ...", body = String),
-    (status = 400, description = "--DEPRECATED--Error deserializing payload data object ...", body = String),
-    (status = 500, description = "--DEPRECATED--Error signing transaction: ...", body = String),
+        (status = 201, description = "--DEPRECATED--Relayed and sent transaction ...", body = String),
+        (status = 400, description = "--DEPRECATED--Error deserializing payload data object ...", body = String),
+        (status = 500, description = "--DEPRECATED--Error signing transaction: ...", body = String),
     ),
 )]
 #[instrument]
@@ -979,7 +979,7 @@ async fn relay(State(state): State<Arc<AppState>>, data: Json<Vec<u8>>) -> impl 
     path = "/send_meta_tx",
     request_body = SignedDelegateAction,
     responses(
-        (status = 201, description = "Relayed and sent transaction ...", body = String),
+        (status = 200, description = "Relayed and sent transaction ...", body = String),
         (status = 400, description = "Error deserializing payload data object ...", body = String),
         (status = 500, description = "Error signing transaction: ...", body = String),
     ),
