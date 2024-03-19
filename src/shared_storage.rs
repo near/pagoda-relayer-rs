@@ -1,38 +1,27 @@
-#[cfg(feature = "shared_storage")]
 use anyhow::{anyhow, Context};
-#[cfg(feature = "shared_storage")]
 use near_crypto::InMemorySigner;
-#[cfg(feature = "shared_storage")]
 use near_fetch::Client;
-#[cfg(feature = "shared_storage")]
 use near_primitives::transaction::{Action, FunctionCallAction};
-#[cfg(feature = "shared_storage")]
 use near_primitives::types::{AccountId, Balance, Gas, StorageUsage};
-#[cfg(feature = "shared_storage")]
 use serde::Deserialize;
-#[cfg(feature = "shared_storage")]
+use std::sync::Arc;
 use tracing::debug;
 
 /// Gas for transactions to shared storage pool.
-#[cfg(feature = "shared_storage")]
 const MAX_GAS: Gas = 300_000_000_000_000;
 
 /// Constant set at 1E19 yoctoNEAR per byte on chain.
 // TODO: This is set for reference on chain, and can change with future protocol changes,
 // so best to retrieve chain config later.
-#[cfg(feature = "shared_storage")]
 const STORAGE_PRICE_PER_BYTE: Balance = 10_000_000_000_000_000_000;
 
 /// Minimum deposit required to use the shared storage pool. This will also be the amount
 /// to reup the pool every time. This is set to the minimum that social DB wants of 100N.
-#[cfg(feature = "shared_storage")]
 const STORAGE_UP_DEPOSIT: Balance = 100 * 10u128.pow(24);
 
 /// Default amount of bytes allocated per account. This will not change and is set to 50KB.
-#[cfg(feature = "shared_storage")]
 const BYTES_ALLOCATED_PER_ACCOUNT: u64 = bytes_per_amount(near_units::parse_near!("0.5 N"));
 
-#[cfg(feature = "shared_storage")]
 const fn bytes_per_amount(amount: Balance) -> u64 {
     (amount / STORAGE_PRICE_PER_BYTE) as u64
 }
@@ -40,19 +29,26 @@ const fn bytes_per_amount(amount: Balance) -> u64 {
 /// Shared storage pool manager is used to manage the storage pools in a contract
 /// that implements the shared storage pool interface. This includes social DB for
 /// near social.
-#[cfg(feature = "shared_storage")]
 pub struct SharedStoragePoolManager {
     signer: InMemorySigner,
-    rpc_client: &'static Client,
+    rpc_client: Arc<Client>,
     pool_contract_id: AccountId,
     pool_owner_id: AccountId,
 }
+impl std::fmt::Debug for SharedStoragePoolManager {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SharedStoragePoolManager")
+            .field("rpc_client", &self.rpc_client)
+            .field("pool_contract_id", &self.pool_contract_id)
+            .field("pool_owner_id", &self.pool_owner_id)
+            .finish()
+    }
+}
 
-#[cfg(feature = "shared_storage")]
 impl SharedStoragePoolManager {
     pub fn new(
         signer: InMemorySigner,
-        rpc_client: &'static Client,
+        rpc_client: Arc<Client>,
         pool_contract_id: AccountId,
         pool_owner_id: AccountId,
     ) -> Self {
@@ -148,7 +144,6 @@ impl SharedStoragePoolManager {
 
 /// Taken directly from near.social contract to deserialize into when calling
 /// get_account_storage.
-#[cfg(feature = "shared_storage")]
 #[derive(Debug, Deserialize)]
 pub struct StorageView {
     pub used_bytes: StorageUsage,
@@ -158,6 +153,5 @@ pub struct StorageView {
 /// Taken directly from near.social contract to deserialize into when calling
 /// get_shared_storage_pool
 // JSON deserialization trick. no need to understand what actual structure is.
-#[cfg(feature = "shared_storage")]
 #[derive(Debug, Deserialize)]
 pub struct SharedStoragePool(serde_json::Map<String, serde_json::Value>);

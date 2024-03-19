@@ -61,8 +61,6 @@ pub struct RPCConfig {
 pub struct NetworkConfig {
     pub rpc_url: url::Url,
     pub rpc_api_key: Option<ApiKey>,
-    pub wallet_url: url::Url,
-    pub explorer_transaction_url: url::Url,
 }
 
 impl NetworkConfig {

@@ -111,19 +111,34 @@ NOTE: this is only needed if you intend to use whitelisting, allowances, and oau
 3. Run `redis-cli -h 127.0.0.1 -p 6379`
 
 ## Multiple Key Generation - OPTIONAL, but recommended for high throughput to prevent nonce race conditions
-1. [Install NEAR CLI](https://docs.near.org/tools/near-cli#installation)
+Option A using the [near-cli-rs](https://github.com/near/near-cli-rs):
+1. [Install near-cli-rs](https://github.com/near/near-cli-rs/releases/)
+2. Make sure you're using the appropriate network: `echo $NEAR_ENV`. To change it, `export NEAR_ENV=testnet`
+3. Make sure your keys you want to use for the relayer have a `'FullAccess'` access_key by running `near account list-keys your_relayer_account.testnet network-config testnet now`. This is required to create more keys. You need to have access to at least 1 `'FullAccess'` access_key
+4. Using the [add-key](https://github.com/near/near-cli-rs/blob/main/docs/GUIDE.en.md#add-key---add-an-access-key-to-an-account) command run `near-cli account add-key your_relayer_account.testnet grant-full-access autogenerate-new-keypair print-to-terminal network-config testnet sign-with-keychain send`
+   1. NOTE: You may need to modify `sign-with-keychain` depending on your setup
+   2. NOTE: You can also generate the above command yourself to accomodate your preferred setup using the interactive cli by running `near account add-key`. You can copy and paste the output command after completing your interactive session to repeat in step 5
+5. Repeat step 4 until you have the desired number of keys. Anywhere between 5-20 full access keys added to the relayer account works for most cases.
+6. To double-check your keys were successfully added to the account run `near account list-keys your_relayer_account.testnet network-config testnet now` again, and you should see the newly added full access keys
+7. Copy public and private (secret) key contents of the newly generated keys output in steps 4, 5 into the json file (`your_relayer_account.testnet.json` in the example) in the `account_keys` directory. You will now have a list of jsons with each json containing 3 entries: account_id, public_key, secret_key in the file.
+   1. NOTE: the `"account_id"` for all the keys will be your `your_relayer_account.testnet` account id since you added them to your account (not the implicit account ids from when the were generated)
+8. Make sure the `key_filename` in `config.toml` matches your (i.e. `"your_relayer_account.testnet.json"`) to the `keys_filenames` list in `config.toml`
+
+
+Option B using the [near-cli](https://github.com/near/near-cli):
+1. [Install NEAR CLI](https://docs.near.org/tools/near-cli#installation) 
+   1. NOTE this guide was created using near-cli version 4.0.5. 
 2. Make sure you're using the appropriate network: `echo $NEAR_ENV`. To change it, `export NEAR_ENV=testnet` 
 3. Make sure your keys you want to use for the relayer have a `'FullAccess'` access_key by running `near keys your_relayer_account.testnet`. This is required to create more keys. You need to have access to at least 1 `'FullAccess'` access_key 
 4. Generate a new implicit key: `near generate-key`
-   1. This will output something like `Key pair with ed25519:GdsF992LXiwNiAGUtxL7VbcPBAckbYBZubF6fTYrVY5Q public key for an account "e05185d0de0d6e4897555a386fdd3f48508ad1cdeaebcbd1cac81c72116cc5ab"`
+   1. This will output something like `Seed phrase: word0 word1 word2 word3 word4 word5 word6 word7 word8 word9 word10 word11 Key pair: {"publicKey":"ed25519:GdsF992LXiwNiAGUtxL7VbcPBAckbYBZubF6fTYrVY5Q","secretKey":"ed25519:17f3csiNEdrwxRXe9e4yU9f2ZxSgKBwbQ4bbkVoxiGcEdmtvDLikjhJSExTmcrMP6v6Ex6KXmgrUGdMDhB1dPs4P"}"`
 5. Add the newly generated key to the relayer account: `near add-key your_relayer_account.testnet ed25519:GdsF992LXiwNiAGUtxL7VbcPBAckbYBZubF6fTYrVY5Q`
-   1. This will output something like: `Adding full access key = ed25519:GdsF992LXiwNiAGUtxL7VbcPBAckbYBZubF6fTYrVY5Q to your_relayer_account.testnet. Transaction Id Bur9nJxos4f5cbibYXugZQQmZ4Uo2jsHYiVUwPT7AZMG To see the transaction in the transaction explorer, please open this url in your browser https://explorer.testnet.near.org/transactions/Bur9nJxos4f5cbibYXugZQQmZ4Uo2jsHYiVUwPT7AZMG`
+   1. This will output something like: `Adding full access key = ed25519:GdsF992LXiwNiAGUtxL7VbcPBAckbYBZubF6fTYrVY5Q to your_relayer_account.testnet. Key added to account, but not stored locally. Transaction Id Bur9nJxos4f5cbibYXugZQQmZ4Uo2jsHYiVUwPT7AZMG Open the explorer for more info: https://www.nearblocks.io/txns/Bur9nJxos4f5cbibYXugZQQmZ4Uo2jsHYiVUwPT7AZMG`
 6. Repeat steps 4 & 5 until you have the desired number of keys. Anywhere between 5-20 full access keys added to the relayer account works for most cases. 
 7. To double-check your keys were successfully added to the account run `near keys your_relayer_account.testnet` again, and you should see the newly added full access keys
-8. Copy all contents of the newly generated keyfiles (usually `.json` files located in` ~/.near-credentials` directory) into the json file (`your_relayer_account.testnet.json` in the example) in the `account_keys` directory. You will now have a list of jsons from json key files containing 3 entries: account_id, public_key, secret_key in the file.
-   1. NOTE: You might need to change `private_key` to `secret_key`
-9. Change all the `"account_id"`s of the keyfiles in the relayer directory from the implicit account_id (i.e. `e05185d0de0d6e4897555a386fdd3f48508ad1cdeaebcbd1cac81c72116cc5ab`) to the relayer account_id `your_relayer_account.testnet`
-10. Make sure the `key_filename` in `config.toml` matches your (i.e. `"your_relayer_account.testnet.json"`) to the `keys_filenames` list in `config.toml`
+8. Copy public and private (secret) key contents of the newly generated keys output in steps 4, 5 into the json file (`your_relayer_account.testnet.json` in the example) in the `account_keys` directory. You will now have a list of jsons with each json containing 3 entries: account_id, public_key, secret_key in the file.
+   1. NOTE: the `"account_id"` for all the keys will be your `your_relayer_account.testnet` account id since you added them to your account (not the implicit account ids from when the were generated)
+9. Make sure the `key_filename` in `config.toml` matches your (i.e. `"your_relayer_account.testnet.json"`) to the `keys_filenames` list in `config.toml`
 
 ## Unit Testing
 1. Run unit tests with `cargo test`

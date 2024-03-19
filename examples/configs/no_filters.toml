@@ -1,5 +1,6 @@
-# Whitelist Senders config
-# This is a config for a relayer that covers gas for a whitelisted set of users' transactions (identified by whitelisted_delegate_action_receiver_ids) to interact with a whitelisted set of contracts
+# No Filters config
+# This is a config for a relayer that covers gas for all user transactions to all contracts with no filters
+# To prevent abuse, this should only be used if there's only a secure backend calling the relayer
 
 # Please note this is for reference only and you should be updating the values in the `config.toml` file found in the `pagoda-relayer-rs` directory.
 
@@ -14,12 +15,10 @@ relayer_account_id = "nomnomnom.testnet"
 # NOTE: account_id for all keys used should match as they should be derived from the same account_id
 # this is recommended for high throughput use cases to prevent nonce race conditions
 keys_filename = "./account_keys/nomnomnom.testnet.json"
-# whitelisted contract ids (receiver_id)
-whitelisted_contracts = ["nomnomnom.testnet", "relayer_test0.testnet", "relayer_test1.testnet"]
-# use this to whitelist sender account ids (delegate_action_receiver_ids)
-use_whitelisted_delegate_action_receiver_ids = true
-# whitelisted sender account ids (delegate_action_receiver_ids)
-whitelisted_delegate_action_receiver_ids = ["relayer_test1.testnet"]
+# can interact with all contracts
+use_whitelisted_contracts = false
+# can be sent from all users
+use_whitelisted_delegate_action_receiver_ids = false
 
 # if this is set to false, just call /send_meta_tx or /relay endpoints. All other endpoints are coupled with using redis
 # this needs to be set to true if use_fastauth_features = true

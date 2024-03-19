@@ -4,6 +4,8 @@ This directory contains example configs corresponding to different use cases.
 Please note that these are for reference only and you should be updating the values in the `config.toml` file found in the `pagoda-relayer-rs` directory.
 
 ## Configs and Usecases
+- `no_filters.toml`
+  - This is a config for a relayer that covers gas for all user transactions to all contracts with no filters. To prevent abuse, this should only be used if there's only a secure backend calling the relayer
 - `basic_whitelist.toml`
   - This is a config for a basic relayer that covers gas for user transactions to interact with a whitelisted set of contracts
 - `redis.toml`
