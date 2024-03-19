@@ -15,8 +15,10 @@ relayer_account_id = "nomnomnom.testnet"
 # NOTE: account_id for all keys used should match as they should be derived from the same account_id
 # this is recommended for high throughput use cases to prevent nonce race conditions
 keys_filename = "./account_keys/nomnomnom.testnet.json"
+
 # can interact with all contracts
 use_whitelisted_contracts = false
+
 # can be sent from all users
 use_whitelisted_delegate_action_receiver_ids = false
 
@@ -28,6 +30,7 @@ use_redis = false
 # including check if sender id and receiver id are the same AND (AddKey or DeleteKey action) in process_signed_delegate_action fn
 # and you're using shared storage contract
 use_fastauth_features = false
+
 # you can still use shared storage without fastauth features if you desire,
 # but needs to be set to true if using fastauth or the contract you're sending transactions to requires a storage deposit
 use_shared_storage = false
