@@ -11,24 +11,25 @@ use axum::{
     Router,
 };
 use config::{Config, File as ConfigFile};
-use near_crypto::{InMemorySigner, PublicKey};
+use near_crypto::{InMemorySigner, PublicKey, Signature, Signer};
 use near_fetch::signer::{ExposeAccountId, KeyRotatingSigner, SignerExt};
 use near_jsonrpc_client::methods::broadcast_tx_async::RpcBroadcastTxAsyncRequest;
 use near_jsonrpc_client::methods::broadcast_tx_commit::RpcBroadcastTxCommitRequest;
 use near_primitives::delegate_action::SignedDelegateAction;
 use near_primitives::hash::CryptoHash;
-use near_primitives::transaction::{Action, FunctionCallAction, Transaction};
+use near_primitives::transaction::{Action, FunctionCallAction, SignedTransaction, Transaction};
 use near_primitives::types::AccountId;
 use near_primitives::views::{
     ExecutionOutcomeWithIdView, FinalExecutionOutcomeView, FinalExecutionStatus,
 };
-use near_primitives::{borsh::BorshDeserialize, transaction::CreateAccountAction};
+use near_primitives::{borsh::BorshDeserialize, borsh::BorshSerialize};
 use once_cell::sync::Lazy;
 use r2d2::{Pool, PooledConnection};
 use r2d2_redis::redis::{Commands, ErrorKind::IoError, RedisError};
 use r2d2_redis::RedisConnectionManager;
 use serde::Deserialize;
 use serde_json::{json, Value};
+use std::collections::HashMap;
 use std::fmt;
 use std::fmt::{Debug, Display, Formatter};
 use std::future::Future;
@@ -330,6 +331,12 @@ struct AppState {
     shared_storage_pool: Option<SharedStoragePoolManager>,
     redis_pool: Option<Pool<RedisConnectionManager>>,
 }
+#[derive(Deserialize)]
+struct SignerConfig {
+    account_id: String,
+    public_key: String,
+    secret_key: String,
+}
 
 // load config from toml and setup jsonrpc client
 static LOCAL_CONF: Lazy<Config> = Lazy::new(|| {
@@ -338,7 +345,7 @@ static LOCAL_CONF: Lazy<Config> = Lazy::new(|| {
         .build()
         .unwrap()
 });
-static SIGNER: Lazy<KeyRotatingSigner> = Lazy::new(|| {
+static ROTATING_SIGNER: Lazy<KeyRotatingSigner> = Lazy::new(|| {
     let path = LOCAL_CONF
         .get::<String>("keys_filename")
         .expect("Failed to read 'keys_filename' from config");
@@ -347,6 +354,27 @@ static SIGNER: Lazy<KeyRotatingSigner> = Lazy::new(|| {
         serde_json::from_reader(keys_file).expect("Failed to parse keys file");
 
     KeyRotatingSigner::from_signers(signers)
+});
+static MAP_SIGNER: Lazy<HashMap<String, InMemorySigner>> = Lazy::new(|| {
+    let path = LOCAL_CONF
+        .get::<String>("keys_filename")
+        .expect("Failed to read 'keys_filename' from config");
+    let keys_file = std::fs::File::open(path).expect("Failed to open keys file");
+    let signers_configs: Vec<SignerConfig> =
+        serde_json::from_reader(keys_file).expect("Failed to parse keys file");
+
+    let mut signers: HashMap<String, InMemorySigner> = HashMap::new();
+
+    for signer_config in signers_configs {
+        let signer = InMemorySigner::from_secret_key(
+            signer_config.account_id.parse().unwrap(),
+            signer_config.secret_key.parse().unwrap(),
+        );
+
+        // Use the public key string as the key for the hashmap
+        signers.insert(signer_config.public_key.clone(), signer);
+    }
+    signers
 });
 
 #[derive(Clone, Debug, Deserialize, ToSchema)]
@@ -433,6 +461,22 @@ struct AllowanceJson {
 impl Display for AllowanceJson {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         write!(f, "allowance in Gas: {}", self.allowance_in_gas)
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, ToSchema)]
+struct PublicKeyAndSDAJson {
+    #[schema(example = "ed25519:89GtfFzez3opomVpwa7i4m3nptHtc7Ha514XHMWszQtL")]
+    public_key: String,
+    signed_delegate_action: SignedDelegateAction,
+}
+impl Display for PublicKeyAndSDAJson {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "public_key: {}\nsigned_delegate_action signature: {}",
+            self.public_key, self.signed_delegate_action.signature
+        )
     }
 }
 
@@ -524,6 +568,9 @@ async fn main() {
         paths(
             relay,
             send_meta_tx,
+            send_meta_tx_async,
+            send_meta_tx_nopoll,
+            sign_meta_tx_no_filter,
             create_account_atomic,
             get_allowance,
             update_allowance,
@@ -561,6 +608,7 @@ async fn main() {
         .route("/send_meta_tx", post(send_meta_tx))
         .route("/send_meta_tx_async", post(send_meta_tx_async))
         .route("/send_meta_tx_nopoll", post(send_meta_tx_nopoll))
+        .route("/sign_meta_tx_no_filter", post(sign_meta_tx_no_filter))
         .route("/create_account_atomic", post(create_account_atomic))
         .route("/get_allowance", get(get_allowance))
         .route("/update_allowance", post(update_allowance))
@@ -1002,6 +1050,32 @@ async fn send_meta_tx(
 
 #[utoipa::path(
     post,
+    path = "/sign_meta_tx_no_filter",
+    request_body = PublicKeyAndSDAJson,
+    responses(
+        (status = 200, description = "Relayed and sent transaction ...", body = String),
+        (status = 400, description = "Error deserializing payload data object ...", body = String),
+        (status = 500, description = "Error signing transaction: ...", body = String),
+    ),
+)]
+#[instrument]
+async fn sign_meta_tx_no_filter(
+    State(state): State<Arc<AppState>>,
+    data: Json<PublicKeyAndSDAJson>,
+) -> impl IntoResponse {
+    let relayer_response = create_signed_meta_tx(
+        // deserialize SignedDelegateAction using serde json
+        &data.0,
+    )
+    .await;
+    match relayer_response {
+        Ok(response) => response.into_response(),
+        Err(err) => (err.status_code, err.message).into_response(),
+    }
+}
+
+#[utoipa::path(
+    post,
     path = "/send_meta_tx_nopoll",
     request_body = SignedDelegateAction,
     responses(
@@ -1054,6 +1128,17 @@ async fn send_meta_tx_async(
 }
 
 #[instrument]
+async fn create_signed_meta_tx(pk_and_sda: &PublicKeyAndSDAJson) -> Result<String, RelayError> {
+    let public_key: String = pk_and_sda.public_key.clone();
+    let borsh_serialized_sda: Vec<u8> = pk_and_sda.signed_delegate_action.try_to_vec().unwrap();
+    let signature: Signature = MAP_SIGNER
+        .get(&*public_key)
+        .unwrap()
+        .sign(&borsh_serialized_sda);
+    Ok(json!({"signature": signature}).to_string())
+}
+
+#[instrument]
 async fn process_signed_delegate_action(
     state: &AppState,
     signed_delegate_action: &SignedDelegateAction,
@@ -1064,7 +1149,7 @@ async fn process_signed_delegate_action(
         |receiver_id, actions| async move {
             match state
                 .rpc_client
-                .send_tx(&*SIGNER, &receiver_id, actions)
+                .send_tx(&*ROTATING_SIGNER, &receiver_id, actions)
                 .await
             {
                 Err(err) => {
@@ -1099,7 +1184,7 @@ async fn process_signed_delegate_action_big_timeout(
         |receiver_id, actions| async move {
             let hash = state
                 .rpc_client
-                .send_tx_async(&*SIGNER, &receiver_id, actions)
+                .send_tx_async(&*ROTATING_SIGNER, &receiver_id, actions)
                 .await
                 .map_err(|err| {
                     let err_msg: String = format!("Error signing transaction: {:?}", err);
@@ -1113,7 +1198,7 @@ async fn process_signed_delegate_action_big_timeout(
                 let second = Duration::from_secs(1);
                 let res = match state
                     .rpc_client
-                    .tx_async_status(SIGNER.account_id(), hash)
+                    .tx_async_status(ROTATING_SIGNER.account_id(), hash)
                     .await
                 {
                     Ok(res) => res,
@@ -1162,7 +1247,7 @@ async fn process_signed_delegate_action_noretry_async(
         |receiver_id, actions| async move {
             let (nonce, block_hash, _) = state
                 .rpc_client
-                .fetch_nonce(SIGNER.account_id(), SIGNER.public_key())
+                .fetch_nonce(ROTATING_SIGNER.account_id(), ROTATING_SIGNER.public_key())
                 .await
                 .map_err(|e| format!("Error fetching nonce: {:?}", e))?;
             let txn_hash = state
@@ -1171,12 +1256,12 @@ async fn process_signed_delegate_action_noretry_async(
                     signed_transaction: Transaction {
                         nonce,
                         block_hash,
-                        signer_id: SIGNER.account_id().clone(),
-                        public_key: SIGNER.public_key().clone(),
+                        signer_id: ROTATING_SIGNER.account_id().clone(),
+                        public_key: ROTATING_SIGNER.public_key().clone(),
                         receiver_id: receiver_id.clone(),
                         actions: actions.clone(),
                     }
-                    .sign(SIGNER.current_signer()),
+                    .sign(ROTATING_SIGNER.current_signer()),
                 })
                 .await
                 .map_err(|err| {
@@ -1440,7 +1525,7 @@ where
     let actions: Vec<Action> = vec![Action::Delegate(signed_delegate_action.clone())];
     let txn_hash: CryptoHash = state
         .rpc_client
-        .send_tx_async(&*SIGNER, receiver_id, actions)
+        .send_tx_async(&*ROTATING_SIGNER, receiver_id, actions)
         .await
         .map_err(|err| {
             let err_msg = format!("Error signing transaction: {err:?}");
@@ -1499,7 +1584,7 @@ where
 
         let execution = state
             .rpc_client
-            .send_tx(&*SIGNER, receiver_id, actions)
+            .send_tx(&*ROTATING_SIGNER, receiver_id, actions)
             .await
             .map_err(|err| {
                 let err_msg = format!("Error signing transaction: {err:?}");
@@ -1555,7 +1640,7 @@ where
     } else {
         let execution = state
             .rpc_client
-            .send_tx(&*SIGNER, receiver_id, actions)
+            .send_tx(&*ROTATING_SIGNER, receiver_id, actions)
             .await
             .map_err(|err| {
                 let err_msg = format!("Error signing transaction: {err:?}");
@@ -1689,7 +1774,7 @@ mod tests {
     use bytes::BytesMut;
     use config::{Config, File as ConfigFile};
     use near_crypto::KeyType::ED25519;
-    use near_crypto::{InMemorySigner, KeyType, PublicKey, Signature, Signer};
+    use near_crypto::{ED25519PublicKey, InMemorySigner, KeyType, PublicKey, Signature, Signer};
     use near_fetch::signer::{ExposeAccountId, KeyRotatingSigner, SignerExt};
     use near_primitives::delegate_action::{
         DelegateAction, NonDelegateAction, SignedDelegateAction,
@@ -1698,15 +1783,12 @@ mod tests {
         Action, AddKeyAction, FunctionCallAction, Transaction, TransferAction,
     };
     use near_primitives::types::Balance;
+    use near_primitives::types::{BlockHeight, Nonce};
     use near_primitives::views::ActionView::AddKey;
     use near_primitives::views::{
         ExecutionOutcomeWithIdView, FinalExecutionOutcomeView, FinalExecutionStatus,
     };
     use near_primitives::{borsh::BorshDeserialize, transaction::CreateAccountAction};
-    use near_primitives::{
-        borsh::BorshSerialize,
-        types::{BlockHeight, Nonce},
-    };
     use r2d2::{Pool, PooledConnection};
     use r2d2_redis::redis::{Commands, ErrorKind::IoError, RedisError};
     use r2d2_redis::RedisConnectionManager;
@@ -2030,6 +2112,52 @@ mod tests {
             err_response_status == StatusCode::BAD_REQUEST
                 || err_response_status == StatusCode::INTERNAL_SERVER_ERROR
         );
+    }
+
+    #[tokio::test]
+    async fn test_sign_meta_tx_no_filter() {
+        let actions = vec![Action::Transfer(TransferAction { deposit: 1 })];
+        let sender_id: String = String::from("nomnomnom.testnet");
+        let receiver_id: String = String::from("relayer_test0.testnet");
+        let nonce: i64 = 103066617000686;
+        let max_block_height = 122790412;
+        let pk_str: String = "ed25519:89GtfFzez3opomVpwa7i4m3nptHtc7Ha514XHMWszQtL".to_string();
+        let public_key: PublicKey = PublicKey::from_str(&pk_str).unwrap();
+        let signature: Signature = Signature::from("ed25519:5uJu7KapH89h9cQm5btE1DKnbiFXSZNT7McDw5LHy8pdAt5Mz9DfuyQZadGgFExo88or9152iwcw2q12rnFWa6bg".parse().unwrap());
+
+        // Call the `send_meta_tx` function with a sender that has no gas allowance
+        // (and a receiver_id that isn't in whitelist)
+        let sda = SignedDelegateAction {
+            delegate_action: DelegateAction {
+                sender_id: sender_id.parse().unwrap(),
+                receiver_id: receiver_id.parse().unwrap(),
+                actions: actions
+                    .into_iter()
+                    .map(|a| NonDelegateAction::try_from(a).unwrap())
+                    .collect(),
+                nonce: nonce as Nonce,
+                max_block_height: max_block_height as BlockHeight,
+                public_key,
+            },
+            signature,
+        };
+        let signing_pk = "ed25519:89GtfFzez3opomVpwa7i4m3nptHtc7Ha514XHMWszQtL".to_string();
+        let json_payload = Json(PublicKeyAndSDAJson {
+            public_key: signing_pk,
+            signed_delegate_action: sda,
+        });
+        println!("PublicKeyAndSDAJson: {json_payload:?}");
+        let app_state = create_app_state(false, false, None, None, false).await;
+        let axum_state: State<Arc<AppState>> = convert_app_state_to_arc_app_state(app_state);
+        let response = sign_meta_tx_no_filter(axum_state, json_payload)
+            .await
+            .into_response();
+        let response_status = response.status();
+        let body: BoxBody = response.into_body();
+        let body_str: String = read_body_to_string(body).await.unwrap();
+        println!("Response body: {body_str:?}");
+        assert_eq!(response_status, StatusCode::OK);
+        assert!(body_str.contains("ed25519:4g7kYmGJMwxvXEktDKUn5wF1GqJX7y27YAyJTppM612KDrzzKEtHcBoaUSUmWuLPquBLdrw2vSu3Bd1gxucgBaPA"));
     }
 
     /// Not actually a unit test of a specific fn, just tests or helper fns for specific functionality
