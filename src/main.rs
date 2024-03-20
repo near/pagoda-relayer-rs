@@ -317,7 +317,7 @@ fn create_shared_storage_pool(
     SharedStoragePoolManager::new(
         signer,
         Arc::clone(&rpc_client),
-        config.social_db_contract_id.clone(),
+        config.social_db_contract_id.parse().unwrap(),
         config.shared_storage_account_id.parse().unwrap(),
     )
 }
