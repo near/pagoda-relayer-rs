@@ -24,18 +24,18 @@ jobs:
         run: cargo test --all-targets --all-features
 
   linting:
-    name: Format and Clippy Check
+    name: Linting
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
       - name: Check formatting
-        continue-on-error: true
         run: |
           cargo fmt --check
 
       - name: Run Clippy
+        if: always()
         uses: actions-rs/clippy-check@v1.0.7
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
-          args: --all-targets --all-features
+          args: --all-targets --all-features -- -D warnings
