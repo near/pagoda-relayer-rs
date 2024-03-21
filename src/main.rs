@@ -18,7 +18,7 @@ use near_jsonrpc_client::methods::broadcast_tx_commit::RpcBroadcastTxCommitReque
 use near_primitives::delegate_action::SignedDelegateAction;
 use near_primitives::hash::CryptoHash;
 use near_primitives::transaction::{Action, FunctionCallAction, SignedTransaction, Transaction};
-use near_primitives::types::AccountId;
+use near_primitives::types::{AccountId, Nonce};
 use near_primitives::views::{
     ExecutionOutcomeWithIdView, FinalExecutionOutcomeView, FinalExecutionStatus,
 };
@@ -31,7 +31,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::fmt;
-use std::fmt::{Debug, Display, Formatter};
+use std::fmt::{Debug, Display, Error, Formatter};
 use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
@@ -469,13 +469,18 @@ struct PublicKeyAndSDAJson {
     #[schema(example = "ed25519:89GtfFzez3opomVpwa7i4m3nptHtc7Ha514XHMWszQtL")]
     public_key: String,
     signed_delegate_action: SignedDelegateAction,
+    nonce: Option<u64>,
+    block_hash: Option<String>,
 }
 impl Display for PublicKeyAndSDAJson {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "public_key: {}\nsigned_delegate_action signature: {}",
-            self.public_key, self.signed_delegate_action.signature
+            "public_key: {}\nsigned_delegate_action signature: {}\nnonce: {}\nblock_hash: {}",
+            self.public_key,
+            self.signed_delegate_action.signature,
+            self.nonce.unwrap(),
+            self.block_hash.unwrap()
         )
     }
 }
@@ -1064,7 +1069,7 @@ async fn sign_meta_tx_no_filter(
     data: Json<PublicKeyAndSDAJson>,
 ) -> impl IntoResponse {
     let relayer_response = create_signed_meta_tx(
-        // deserialize SignedDelegateAction using serde json
+        &state, // deserialize SignedDelegateAction using serde json
         &data.0,
     )
     .await;
@@ -1128,14 +1133,43 @@ async fn send_meta_tx_async(
 }
 
 #[instrument]
-async fn create_signed_meta_tx(pk_and_sda: &PublicKeyAndSDAJson) -> Result<String, RelayError> {
+async fn create_signed_meta_tx(
+    state: &AppState,
+    pk_and_sda: &PublicKeyAndSDAJson,
+) -> Result<String, RelayError> {
     let public_key: String = pk_and_sda.public_key.clone();
-    let borsh_serialized_sda: Vec<u8> = pk_and_sda.signed_delegate_action.try_to_vec().unwrap();
-    let signature: Signature = MAP_SIGNER
-        .get(&*public_key)
-        .unwrap()
-        .sign(&borsh_serialized_sda);
-    Ok(json!({"signature": signature}).to_string())
+    let signer: &InMemorySigner = MAP_SIGNER.get(&*public_key).unwrap();
+    let receiver_id: &AccountId = &pk_and_sda
+        .signed_delegate_action
+        .delegate_action
+        .receiver_id;
+    let actions: Vec<Action> = vec![Action::Delegate(pk_and_sda.signed_delegate_action.clone())];
+    let mut nonce: u64 = 0;
+    let mut block_hash: CryptoHash = CryptoHash::default();
+    if pk_and_sda.nonce.is_none() && pk_and_sda.block_hash.is_none() {
+        let (nonce, block_hash, _) = state
+            .rpc_client
+            .fetch_nonce(signer.account_id(), &signer.public_key())
+            .await
+            .map_err(|e| format!("Error fetching nonce: {:?}", e))?;
+    } else {
+        let nonce = pk_and_sda.nonce.unwrap();
+        let block_hash = CryptoHash::from_str(&pk_and_sda.block_hash.unwrap());
+    }
+    let meta_tx = Transaction {
+        nonce,
+        block_hash,
+        signer_id: signer.account_id().clone(),
+        public_key: public_key.clone().parse().unwrap(),
+        receiver_id: receiver_id.clone(),
+        actions: actions.clone(),
+    };
+    // TODO double check the format of signed txn that is returned
+    let signed_meta_tx = meta_tx
+        .sign(ROTATING_SIGNER.current_signer())
+        .try_to_vec()
+        .unwrap();
+    Ok(json!({"signed_transaction": signed_meta_tx}).to_string())
 }
 
 #[instrument]
