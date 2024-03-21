@@ -2195,6 +2195,8 @@ mod tests {
         let json_payload = Json(PublicKeyAndSDAJson {
             public_key: signing_pk,
             signed_delegate_action: sda,
+            nonce: Some(103066617000687),
+            block_hash: Some("D2xZEsPM2Z2xRiFwTyr1V5neqP4ukqzMPthpWrhUdgwV".to_string()),
         });
         println!("PublicKeyAndSDAJson: {json_payload:?}");
         let app_state = create_app_state(false, false, None, None, false).await;
@@ -2207,7 +2209,7 @@ mod tests {
         let body_str: String = read_body_to_string(body).await.unwrap();
         println!("Response body: {body_str:?}");
         assert_eq!(response_status, StatusCode::OK);
-        assert!(body_str.contains("ed25519:4g7kYmGJMwxvXEktDKUn5wF1GqJX7y27YAyJTppM612KDrzzKEtHcBoaUSUmWuLPquBLdrw2vSu3Bd1gxucgBaPA"));
+        assert!(body_str.contains("EQAAAG5vbW5vbW5vbS50ZXN0bmV0AGogbDAp74I4-7jfoIe-ssj2bahcCgpzBdwynck4R24FAAAAAAAAAAAVAAAAcmVsYXllcl90ZXN0MC50ZXN0bmV0AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABAAAACBEAAABub21ub21ub20udGVzdG5ldBUAAAByZWxheWVyX3Rlc3QwLnRlc3RuZXQBAAAAAwEAAAAAAAAAAAAAAAAAAADuMhgRvV0AAAyiUQcAAAAAAGogbDAp74I4-7jfoIe-ssj2bahcCgpzBdwynck4R24FAPUtS-GUXUdhySsYDEHU1LQYEstazmWdCge7TGwWppIvUrVNz7fcTxQkXP1XF4CvZ-z4R3RfypR_gWV3XPscNwcAMLwxytNVJ3O-LQrXdd2F330jAYhE6VaDu8070Pk6OnZTrQg0JaA440RQ9S9tcknSf6nrz7ZYzm_-GxdAwuOVBA"));
     }
 
     /// Not actually a unit test of a specific fn, just tests or helper fns for specific functionality
