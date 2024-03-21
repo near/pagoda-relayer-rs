@@ -10,7 +10,7 @@ use axum::{
     routing::{get, post},
     Router,
 };
-use base64::engine::general_purpose::URL_SAFE_NO_PAD as BASE64_ENGINE;
+use base64::engine::general_purpose::STANDARD_NO_PAD as BASE64_ENGINE;
 use base64::Engine;
 use config::{Config, File as ConfigFile};
 use near_crypto::{InMemorySigner, PublicKey, Signature, Signer};
@@ -1201,29 +1201,28 @@ async fn create_signed_meta_tx(
     let receiver_id: &AccountId = &pk_and_sda
         .signed_delegate_action
         .delegate_action
-        .receiver_id;
+        .sender_id;
     let actions: Vec<Action> = vec![Action::Delegate(pk_and_sda.signed_delegate_action.clone())];
-    let mut nonce: u64 = 0;
-    let mut block_hash: CryptoHash = CryptoHash::default();
-    if pk_and_sda.nonce.is_none() && pk_and_sda.block_hash.is_none() {
-        let (nonce, block_hash) = fetch_nonce_and_block_hash(state, signer).await?;
+    let mut nonce: u64;
+    let mut block_hash: CryptoHash;
+
+    if let (Some(nonce_param), Some(block_hash_param)) = (pk_and_sda.nonce, &pk_and_sda.block_hash) {
+        nonce = nonce_param;
+        block_hash = CryptoHash::from_str(&block_hash_param.clone()).unwrap();
     } else {
-        let nonce = pk_and_sda.nonce.unwrap();
-        let block_hash = CryptoHash::from_str(&pk_and_sda.clone().block_hash.unwrap());
+        (nonce, block_hash) = fetch_nonce_and_block_hash(state, signer).await?;
     }
-    let meta_tx = Transaction {
+
+    let signed_meta_tx = Transaction {
         nonce,
         block_hash,
         signer_id: signer.account_id().clone(),
         public_key: public_key.clone().parse().unwrap(),
         receiver_id: receiver_id.clone(),
         actions: actions.clone(),
-    };
-    let signed_meta_tx_borsh = meta_tx
-        .sign(ROTATING_SIGNER.current_signer())
-        .try_to_vec()
-        .unwrap();
-    let signed_meta_tx_b64: String = BASE64_ENGINE.encode(signed_meta_tx_borsh);
+    }.sign(signer);
+
+    let signed_meta_tx_b64: String = BASE64_ENGINE.encode(signed_meta_tx.try_to_vec().unwrap());
     Ok(json!({"signed_transaction": signed_meta_tx_b64}).to_string())
 }
 
