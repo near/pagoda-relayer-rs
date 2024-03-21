@@ -10,9 +10,12 @@ use axum::{
     routing::{get, post},
     Router,
 };
+use base64::engine::general_purpose::URL_SAFE_NO_PAD as BASE64_ENGINE;
+use base64::Engine;
 use config::{Config, File as ConfigFile};
 use near_crypto::{InMemorySigner, PublicKey, Signature, Signer};
 use near_fetch::signer::{ExposeAccountId, KeyRotatingSigner, SignerExt};
+use near_fetch::Error::Base64;
 use near_jsonrpc_client::methods::broadcast_tx_async::RpcBroadcastTxAsyncRequest;
 use near_jsonrpc_client::methods::broadcast_tx_commit::RpcBroadcastTxCommitRequest;
 use near_primitives::delegate_action::SignedDelegateAction;
@@ -480,7 +483,7 @@ impl Display for PublicKeyAndSDAJson {
             self.public_key,
             self.signed_delegate_action.signature,
             self.nonce.unwrap(),
-            self.block_hash.unwrap()
+            self.block_hash.clone().unwrap()
         )
     }
 }
@@ -1132,6 +1135,24 @@ async fn send_meta_tx_async(
     response
 }
 
+async fn fetch_nonce_and_block_hash(
+    state: &AppState,
+    signer: &InMemorySigner,
+) -> Result<(Nonce, CryptoHash), RelayError> {
+    let result = state
+        .rpc_client
+        .fetch_nonce(signer.account_id(), &signer.public_key())
+        .await;
+
+    match result {
+        Ok((nonce, block_hash, _)) => Ok((nonce, block_hash)),
+        Err(e) => Err(RelayError {
+            status_code: StatusCode::INTERNAL_SERVER_ERROR, // Adjust the status code as appropriate
+            message: format!("Error fetching nonce: {:?}", e),
+        }),
+    }
+}
+
 #[instrument]
 async fn create_signed_meta_tx(
     state: &AppState,
@@ -1147,14 +1168,10 @@ async fn create_signed_meta_tx(
     let mut nonce: u64 = 0;
     let mut block_hash: CryptoHash = CryptoHash::default();
     if pk_and_sda.nonce.is_none() && pk_and_sda.block_hash.is_none() {
-        let (nonce, block_hash, _) = state
-            .rpc_client
-            .fetch_nonce(signer.account_id(), &signer.public_key())
-            .await
-            .map_err(|e| format!("Error fetching nonce: {:?}", e))?;
+        let (nonce, block_hash) = fetch_nonce_and_block_hash(state, signer).await?;
     } else {
         let nonce = pk_and_sda.nonce.unwrap();
-        let block_hash = CryptoHash::from_str(&pk_and_sda.block_hash.unwrap());
+        let block_hash = CryptoHash::from_str(&pk_and_sda.clone().block_hash.unwrap());
     }
     let meta_tx = Transaction {
         nonce,
@@ -1164,12 +1181,12 @@ async fn create_signed_meta_tx(
         receiver_id: receiver_id.clone(),
         actions: actions.clone(),
     };
-    // TODO double check the format of signed txn that is returned
-    let signed_meta_tx = meta_tx
+    let signed_meta_tx_borsh = meta_tx
         .sign(ROTATING_SIGNER.current_signer())
         .try_to_vec()
         .unwrap();
-    Ok(json!({"signed_transaction": signed_meta_tx}).to_string())
+    let signed_meta_tx_b64: String = BASE64_ENGINE.encode(signed_meta_tx_borsh);
+    Ok(json!({"signed_transaction": signed_meta_tx_b64}).to_string())
 }
 
 #[instrument]
@@ -1804,7 +1821,6 @@ mod tests {
         routing::{get, post},
         Router,
     };
-    use base64::{engine::general_purpose::URL_SAFE_NO_PAD as BASE64_ENGINE, Engine};
     use bytes::BytesMut;
     use config::{Config, File as ConfigFile};
     use near_crypto::KeyType::ED25519;
