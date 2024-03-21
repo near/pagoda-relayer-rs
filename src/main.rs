@@ -15,7 +15,6 @@ use base64::Engine;
 use config::{Config, File as ConfigFile};
 use near_crypto::{InMemorySigner, PublicKey, Signature, Signer};
 use near_fetch::signer::{ExposeAccountId, KeyRotatingSigner, SignerExt};
-use near_fetch::Error::Base64;
 use near_jsonrpc_client::methods::broadcast_tx_async::RpcBroadcastTxAsyncRequest;
 use near_jsonrpc_client::methods::broadcast_tx_commit::RpcBroadcastTxCommitRequest;
 use near_primitives::delegate_action::SignedDelegateAction;
@@ -578,6 +577,7 @@ async fn main() {
             send_meta_tx,
             send_meta_tx_async,
             send_meta_tx_nopoll,
+            sign_meta_tx,
             sign_meta_tx_no_filter,
             create_account_atomic,
             get_allowance,
@@ -593,6 +593,7 @@ async fn main() {
                 AccountIdAllowanceJson,
                 AccountIdAllowanceOauthJson,
                 AccountIdAllowanceOauthSDAJson,
+                PublicKeyAndSDAJson,
             )
         ),
         tags((
@@ -616,6 +617,7 @@ async fn main() {
         .route("/send_meta_tx", post(send_meta_tx))
         .route("/send_meta_tx_async", post(send_meta_tx_async))
         .route("/send_meta_tx_nopoll", post(send_meta_tx_nopoll))
+        .route("/sign_meta_tx", post(sign_meta_tx))
         .route("/sign_meta_tx_no_filter", post(sign_meta_tx_no_filter))
         .route("/create_account_atomic", post(create_account_atomic))
         .route("/get_allowance", get(get_allowance))
@@ -1046,6 +1048,42 @@ async fn send_meta_tx(
     data: Json<SignedDelegateAction>,
 ) -> impl IntoResponse {
     let relayer_response = process_signed_delegate_action(
+        &state, // deserialize SignedDelegateAction using serde json
+        &data.0,
+    )
+    .await;
+    match relayer_response {
+        Ok(response) => response.into_response(),
+        Err(err) => (err.status_code, err.message).into_response(),
+    }
+}
+
+#[utoipa::path(
+post,
+    path = "/sign_meta_tx",
+    request_body = PublicKeyAndSDAJson,
+    responses(
+        (status = 200, description = "Relayed and sent transaction ...", body = String),
+        (status = 400, description = "Error deserializing payload data object ...", body = String),
+        (status = 500, description = "Error signing transaction: ...", body = String),
+    ),
+)]
+#[instrument]
+async fn sign_meta_tx(
+    State(state): State<Arc<AppState>>,
+    data: Json<PublicKeyAndSDAJson>,
+) -> impl IntoResponse {
+    let sda = &data.0.signed_delegate_action;
+    let sda_validation_result = validate_signed_delegate_action(&state, sda);
+    if sda_validation_result.is_err() {
+        error!("Error validating signed delegate action: {sda_validation_result:?}");
+        return (
+            StatusCode::BAD_REQUEST,
+            sda_validation_result.unwrap_err().message,
+        )
+            .into_response();
+    }
+    let relayer_response = create_signed_meta_tx(
         &state, // deserialize SignedDelegateAction using serde json
         &data.0,
     )
@@ -2162,6 +2200,51 @@ mod tests {
             err_response_status == StatusCode::BAD_REQUEST
                 || err_response_status == StatusCode::INTERNAL_SERVER_ERROR
         );
+    }
+
+    #[tokio::test]
+    async fn test_sign_meta_tx() {
+        let actions = vec![Action::Transfer(TransferAction { deposit: 1 })];
+        let sender_id: String = String::from("nomnomnom.testnet");
+        let receiver_id: String = String::from("relayer_test0.testnet");
+        let nonce: i64 = 103066617000686;
+        let max_block_height = 122790412;
+        let pk_str: String = "ed25519:89GtfFzez3opomVpwa7i4m3nptHtc7Ha514XHMWszQtL".to_string();
+        let public_key: PublicKey = PublicKey::from_str(&pk_str).unwrap();
+        let signature: Signature = Signature::from("ed25519:5uJu7KapH89h9cQm5btE1DKnbiFXSZNT7McDw5LHy8pdAt5Mz9DfuyQZadGgFExo88or9152iwcw2q12rnFWa6bg".parse().unwrap());
+
+        // Call the `send_meta_tx` function with a sender that has no gas allowance
+        // (and a receiver_id that isn't in whitelist)
+        let sda = SignedDelegateAction {
+            delegate_action: DelegateAction {
+                sender_id: sender_id.parse().unwrap(),
+                receiver_id: receiver_id.parse().unwrap(),
+                actions: actions
+                    .into_iter()
+                    .map(|a| NonDelegateAction::try_from(a).unwrap())
+                    .collect(),
+                nonce: nonce as Nonce,
+                max_block_height: max_block_height as BlockHeight,
+                public_key,
+            },
+            signature,
+        };
+        let signing_pk = "ed25519:89GtfFzez3opomVpwa7i4m3nptHtc7Ha514XHMWszQtL".to_string();
+        let json_payload = Json(PublicKeyAndSDAJson {
+            public_key: signing_pk,
+            signed_delegate_action: sda,
+            nonce: Some(103066617000687),
+            block_hash: Some("D2xZEsPM2Z2xRiFwTyr1V5neqP4ukqzMPthpWrhUdgwV".to_string()),
+        });
+        println!("PublicKeyAndSDAJson: {json_payload:?}");
+        let app_state = create_app_state(true, false, Some(vec![]), None, false).await;
+        let axum_state: State<Arc<AppState>> = convert_app_state_to_arc_app_state(app_state);
+        let response = sign_meta_tx(axum_state, json_payload).await.into_response();
+        let response_status = response.status();
+        let body: BoxBody = response.into_body();
+        let body_str: String = read_body_to_string(body).await.unwrap();
+        println!("Response body: {body_str:?}");
+        assert_eq!(response_status, StatusCode::BAD_REQUEST);
     }
 
     #[tokio::test]
