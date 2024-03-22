@@ -1198,15 +1198,13 @@ async fn create_signed_meta_tx(
 ) -> Result<String, RelayError> {
     let public_key: String = pk_and_sda.public_key.clone();
     let signer: &InMemorySigner = MAP_SIGNER.get(&*public_key).unwrap();
-    let receiver_id: &AccountId = &pk_and_sda
-        .signed_delegate_action
-        .delegate_action
-        .sender_id;
+    let receiver_id: &AccountId = &pk_and_sda.signed_delegate_action.delegate_action.sender_id;
     let actions: Vec<Action> = vec![Action::Delegate(pk_and_sda.signed_delegate_action.clone())];
     let mut nonce: u64;
     let mut block_hash: CryptoHash;
 
-    if let (Some(nonce_param), Some(block_hash_param)) = (pk_and_sda.nonce, &pk_and_sda.block_hash) {
+    if let (Some(nonce_param), Some(block_hash_param)) = (pk_and_sda.nonce, &pk_and_sda.block_hash)
+    {
         nonce = nonce_param;
         block_hash = CryptoHash::from_str(&block_hash_param.clone()).unwrap();
     } else {
@@ -1220,7 +1218,8 @@ async fn create_signed_meta_tx(
         public_key: public_key.clone().parse().unwrap(),
         receiver_id: receiver_id.clone(),
         actions: actions.clone(),
-    }.sign(signer);
+    }
+    .sign(signer);
 
     let signed_meta_tx_b64: String = BASE64_ENGINE.encode(signed_meta_tx.try_to_vec().unwrap());
     Ok(json!({"signed_transaction": signed_meta_tx_b64}).to_string())
@@ -2291,7 +2290,7 @@ mod tests {
         let body_str: String = read_body_to_string(body).await.unwrap();
         println!("Response body: {body_str:?}");
         assert_eq!(response_status, StatusCode::OK);
-        assert!(body_str.contains("EQAAAG5vbW5vbW5vbS50ZXN0bmV0AGogbDAp74I4-7jfoIe-ssj2bahcCgpzBdwynck4R24FAAAAAAAAAAAVAAAAcmVsYXllcl90ZXN0MC50ZXN0bmV0AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABAAAACBEAAABub21ub21ub20udGVzdG5ldBUAAAByZWxheWVyX3Rlc3QwLnRlc3RuZXQBAAAAAwEAAAAAAAAAAAAAAAAAAADuMhgRvV0AAAyiUQcAAAAAAGogbDAp74I4-7jfoIe-ssj2bahcCgpzBdwynck4R24FAPUtS-GUXUdhySsYDEHU1LQYEstazmWdCge7TGwWppIvUrVNz7fcTxQkXP1XF4CvZ-z4R3RfypR_gWV3XPscNwcAMLwxytNVJ3O-LQrXdd2F330jAYhE6VaDu8070Pk6OnZTrQg0JaA440RQ9S9tcknSf6nrz7ZYzm_-GxdAwuOVBA"));
+        assert!(body_str.contains("EQAAAG5vbW5vbW5vbS50ZXN0bmV0AGogbDAp74I4+7jfoIe+ssj2bahcCgpzBdwynck4R24F7zIYEb1dAAARAAAAbm9tbm9tbm9tLnRlc3RuZXSyzKQgixHJ+s7OQ03sEfSo/Wex0Po/Sb5/R6qnM8GZ5AEAAAAIEQAAAG5vbW5vbW5vbS50ZXN0bmV0FQAAAHJlbGF5ZXJfdGVzdDAudGVzdG5ldAEAAAADAQAAAAAAAAAAAAAAAAAAAO4yGBG9XQAADKJRBwAAAAAAaiBsMCnvgjj7uN+gh76yyPZtqFwKCnMF3DKdyThHbgUA9S1L4ZRdR2HJKxgMQdTUtBgSy1rOZZ0KB7tMbBamki9StU3Pt9xPFCRc/VcXgK9n7PhHdF/KlH+BZXdc+xw3BwAW5VUjtd6PQXvDcAduSjLJyYEUg8e+NtKOZHhWmr+MTAyPuKUSDYzxdj6y/ynCOcmufg0GAn/cXyBGOMy6HkIH"));
     }
 
     /// Not actually a unit test of a specific fn, just tests or helper fns for specific functionality
