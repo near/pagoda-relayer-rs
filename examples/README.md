@@ -24,3 +24,5 @@ Please note that these are for reference only and you should be updating the val
 - `shared_storage.toml`
   - This is a config for a relayer that covers BOTH gas AND storage fees for user transactions to interact with a whitelisted set of contracts
   - be sure to include shared storage logic based on https://github.com/NearSocial/social-db/blob/master/contract/src/shared_storage.rs in your contract that is being whitelisted
+- `exchange_withdraw.toml` 
+  - This is a config for a relayer where an exchange running the relayer covers user withdraw fees when they are withdrawing stablecoins on NEAR (ie USDT or USDC)
