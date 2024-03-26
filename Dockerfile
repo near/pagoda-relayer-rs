@@ -1,4 +1,4 @@
-FROM rust:1.70 AS builder
+FROM rust:1.74 AS builder
 WORKDIR /tmp/
 
 # this build step will cache your dependencies
