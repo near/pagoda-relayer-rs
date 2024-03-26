@@ -1197,7 +1197,14 @@ async fn create_signed_meta_tx(
     pk_and_sda: &PublicKeyAndSDAJson,
 ) -> Result<String, RelayError> {
     let public_key: String = pk_and_sda.public_key.clone();
-    let signer: &InMemorySigner = MAP_SIGNER.get(&*public_key).unwrap();
+    let temp_signer = MAP_SIGNER.get(&*public_key).ok_or_else(|| RelayError {
+        status_code: StatusCode::BAD_REQUEST,
+        message: format!(
+            "Signer {:?} not found. Please add it to the json file in account_keys",
+            public_key.clone()
+        ),
+    })?;
+    let signer: &InMemorySigner = temp_signer;
     let receiver_id: &AccountId = &pk_and_sda.signed_delegate_action.delegate_action.sender_id;
     let actions: Vec<Action> = vec![Action::Delegate(pk_and_sda.signed_delegate_action.clone())];
     let mut nonce: u64;
