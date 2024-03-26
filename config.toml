@@ -1,57 +1,48 @@
-# This is a config that should be updated. See /examples directory for example configs corresponding to different use cases.
-# PLEASE READ THE COMMENTS IN THIS FILE
+# No Filters config
+# This is a config for a relayer that covers gas for a whitelisted set of users' transactions with no filters
+# To prevent abuse, this should only be used if there's only a secure backend calling the relayer
+
+# Please note this is for reference only and you should be updating the values in the `config.toml` file found in the `pagoda-relayer-rs` directory.
 
 # ip address to run server on, default to localhost
 ip_address = [0, 0, 0, 0]
 # port to expose
 port = 3030
 # replace with the account id of the public key you will use to sign relay transactions - this should match the account_id in your json file
-relayer_account_id = "nomnomnom.testnet"   # "relayer.pagodaplatform.near"
-# replace with json files containing 3 entries: account_id (should match relayer_account_id), public_key, private_key
+relayer_account_id = "nomnomnom.testnet"
+# this is a list of jsons from json key files containing 3 entries: account_id, public_key, secret_key
+# NOTE: If you copy/paste the json from the key files, you might need to change private_key to secret_key
+# NOTE: account_id for all keys used should match as they should be derived from the same account_id
 # this is recommended for high throughput use cases to prevent nonce race conditions
-keys_filenames = [
-    "./account_keys/nomnomnom.testnet.json",
-    "./account_keys/e4a6dd159d45d4104679e709d29d49a533e5df9467b311c9dbea7fb8f0077335.json",
-    "./account_keys/df86e9701801e30cf0649b2ea43aeacef60e394e076709d4519880d5a9c7bc9e.json",
-    "./account_keys/37cb5b936de257d014e663663b186e58e4c3c4c9b4c7643e7b89821e789b0b4b.json",
-    "./account_keys/b278b7752b844a0cc88f8dbdb053b860d6283fb353e7a317b3b82efe01396c3e.json",
-]
-# replace with the account id of the public key you will use to sign shared_storage transactions - this should match the account_id in your json file
-shared_storage_account_id = "relayer-test.testnet"  # "social-storage.pagodaplatform.near"
-# replace with json file containing 3 entries: account_id (should match shared_storage_account_id), public_key, private_key
-shared_storage_keys_filename = "relayer-test.testnet.json"  # "social-storage.pagodaplatform.json"
-# whitelisted contract ids (receiver_id) i.e. ["social.near", "devgovgigs.near"] for mainnet
-whitelisted_contracts = ["social-storage.pagodaplatform.near", "relayer.pagodaplatform.near", "social.near", "devgovgigs.near", "near", "account_creator.near", "consensus.neartasks.near", "nearhorizon.near", "relayer_test0.testnet"]
-# check if this is a whitelisted sender - to run without this feature, then set use_fastauth_features = false below
-whitelisted_delegate_action_receiver_ids = ["account_creator.near", "relayer_test1.testnet", "social.near"]
+keys_filename = "./account_keys/nomnomnom.testnet.json"
+
+# can interact with all contracts
+use_whitelisted_contracts = false
+
+# can be sent from all users
+use_whitelisted_delegate_action_receiver_ids = false
+
 # if this is set to false, just call /send_meta_tx or /relay endpoints. All other endpoints are coupled with using redis
 # this needs to be set to true if use_fastauth_features = true
 use_redis = false
-# redis url for storing and retrieving allowance for an account_id and seeing if an oauth_token has been used before
-redis_url = "redis://127.0.0.1:6379"
 
 # set use_fastauth_features to true if you're integrating with fastauth -
 # including check if sender id and receiver id are the same AND (AddKey or DeleteKey action) in process_signed_delegate_action fn
 # and you're using shared storage contract
 use_fastauth_features = false
+
 # you can still use shared storage without fastauth features if you desire,
 # but needs to be set to true if using fastauth or the contract you're sending transactions to requires a storage deposit
 use_shared_storage = false
-# reference shared storage contract: https://github.com/NearSocial/social-db/blob/master/contract/src/shared_storage.rs
-social_db_contract_id = "v1.social08.testnet"
 
 # Uncoment the network you want to use or add your own
 
 # mainnet
 # network = "mainnet"
 # rpc_url = "https://rpc.mainnet.near.org"
-# wallet_url = "https://wallet.mainnet.near.org"
-# explorer_transaction_url = "https://explorer.mainnet.near.org/transactions/"
 # rpc_api_key = ""
 
 # testnet
 network = "testnet"
-rpc_url = "https://archival-rpc.testnet.near.org"
-wallet_url = "https://wallet.testnet.near.org"
-explorer_transaction_url = "https://explorer.testnet.near.org/transactions/"
+rpc_url = "https://rpc.testnet.near.org"
 rpc_api_key = ""

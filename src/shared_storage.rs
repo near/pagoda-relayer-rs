@@ -1,8 +1,10 @@
-use anyhow::Context;
+use anyhow::{anyhow, Context};
 use near_crypto::InMemorySigner;
+use near_fetch::Client;
 use near_primitives::transaction::{Action, FunctionCallAction};
 use near_primitives::types::{AccountId, Balance, Gas, StorageUsage};
 use serde::Deserialize;
+use std::sync::Arc;
 use tracing::debug;
 
 /// Gas for transactions to shared storage pool.
@@ -29,15 +31,24 @@ const fn bytes_per_amount(amount: Balance) -> u64 {
 /// near social.
 pub struct SharedStoragePoolManager {
     signer: InMemorySigner,
-    rpc_client: &'static near_fetch::Client,
+    rpc_client: Arc<Client>,
     pool_contract_id: AccountId,
     pool_owner_id: AccountId,
+}
+impl std::fmt::Debug for SharedStoragePoolManager {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SharedStoragePoolManager")
+            .field("rpc_client", &self.rpc_client)
+            .field("pool_contract_id", &self.pool_contract_id)
+            .field("pool_owner_id", &self.pool_owner_id)
+            .finish()
+    }
 }
 
 impl SharedStoragePoolManager {
     pub fn new(
         signer: InMemorySigner,
-        rpc_client: &'static near_fetch::Client,
+        rpc_client: Arc<Client>,
         pool_contract_id: AccountId,
         pool_owner_id: AccountId,
     ) -> Self {
@@ -116,31 +127,18 @@ impl SharedStoragePoolManager {
         Ok(())
     }
 
-    #[allow(dead_code)]
-    async fn get_account_storage(&self) -> anyhow::Result<Option<StorageView>> {
-        self.rpc_client
-            .view(
-                &self.pool_contract_id,
-                "get_account_storage",
-                serde_json::json!({
-                    "account_id": self.pool_owner_id.clone(),
-                }),
-            )
-            .await
-            .map_err(Into::into)
-    }
-
     async fn get_shared_storage_pool(&self) -> anyhow::Result<Option<SharedStoragePool>> {
-        self.rpc_client
-            .view(
-                &self.pool_contract_id,
-                "get_shared_storage_pool",
-                serde_json::json!({
-                    "owner_id": self.pool_owner_id.clone(),
-                }),
-            )
-            .await
-            .map_err(Into::into)
+        let res = self
+            .rpc_client
+            .view(&self.pool_contract_id, "get_shared_storage_pool")
+            .args_json(serde_json::json!({
+                "owner_id": self.pool_owner_id.clone(),
+            }))
+            .await;
+        match res {
+            Ok(res) => serde_json::from_slice(&res.result).map_err(|e| anyhow!(e)),
+            Err(e) => Err(anyhow!(e)),
+        }
     }
 }
 

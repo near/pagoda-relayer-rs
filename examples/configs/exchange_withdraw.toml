@@ -1,5 +1,5 @@
-# Whitelist Senders config
-# This is a config for a relayer that covers gas for a whitelisted set of users' transactions (identified by whitelisted_delegate_action_receiver_ids) to interact with a whitelisted set of contracts
+# Exchange Withdraw config
+# This is a config for a relayer that covers gas for exchange user transactions to withdraw to their wallets in stablecoins
 
 # Please note this is for reference only and you should be updating the values in the `config.toml` file found in the `pagoda-relayer-rs` directory.
 
@@ -8,22 +8,29 @@ ip_address = [0, 0, 0, 0]
 # port to expose
 port = 3030
 # replace with the account id of the public key you will use to sign relay transactions - this should match the account_id in your json file
-relayer_account_id = "nomnomnom.testnet"
+relayer_account_id = "exchange-relayer-wallet.near"
 # this is a list of jsons from json key files containing 3 entries: account_id, public_key, secret_key
 # NOTE: If you copy/paste the json from the key files, you might need to change private_key to secret_key
 # NOTE: account_id for all keys used should match as they should be derived from the same account_id
 # this is recommended for high throughput use cases to prevent nonce race conditions
-keys_filename = "./account_keys/nomnomnom.testnet.json"
-# whitelisted contract ids (receiver_id)
-whitelisted_contracts = ["nomnomnom.testnet", "relayer_test0.testnet", "relayer_test1.testnet"]
-# use this to whitelist sender account ids (delegate_action_receiver_ids)
-use_whitelisted_delegate_action_receiver_ids = true
-# whitelisted sender account ids (delegate_action_receiver_ids)
-whitelisted_delegate_action_receiver_ids = ["relayer_test1.testnet"]
+keys_filename = "./account_keys/exchange_relayer_account.testnet.json"
 
+# # whitelisted contract ids (receiver_id) only allow for stablecoin withdraws
+whitelisted_contracts = [
+    "usdc.usd-coin.testnet",
+    "usdt.tether-token.testnet",
+]
 # if this is set to false, just call /send_meta_tx or /relay endpoints. All other endpoints are coupled with using redis
 # this needs to be set to true if use_fastauth_features = true
 use_redis = false
+
+# can withdraw to any account id
+use_whitelisted_contracts = false
+
+# if you're using a whitelist for exchanges, you can set the following to true
+use_whitelisted_delegate_action_receiver_ids = true
+# for exchange_addresses, you can add the exchange contract account id
+whitelisted_delegate_action_receiver_ids = ["exchange_address0.near", "exchange_address1.near"]
 
 # set use_fastauth_features to true if you're integrating with fastauth -
 # including check if sender id and receiver id are the same AND (AddKey or DeleteKey action) in process_signed_delegate_action fn
@@ -33,14 +40,19 @@ use_fastauth_features = false
 # but needs to be set to true if using fastauth or the contract you're sending transactions to requires a storage deposit
 use_shared_storage = false
 
+# specific configs for Exchange
+# if you're using Exchange, you can set the following to true
+# and the relayer will automatically add the storage deposit and ft transfer attachment deposit
+use_exchange = true
 # Uncoment the network you want to use or add your own
 
-# mainnet
-# network = "mainnet"
-# rpc_url = "https://rpc.mainnet.near.org"
-# rpc_api_key = ""
 
-# testnet
+#allowed actions
+allowed_actions = [
+    "FunctionCall",
+    "CreateAccount",
+]
+# mainnet
 network = "testnet"
 rpc_url = "https://rpc.testnet.near.org"
 rpc_api_key = ""
