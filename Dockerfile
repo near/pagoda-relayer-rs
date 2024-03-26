@@ -13,7 +13,7 @@ COPY ./src ./relayer/src
 # build for release
 RUN cargo build --release
 
-FROM ubuntu:20.04
+FROM ubuntu:22.04
 WORKDIR /relayer-app
 RUN apt update && apt install -yy openssl ca-certificates jq
 COPY --from=builder /tmp/target/release/relayer .
