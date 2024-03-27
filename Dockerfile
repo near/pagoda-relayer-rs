@@ -1,20 +1,17 @@
 FROM rust:1.74 AS builder
-WORKDIR /tmp/
-
-# this build step will cache your dependencies
-COPY Cargo.lock ./
-RUN echo '[workspace]\nmembers = ["relayer"]' > Cargo.toml
-COPY ./Cargo.toml relayer/Cargo.toml
-RUN mkdir relayer/src && echo 'fn main() {}' > relayer/src/main.rs cargo build --release && rm -r relayer/src
-
-# copy your source tree
-COPY ./src ./relayer/src
-
-# build for release
+WORKDIR /usr/src/relayer
+COPY Cargo.toml Cargo.lock ./
+COPY src ./src
 RUN cargo build --release
+
 
 FROM ubuntu:22.04
 WORKDIR /relayer-app
-RUN apt update && apt install -yy openssl ca-certificates jq
-COPY --from=builder /tmp/target/release/relayer .
+RUN apt-get update && apt-get install -y \
+    openssl \
+    ca-certificates \
+    jq \
+    && rm -rf /var/lib/apt/lists/*
+COPY --from=builder /usr/src/relayer/target/release/relayer .
+
 ENTRYPOINT ["/relayer-app/relayer", "--config", "config.toml"]
