@@ -1613,7 +1613,8 @@ where
         validate_signed_delegate_action(state, &signed_delegate_action);
     validation_result?;
 
-    let receiver_id: &AccountId = &signed_delegate_action.delegate_action.receiver_id;
+    // the receiver of the txn is the sender of the signed delegate action
+    let receiver_id: &AccountId = &signed_delegate_action.delegate_action.sender_id;
     let actions: Vec<Action> = vec![Action::Delegate(signed_delegate_action.clone())];
     let txn_hash: CryptoHash = state
         .rpc_client
@@ -1650,8 +1651,8 @@ where
         validate_signed_delegate_action(state, &signed_delegate_action);
     validation_result?;
 
-    let signer_account_id: &AccountId = &signed_delegate_action.delegate_action.sender_id;
-    let receiver_id: &AccountId = &signed_delegate_action.delegate_action.receiver_id;
+    // the receiver of the txn is the sender of the signed delegate action
+    let receiver_id: &AccountId = &signed_delegate_action.delegate_action.sender_id;
     let actions: Vec<Action> = vec![Action::Delegate(signed_delegate_action.clone())];
 
     // gas allowance redis specific validation
@@ -1704,7 +1705,7 @@ where
         debug!("total gas burnt in yN: {}", gas_used_in_yn);
         let new_allowance = update_remaining_allowance(
             &state.redis_pool.clone().unwrap(),
-            signer_account_id,
+            receiver_id,
             gas_used_in_yn,
             remaining_allowance,
         )
@@ -1717,7 +1718,7 @@ where
                 message: err_msg,
             }
         })?;
-        info!("Updated remaining allowance for account {signer_account_id}: {new_allowance}",);
+        info!("Updated remaining allowance for account {receiver_id}: {new_allowance}",);
 
         if let FinalExecutionStatus::Failure(_) = status {
             error!("Error message: \n{status_msg:?}");
