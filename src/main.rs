@@ -13,13 +13,13 @@ use axum::{
 use base64::engine::general_purpose::STANDARD_NO_PAD as BASE64_ENGINE;
 use base64::Engine;
 use config::{Config, File as ConfigFile};
-use near_crypto::{InMemorySigner, PublicKey, Signature, Signer};
-use near_fetch::signer::{ExposeAccountId, KeyRotatingSigner, SignerExt};
+use near_crypto::{InMemorySigner, Signer};
+use near_fetch::signer::{ExposeAccountId, KeyRotatingSigner};
 use near_jsonrpc_client::methods::broadcast_tx_async::RpcBroadcastTxAsyncRequest;
-use near_jsonrpc_client::methods::broadcast_tx_commit::RpcBroadcastTxCommitRequest;
+
 use near_primitives::delegate_action::SignedDelegateAction;
 use near_primitives::hash::CryptoHash;
-use near_primitives::transaction::{Action, FunctionCallAction, SignedTransaction, Transaction};
+use near_primitives::transaction::{Action, FunctionCallAction, Transaction};
 use near_primitives::types::{AccountId, Nonce};
 use near_primitives::views::{
     ExecutionOutcomeWithIdView, FinalExecutionOutcomeView, FinalExecutionStatus,
@@ -33,9 +33,9 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::fmt;
-use std::fmt::{Debug, Display, Error, Formatter};
+use std::fmt::{Debug, Display, Formatter};
 use std::future::Future;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::str::FromStr;
 use std::string::ToString;
 use std::time::Duration;
@@ -53,8 +53,6 @@ use crate::error::RelayError;
 use crate::redis_fns::*;
 use crate::rpc_conf::NetworkConfig;
 use crate::shared_storage::SharedStoragePoolManager;
-#[cfg(feature = "shared_storage")]
-use crate::shared_storage::*;
 
 // CONSTANTS
 // transaction cost in Gas (10^21yN or 10Tgas or 0.001N)
@@ -497,7 +495,7 @@ struct TransactionResult {
 #[tokio::main]
 async fn main() {
     // load config
-    let mut toml_config = Config::builder()
+    let toml_config = Config::builder()
         .add_source(ConfigFile::with_name("config.toml"))
         .build()
         .unwrap();
@@ -544,7 +542,7 @@ async fn main() {
     // if fastauth enabled, initialize whitelisted senders with "infinite" allowance in relayer DB
     if config.use_fastauth_features {
         #[cfg(feature = "fastauth_features")]
-        init_senders_infinite_allowance_fastauth(&config, &redis_pool.as_ref().unwrap()).await;
+        init_senders_infinite_allowance_fastauth(&config, redis_pool.as_ref().unwrap()).await;
     }
 
     if config.use_redis {
@@ -698,7 +696,7 @@ async fn get_allowance(
         )
             .into_response();
     };
-    match get_remaining_allowance(&state.redis_pool.as_ref().unwrap(), &account_id_val).await {
+    match get_remaining_allowance(state.redis_pool.as_ref().unwrap(), &account_id_val).await {
         Ok(allowance) => (
             StatusCode::OK,
             allowance.to_string(), // TODO: LP return in json format
@@ -762,7 +760,7 @@ async fn create_account_atomic(
     */
 
     // check if the oauth_token has already been used and is a key in Redis
-    match get_oauth_token_in_redis(&state.redis_pool.as_ref().unwrap(), oauth_token).await {
+    match get_oauth_token_in_redis(state.redis_pool.as_ref().unwrap(), oauth_token).await {
         Ok(is_oauth_token_in_redis) => {
             if is_oauth_token_in_redis {
                 let err_msg = format!(
@@ -782,7 +780,7 @@ async fn create_account_atomic(
         }
     }
     let redis_result = set_account_and_allowance_in_redis(
-        &state.redis_pool.as_ref().unwrap(),
+        state.redis_pool.as_ref().unwrap(),
         account_id,
         allowance_in_gas,
     )
@@ -834,7 +832,7 @@ async fn create_account_atomic(
     }
 
     // add oauth token to redis (key: oauth_token, val: true)
-    match set_oauth_token_in_redis(&state.redis_pool.as_ref().unwrap(), oauth_token).await {
+    match set_oauth_token_in_redis(state.redis_pool.as_ref().unwrap(), oauth_token).await {
         Ok(_) => {
             let ok_msg = format!(
                 "Added Oauth token {oauth_token:?} for account_id {account_id:?} \
@@ -872,7 +870,7 @@ async fn update_allowance(
     let allowance_in_gas: &u64 = &account_id_allowance.allowance;
 
     let redis_result = set_account_and_allowance_in_redis(
-        &state.redis_pool.as_ref().unwrap(),
+        state.redis_pool.as_ref().unwrap(),
         account_id,
         allowance_in_gas,
     )
@@ -906,7 +904,7 @@ async fn update_all_allowances(
 ) -> impl IntoResponse {
     let allowance_in_gas = allowance_json.allowance_in_gas;
     let redis_response = update_all_allowances_in_redis(
-        &state.redis_pool.as_ref().unwrap(),
+        state.redis_pool.as_ref().unwrap(),
         &state.config.network_env,
         allowance_in_gas,
     )
@@ -936,7 +934,7 @@ async fn register_account_and_allowance(
     let allowance_in_gas: &u64 = &account_id_allowance_oauth.allowance;
     let oauth_token: &String = &account_id_allowance_oauth.oauth_token;
     // check if the oauth_token has already been used and is a key in Relayer DB
-    match get_oauth_token_in_redis(&state.redis_pool.as_ref().unwrap(), oauth_token).await {
+    match get_oauth_token_in_redis(state.redis_pool.as_ref().unwrap(), oauth_token).await {
         Ok(is_oauth_token_in_redis) => {
             if is_oauth_token_in_redis {
                 let err_msg = format!(
@@ -957,7 +955,7 @@ async fn register_account_and_allowance(
         }
     }
     let redis_result = set_account_and_allowance_in_redis(
-        &state.redis_pool.as_ref().unwrap(),
+        state.redis_pool.as_ref().unwrap(),
         account_id,
         allowance_in_gas,
     )
@@ -989,7 +987,7 @@ async fn register_account_and_allowance(
     }
 
     // add oauth token to redis (key: oauth_token, val: true)
-    match set_oauth_token_in_redis(&state.redis_pool.as_ref().unwrap(), oauth_token).await {
+    match set_oauth_token_in_redis(state.redis_pool.as_ref().unwrap(), oauth_token).await {
         Ok(_) => {
             let ok_msg = format!("Added Oauth token {account_id_allowance_oauth:?} to Relayer DB");
             info!("{ok_msg}");
@@ -1207,8 +1205,8 @@ async fn create_signed_meta_tx(
     let signer: &InMemorySigner = temp_signer;
     let receiver_id: &AccountId = &pk_and_sda.signed_delegate_action.delegate_action.sender_id;
     let actions: Vec<Action> = vec![Action::Delegate(pk_and_sda.signed_delegate_action.clone())];
-    let mut nonce: u64;
-    let mut block_hash: CryptoHash;
+    let nonce: u64;
+    let block_hash: CryptoHash;
 
     if let (Some(nonce_param), Some(block_hash_param)) = (pk_and_sda.nonce, &pk_and_sda.block_hash)
     {
@@ -1394,7 +1392,7 @@ fn validate_signed_delegate_action(
         .whitelisted_contracts
         .iter()
         .any(|s| s.as_str() == da_receiver_id.as_str());
-    if state.config.use_exchange.clone() {
+    if state.config.use_exchange {
         let non_delegate_actions: Vec<Action> =
             signed_delegate_action.delegate_action.get_actions();
         if state.config.use_whitelisted_senders {
@@ -1509,7 +1507,7 @@ fn validate_signed_delegate_action(
         let non_delegate_action = signed_delegate_action
             .delegate_action
             .actions
-            .get(0)
+            .first()
             .ok_or_else(|| {
                 let err_msg = "DelegateAction must have at least one NonDelegateAction";
                 warn!("{err_msg}");
@@ -1706,7 +1704,7 @@ where
         debug!("total gas burnt in yN: {}", gas_used_in_yn);
         let new_allowance = update_remaining_allowance(
             &state.redis_pool.clone().unwrap(),
-            &signer_account_id,
+            signer_account_id,
             gas_used_in_yn,
             remaining_allowance,
         )
@@ -1861,37 +1859,24 @@ mod tests {
     use axum::{
         extract::{Json, State},
         http::StatusCode,
-        routing::{get, post},
-        Router,
     };
     use bytes::BytesMut;
-    use config::{Config, File as ConfigFile};
+
     use near_crypto::KeyType::ED25519;
-    use near_crypto::{ED25519PublicKey, InMemorySigner, KeyType, PublicKey, Signature, Signer};
-    use near_fetch::signer::{ExposeAccountId, KeyRotatingSigner, SignerExt};
+    use near_crypto::{InMemorySigner, PublicKey, Signature, Signer};
+
     use near_primitives::delegate_action::{
         DelegateAction, NonDelegateAction, SignedDelegateAction,
     };
-    use near_primitives::transaction::{
-        Action, AddKeyAction, FunctionCallAction, Transaction, TransferAction,
-    };
+    use near_primitives::transaction::{Action, FunctionCallAction, TransferAction};
     use near_primitives::types::Balance;
     use near_primitives::types::{BlockHeight, Nonce};
-    use near_primitives::views::ActionView::AddKey;
-    use near_primitives::views::{
-        ExecutionOutcomeWithIdView, FinalExecutionOutcomeView, FinalExecutionStatus,
-    };
-    use near_primitives::{borsh::BorshDeserialize, transaction::CreateAccountAction};
-    use r2d2::{Pool, PooledConnection};
-    use r2d2_redis::redis::{Commands, ErrorKind::IoError, RedisError};
+
+    use r2d2::Pool;
     use r2d2_redis::RedisConnectionManager;
-    use serde_json::{json, Value};
-    use std::fmt::{Debug, Display, Formatter};
-    use std::path::{Path, PathBuf};
-    use std::{net::SocketAddr, sync::Arc};
-    use tracing::{debug, error, info, instrument, warn};
-    use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
-    use utoipa::{OpenApi, ToSchema};
+    use serde_json::json;
+
+    use std::sync::Arc;
 
     /// Helper function to create a test Redis pool
     async fn create_test_redis_pool() -> Pool<RedisConnectionManager> {
@@ -1905,17 +1890,15 @@ mod tests {
         use_whitelisted_senders: bool,
         whitelisted_contracts: Option<Vec<String>>,
         whitelisted_senders: Option<Vec<String>>,
-        use_exchange: bool,
+        _use_exchange: bool,
     ) -> AppState {
-        let mut config = RelayerConfiguration::default();
-        config.use_whitelisted_contracts = use_whitelisted_contracts;
-        config.use_whitelisted_senders = use_whitelisted_senders;
-        if whitelisted_contracts.is_some() {
-            config.whitelisted_contracts = whitelisted_contracts.unwrap();
-        }
-        if whitelisted_senders.is_some() {
-            config.whitelisted_senders = whitelisted_senders.unwrap();
-        }
+        let config = RelayerConfiguration {
+            use_whitelisted_contracts,
+            use_whitelisted_senders,
+            whitelisted_contracts: whitelisted_contracts.unwrap_or_default(),
+            whitelisted_senders: whitelisted_senders.unwrap_or_default(),
+            ..Default::default()
+        };
         let rpc_client = Arc::new(config.network_config.rpc_client());
         let rpc_client_nofetch = Arc::new(config.network_config.raw_rpc_client());
         let redis_pool = Some(create_test_redis_pool().await);
@@ -2216,7 +2199,7 @@ mod tests {
         let max_block_height = 122790412;
         let pk_str: String = "ed25519:89GtfFzez3opomVpwa7i4m3nptHtc7Ha514XHMWszQtL".to_string();
         let public_key: PublicKey = PublicKey::from_str(&pk_str).unwrap();
-        let signature: Signature = Signature::from("ed25519:5uJu7KapH89h9cQm5btE1DKnbiFXSZNT7McDw5LHy8pdAt5Mz9DfuyQZadGgFExo88or9152iwcw2q12rnFWa6bg".parse().unwrap());
+        let signature: Signature = "ed25519:5uJu7KapH89h9cQm5btE1DKnbiFXSZNT7McDw5LHy8pdAt5Mz9DfuyQZadGgFExo88or9152iwcw2q12rnFWa6bg".parse().unwrap();
 
         // Call the `send_meta_tx` function with a sender that has no gas allowance
         // (and a receiver_id that isn't in whitelist)
@@ -2261,7 +2244,7 @@ mod tests {
         let max_block_height = 122790412;
         let pk_str: String = "ed25519:89GtfFzez3opomVpwa7i4m3nptHtc7Ha514XHMWszQtL".to_string();
         let public_key: PublicKey = PublicKey::from_str(&pk_str).unwrap();
-        let signature: Signature = Signature::from("ed25519:5uJu7KapH89h9cQm5btE1DKnbiFXSZNT7McDw5LHy8pdAt5Mz9DfuyQZadGgFExo88or9152iwcw2q12rnFWa6bg".parse().unwrap());
+        let signature: Signature = "ed25519:5uJu7KapH89h9cQm5btE1DKnbiFXSZNT7McDw5LHy8pdAt5Mz9DfuyQZadGgFExo88or9152iwcw2q12rnFWa6bg".parse().unwrap();
 
         // Call the `send_meta_tx` function with a sender that has no gas allowance
         // (and a receiver_id that isn't in whitelist)
