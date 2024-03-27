@@ -154,4 +154,5 @@ pub struct StorageView {
 /// get_shared_storage_pool
 // JSON deserialization trick. no need to understand what actual structure is.
 #[derive(Debug, Deserialize)]
+#[allow(dead_code)]
 pub struct SharedStoragePool(serde_json::Map<String, serde_json::Value>);
