@@ -20,7 +20,7 @@ keys_filename = "./account_keys/nomnomnom.testnet.json"
 use_whitelisted_contracts = false
 
 # can be sent from all users
-use_whitelisted_delegate_action_receiver_ids = false
+use_whitelisted_senders = false
 
 # if this is set to false, just call /send_meta_tx or /relay endpoints. All other endpoints are coupled with using redis
 # this needs to be set to true if use_fastauth_features = true

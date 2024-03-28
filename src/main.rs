@@ -680,6 +680,7 @@ async fn init_senders_infinite_allowance_fastauth(
     request_body = AccountIdJson,
     responses(
         (status = 200, description = "90000000000000", body = String),
+        (status = 403, description = "Invalid account_id", body = String),
         (status = 500, description = "Error getting allowance for account_id example.near in Relayer DB: err_msg", body = String)
     )
 )]
