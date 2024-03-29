@@ -1383,6 +1383,7 @@ fn validate_signed_delegate_action(
     let da_receiver_id = &signed_delegate_action.delegate_action.receiver_id;
 
     // if we are not using whitelisted contracts or senders, then no validation needed
+    // TODO: Is this true? What about validating method name? Or Pay With FT?
     if !state.config.use_whitelisted_contracts && !state.config.use_whitelisted_senders {
         return Ok(());
     }
@@ -2303,6 +2304,81 @@ mod tests {
             None, None, None, // default action type is transfer, which is not allowed
         );
         assert!(validate_signed_delegate_action(&state, &action).is_err());
+    }
+
+    #[tokio::test]
+    async fn test_validate_signed_delegate_action_ft_transfer_to_burn_address() {
+        let mut app_state = create_app_state(
+            false,                                                // use_whitelisted_contracts
+            true,                                                 // use_whitelisted_senders
+            None,                                                 // whitelisted_contracts
+            Some(vec!["whitelisted_sender.testnet".to_string()]), // whitelisted_senders
+            false,                                                // use_exchange
+        )
+        .await;
+        app_state.config.use_pay_with_ft = true;
+        app_state.config.burn_address = "burn_address.testnet".to_string();
+
+        // Create a SignedDelegateAction simulating an FT transfer to the burn address
+        let signed_delegate_action = create_signed_delegate_action(
+            Some("whitelisted_sender.testnet"),   // Mock sender
+            Some(&app_state.config.burn_address), // Use the configured burn address
+            Some(vec![Action::FunctionCall(FunctionCallAction {
+                method_name: "ft_transfer".to_string(),
+                args: json!({
+                    "receiver_id": app_state.config.burn_address,
+                    "amount": "1000000000000000000" // Example amount
+                })
+                .to_string()
+                .into_bytes(),
+                gas: 300000000000000,
+                deposit: 1, // Simulated deposit for the action
+            })]),
+        );
+
+        let result = validate_signed_delegate_action(&app_state, &signed_delegate_action);
+        println!("{result:?}");
+        assert!(
+            result.is_ok(),
+            "Expected FT transfer to burn address to be valid."
+        );
+    }
+
+    #[tokio::test]
+    async fn test_validate_signed_delegate_action_ft_transfer_to_non_burn_address() {
+        let mut app_state = create_app_state(
+            false,                                                // use_whitelisted_contracts
+            true,                                                 // use_whitelisted_senders
+            None,                                                 // whitelisted_contracts
+            Some(vec!["whitelisted_sender.testnet".to_string()]), // whitelisted_senders
+            false,                                                // use_exchange
+        )
+        .await;
+        app_state.config.use_pay_with_ft = true;
+
+        // Create a SignedDelegateAction simulating an FT transfer to a non-burn address
+        let signed_delegate_action = create_signed_delegate_action(
+            Some("whitelisted_sender.testnet"), // Mock sender
+            Some("non_burn_address.testnet"),   // Use a non-burn address
+            Some(vec![Action::FunctionCall(FunctionCallAction {
+                method_name: "ft_transfer".to_string(),
+                args: json!({
+                    "receiver_id": "non_burn_address.testnet",
+                    "amount": "1000000000000000000" // Example amount
+                })
+                .to_string()
+                .into_bytes(),
+                gas: 300000000000000,
+                deposit: 1, // Simulated deposit for the action
+            })]),
+        );
+
+        let result = validate_signed_delegate_action(&app_state, &signed_delegate_action);
+        println!("{result:?}");
+        assert!(
+            result.is_err(),
+            "Expected FT transfer to non-burn address to be invalid."
+        );
     }
 
     #[tokio::test]
