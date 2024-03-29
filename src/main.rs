@@ -1868,10 +1868,11 @@ mod tests {
     use near_crypto::KeyType::ED25519;
     use near_crypto::{InMemorySigner, PublicKey, Signature, Signer};
 
+    use near_primitives::account::{AccessKey, AccessKeyPermission};
     use near_primitives::delegate_action::{
         DelegateAction, NonDelegateAction, SignedDelegateAction,
     };
-    use near_primitives::transaction::{Action, FunctionCallAction, TransferAction};
+    use near_primitives::transaction::{Action, AddKeyAction, FunctionCallAction, TransferAction};
     use near_primitives::types::Balance;
     use near_primitives::types::{BlockHeight, Nonce};
 
@@ -2375,6 +2376,73 @@ mod tests {
         assert!(
             result.is_err(),
             "Expected FT transfer to non-burn address to be invalid."
+        );
+    }
+
+    #[tokio::test]
+    async fn test_validate_signed_delegate_action_fastauth_with_contract_whitelisting_valid_scenario(
+    ) {
+        let mut app_state = create_app_state(
+            true,                                                   // use_whitelisted_contracts enabled
+            false, // use_whitelisted_senders disabled for this test
+            Some(vec!["whitelisted_contract.testnet".to_string()]), // Assuming this is irrelevant for this test due to fastauth specifics
+            None,  // No whitelisted_senders specified
+            false, // use_exchange disabled
+        )
+        .await;
+        app_state.config.use_fastauth_features = true;
+
+        // Simulate a valid SignedDelegateAction for AddKey by the same account to itself
+        let sender_id = "user_with_fastauth.testnet";
+        let receiver_id = sender_id; // Matching sender and receiver for fastauth scenario
+        let actions = vec![Action::AddKey(AddKeyAction {
+            public_key: "ed25519:3GTVh8BQjY3t9ZUpzwCSMbFqWVTswei8uMBQBBnS5H6p"
+                .parse()
+                .unwrap(),
+            access_key: AccessKey {
+                nonce: 0,
+                permission: AccessKeyPermission::FullAccess,
+            },
+        })];
+
+        let signed_delegate_action =
+            create_signed_delegate_action(Some(sender_id), Some(receiver_id), Some(actions));
+
+        let result = validate_signed_delegate_action(&app_state, &signed_delegate_action);
+
+        assert!(
+            result.is_ok(),
+            "Expected OK validation for valid fastauth scenario with contract whitelisting."
+        );
+    }
+
+    #[tokio::test]
+    async fn test_validate_signed_delegate_action_fastauth_with_contract_whitelisting_invalid_scenario(
+    ) {
+        let mut app_state = create_app_state(
+            true,                                                   // use_whitelisted_contracts enabled
+            false, // use_whitelisted_senders disabled for this test
+            Some(vec!["whitelisted_contract.testnet".to_string()]), // Assuming this is irrelevant for this test due to fastauth specifics
+            None,  // No whitelisted_senders specified
+            false, // use_exchange disabled
+        )
+        .await;
+        app_state.config.use_fastauth_features = true;
+
+        // Simulate an invalid SignedDelegateAction where sender and receiver IDs do not match
+        // and the action is not a self-action (e.g., transferring tokens), making it invalid under fastauth
+        let sender_id = "user_without_fastauth.testnet"; // Not matching receiver, simulating a non-self action
+        let receiver_id = "another_account.testnet";
+        let actions = vec![Action::Transfer(TransferAction { deposit: 1000 })]; // Non-key management action
+
+        let signed_delegate_action =
+            create_signed_delegate_action(Some(sender_id), Some(receiver_id), Some(actions));
+
+        let result = validate_signed_delegate_action(&app_state, &signed_delegate_action);
+
+        assert!(
+            result.is_err(),
+            "Expected error validation for invalid fastauth scenario with contract whitelisting."
         );
     }
 
