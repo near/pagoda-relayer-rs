@@ -1421,11 +1421,11 @@ fn validate_signed_delegate_action(
                 }) => {
                     debug!("method_name: {:?}", method_name);
                     debug!("deposit: {:?}", deposit);
-                    if !is_whitelisted_da_receiver {
+                    if state.config.use_whitelisted_contracts && !is_whitelisted_da_receiver {
                         return Err(RelayError {
                             status_code: StatusCode::BAD_REQUEST,
                             message: format!(
-                                "Delegate Action Sender_id {receiver_id:?} is not whitelisted"
+                                "Delegate Action Receiver_id {da_receiver_id:?} is not whitelisted"
                             ),
                         });
                     }
@@ -1895,10 +1895,11 @@ mod tests {
         _use_exchange: bool,
     ) -> AppState {
         let config = RelayerConfiguration {
-            use_whitelisted_contracts,
-            use_whitelisted_senders,
+            use_whitelisted_contracts: use_whitelisted_contracts,
+            use_whitelisted_senders: use_whitelisted_senders,
             whitelisted_contracts: whitelisted_contracts.unwrap_or_default(),
             whitelisted_senders: whitelisted_senders.unwrap_or_default(),
+            use_exchange: _use_exchange,
             ..Default::default()
         };
         let rpc_client = Arc::new(config.network_config.rpc_client());
@@ -1984,8 +1985,7 @@ mod tests {
     #[tokio::test]
     /// Tests that validate_signed_delegate_action returns an error when the receiver is not whitelisted
     async fn test_validate_signed_delegate_action_receiver_not_whitelisted() {
-        let mut app_state = create_app_state(true, false, None, None, false).await;
-        app_state.config.use_whitelisted_contracts = true;
+        let app_state = create_app_state(true, false, None, None, false).await;
         let signed_delegate_action = create_signed_delegate_action(None, None, None);
 
         let result = validate_signed_delegate_action(&app_state, &signed_delegate_action);
@@ -2006,24 +2006,274 @@ mod tests {
     }
 
     #[tokio::test]
-    /// Tests that validate_signed_delegate_action returns success when the sender + receiver are whitelisted
-    async fn test_validation_with_whitelisted_contracts_and_sender() {
-        let state = create_app_state(
-            true,
-            true,
-            Some(vec!["relayer_test1.testnet".to_string()]),
-            Some(vec!["relayer_test0.testnet".to_string()]),
-            false,
+    async fn test_validate_signed_delegate_action_only_receiver_whitelisted() {
+        let app_state = create_app_state(
+            true,  // Receiver (contract) whitelisting enabled
+            false, // Sender whitelisting disabled
+            Some(vec!["whitelisted_receiver.testnet".to_string()]), // Whitelisted receivers (contracts)
+            None,                                                   // Whitelisted senders not used
+            false,                                                  // use_exchange disabled
         )
         .await;
-        let sda = create_signed_delegate_action(
-            Some("relayer_test0.testnet"),
-            Some("relayer_test1.testnet"),
-            Some(vec![Action::Transfer(TransferAction {
-                deposit: 0.00000001 as Balance,
-            })]),
+        let signed_delegate_action = create_signed_delegate_action(
+            Some("sender.testnet"),               // sender_id
+            Some("whitelisted_receiver.testnet"), // receiver_id matches the whitelisted receiver (contract)
+            None,                                 // Default actions
         );
-        assert!(validate_signed_delegate_action(&state, &sda).is_ok());
+
+        let result = validate_signed_delegate_action(&app_state, &signed_delegate_action);
+
+        assert!(
+            result.is_ok(),
+            "Expected OK validation for actions with whitelisted receiver."
+        );
+    }
+
+    #[tokio::test]
+    async fn test_validate_signed_delegate_action_only_sender_whitelisted() {
+        let app_state = create_app_state(
+            false, // Receiver (contract) whitelisting disabled
+            true,  // Sender whitelisting enabled
+            None,  // Whitelisted receivers (contracts) not used
+            Some(vec!["whitelisted_sender.testnet".to_string()]), // Whitelisted senders
+            false, // use_exchange disabled
+        )
+        .await;
+        let signed_delegate_action = create_signed_delegate_action(
+            Some("whitelisted_sender.testnet"), // sender_id matches the whitelisted sender
+            Some("receiver.testnet"),           // receiver_id
+            None,                               // Default actions
+        );
+
+        let result = validate_signed_delegate_action(&app_state, &signed_delegate_action);
+
+        assert!(
+            result.is_ok(),
+            "Expected OK validation for actions with whitelisted sender."
+        );
+    }
+
+    #[tokio::test]
+    async fn test_validate_signed_delegate_action_both_whitelisted() {
+        let app_state = create_app_state(
+            true, // Receiver (contract) whitelisting enabled
+            true, // Sender whitelisting enabled
+            Some(vec!["whitelisted_receiver.testnet".to_string()]), // Whitelisted receivers (contracts)
+            Some(vec!["whitelisted_sender.testnet".to_string()]),   // Whitelisted senders
+            false,                                                  // Pay with FT disabled
+        )
+        .await;
+        let signed_delegate_action = create_signed_delegate_action(
+            Some("whitelisted_sender.testnet"), // sender_id matches the whitelisted sender
+            Some("whitelisted_receiver.testnet"), // receiver_id matches the whitelisted receiver (contract)
+            None,                                 // Default actions
+        );
+
+        let result = validate_signed_delegate_action(&app_state, &signed_delegate_action);
+
+        assert!(
+            result.is_ok(),
+            "Expected OK validation for actions with both sender and receiver whitelisted."
+        );
+    }
+
+    #[tokio::test]
+    async fn test_validate_action_receiver_not_in_whitelist() {
+        let app_state = create_app_state(
+            true,  // Receiver (contract) whitelisting enabled
+            false, // Sender whitelisting disabled
+            Some(vec!["whitelisted_receiver.testnet".to_string()]), // Whitelisted receivers (contracts)
+            None,                                                   // Whitelisted senders not used
+            false,                                                  // Pay with FT disabled
+        )
+        .await;
+        let signed_delegate_action = create_signed_delegate_action(
+            Some("sender.testnet"),                   // sender_id
+            Some("non_whitelisted_receiver.testnet"), // receiver_id is not in the whitelisted receivers
+            None,                                     // Default actions
+        );
+
+        let result = validate_signed_delegate_action(&app_state, &signed_delegate_action);
+
+        assert!(
+            result.is_err(),
+            "Expected validation failure due to receiver not being in whitelist."
+        );
+    }
+
+    #[tokio::test]
+    async fn test_validate_action_sender_not_in_whitelist() {
+        let app_state = create_app_state(
+            false, // Receiver (contract) whitelisting disabled
+            true,  // Sender whitelisting enabled
+            None,  // Whitelisted receivers not used
+            Some(vec!["whitelisted_sender.testnet".to_string()]), // Whitelisted senders
+            false, // use_exchange disabled
+        )
+        .await;
+        let signed_delegate_action = create_signed_delegate_action(
+            Some("non_whitelisted_sender.testnet"), // sender_id is not in the whitelisted senders
+            Some("receiver.testnet"),               // receiver_id
+            None,                                   // Default actions
+        );
+
+        let result = validate_signed_delegate_action(&app_state, &signed_delegate_action);
+
+        assert!(
+            result.is_err(),
+            "Expected validation failure due to sender not being in whitelist."
+        );
+    }
+
+    #[tokio::test]
+    async fn test_validate_action_both_sender_receiver_not_in_whitelist() {
+        let app_state = create_app_state(
+            true, // Receiver (contract) whitelisting enabled
+            true, // Sender whitelisting enabled
+            Some(vec!["whitelisted_receiver.testnet".to_string()]), // Whitelisted receivers
+            Some(vec!["whitelisted_sender.testnet".to_string()]), // Whitelisted senders
+            false, // Pay with FT disabled
+        )
+        .await;
+        let signed_delegate_action = create_signed_delegate_action(
+            Some("non_whitelisted_sender.testnet"), // sender_id is not in the whitelisted senders
+            Some("non_whitelisted_receiver.testnet"), // receiver_id is not in the whitelisted receivers
+            None,                                     // Default actions
+        );
+
+        let result = validate_signed_delegate_action(&app_state, &signed_delegate_action);
+
+        assert!(result.is_err(), "Expected validation failure due to both sender and receiver not being in their respective whitelists.");
+    }
+
+    #[tokio::test]
+    async fn test_valid_function_call_with_whitelisted_sender() {
+        let app_state = create_app_state(
+            false,                                    // use_whitelisted_contracts
+            true,                                     // use_whitelisted_senders
+            None,                                     // whitelisted_contracts
+            Some(vec!["sender.testnet".to_string()]), // whitelisted_senders
+            true,                                     // use_exchange
+        )
+        .await;
+
+        // Simulate a valid `ft_transfer` function call action
+        let actions = vec![Action::FunctionCall(FunctionCallAction {
+            method_name: FT_TRANSFER_METHOD_NAME.to_string(),
+            args: BASE64_ENGINE
+                .encode("{\"receiver_id\":\"receiver.testnet\",\"amount\":\"10\"}")
+                .into_bytes(),
+            gas: 30_000_000_000_000,
+            deposit: FT_TRANSFER_ATTACHMENT_DEPOSIT_AMOUNT,
+        })];
+
+        let signed_delegate_action = create_signed_delegate_action(
+            Some("sender.testnet"),   // Matching the whitelisted sender
+            Some("exchange.testnet"), // Receiver (not relevant in this case)
+            Some(actions),
+        );
+
+        let result = validate_signed_delegate_action(&app_state, &signed_delegate_action);
+        assert!(
+            result.is_ok(),
+            "Expected validation to pass for a valid function call with a whitelisted sender."
+        );
+    }
+
+    #[tokio::test]
+    async fn test_invalid_method_name_with_whitelisted_sender() {
+        let app_state = create_app_state(
+            false,
+            true,
+            None,
+            Some(vec!["sender.testnet".to_string()]),
+            true,
+        )
+        .await;
+
+        // Using an invalid method name
+        let actions = vec![Action::FunctionCall(FunctionCallAction {
+            method_name: "invalid_method".to_string(),
+            args: BASE64_ENGINE.encode("{}").into_bytes(),
+            gas: 30_000_000_000_000,
+            deposit: 1,
+        })];
+
+        let signed_delegate_action = create_signed_delegate_action(
+            Some("sender.testnet"),
+            Some("exchange.testnet"),
+            Some(actions),
+        );
+
+        let result = validate_signed_delegate_action(&app_state, &signed_delegate_action);
+        println!("{result:?}");
+        assert!(result.is_err(), "Expected validation to fail for an invalid method name, even with a whitelisted sender.");
+    }
+
+    #[tokio::test]
+    async fn test_valid_method_name_incorrect_deposit() {
+        let app_state = create_app_state(
+            false,
+            true,
+            None,
+            Some(vec!["sender.testnet".to_string()]),
+            true,
+        )
+        .await;
+
+        // Valid method name but incorrect deposit amount
+        let actions = vec![Action::FunctionCall(FunctionCallAction {
+            method_name: FT_TRANSFER_METHOD_NAME.to_string(),
+            args: BASE64_ENGINE
+                .encode("{\"receiver_id\":\"receiver.testnet\",\"amount\":\"10\"}")
+                .into_bytes(),
+            gas: 30_000_000_000_000,
+            deposit: 0, // Incorrect deposit amount
+        })];
+
+        let signed_delegate_action = create_signed_delegate_action(
+            Some("sender.testnet"),
+            Some("exchange.testnet"),
+            Some(actions),
+        );
+
+        let result = validate_signed_delegate_action(&app_state, &signed_delegate_action);
+        println!("{result:?}");
+        assert!(
+            result.is_err(),
+            "Expected validation to fail for a correct method name with incorrect deposit amount."
+        );
+    }
+
+    #[tokio::test]
+    async fn test_non_whitelisted_sender_valid_method_and_deposit() {
+        let app_state = create_app_state(
+            false,
+            true,
+            None,
+            Some(vec!["whitelisted_sender.testnet".to_string()]),
+            true,
+        )
+        .await;
+
+        // Non-whitelisted sender but valid method and deposit
+        let actions = vec![Action::FunctionCall(FunctionCallAction {
+            method_name: FT_TRANSFER_METHOD_NAME.to_string(),
+            args: BASE64_ENGINE
+                .encode("{\"receiver_id\":\"receiver.testnet\",\"amount\":\"10\"}")
+                .into_bytes(),
+            gas: 30_000_000_000_000,
+            deposit: FT_TRANSFER_ATTACHMENT_DEPOSIT_AMOUNT,
+        })];
+
+        let signed_delegate_action = create_signed_delegate_action(
+            Some("non_whitelisted_sender.testnet"), // Non-whitelisted sender
+            Some("exchange.testnet"),
+            Some(actions),
+        );
+
+        let result = validate_signed_delegate_action(&app_state, &signed_delegate_action);
+        assert!(result.is_err(), "Expected validation to fail for a non-whitelisted sender, despite valid method and deposit.");
     }
 
     #[tokio::test]
