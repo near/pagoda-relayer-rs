@@ -2207,7 +2207,6 @@ mod tests {
         );
 
         let result = validate_signed_delegate_action(&app_state, &signed_delegate_action);
-        println!("{result:?}");
         assert!(result.is_err(), "Expected validation to fail for an invalid method name, even with a whitelisted sender.");
     }
 
@@ -2239,7 +2238,6 @@ mod tests {
         );
 
         let result = validate_signed_delegate_action(&app_state, &signed_delegate_action);
-        println!("{result:?}");
         assert!(
             result.is_err(),
             "Expected validation to fail for a correct method name with incorrect deposit amount."
@@ -2374,7 +2372,6 @@ mod tests {
         );
 
         let result = validate_signed_delegate_action(&app_state, &signed_delegate_action);
-        println!("{result:?}");
         assert!(
             result.is_err(),
             "Expected FT transfer to non-burn address to be invalid."
