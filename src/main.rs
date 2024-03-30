@@ -1897,8 +1897,8 @@ mod tests {
         _use_exchange: bool,
     ) -> AppState {
         let config = RelayerConfiguration {
-            use_whitelisted_contracts: use_whitelisted_contracts,
-            use_whitelisted_senders: use_whitelisted_senders,
+            use_whitelisted_contracts,
+            use_whitelisted_senders,
             whitelisted_contracts: whitelisted_contracts.unwrap_or_default(),
             whitelisted_senders: whitelisted_senders.unwrap_or_default(),
             use_exchange: _use_exchange,
