@@ -2447,6 +2447,99 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_both_whitelists_enabled_without_relevant_entries() {
+        let app_state = create_app_state(
+            true,                                               // use_whitelisted_contracts
+            true,                                               // use_whitelisted_senders
+            Some(vec!["allowed_contract.testnet".to_string()]), // whitelisted_contracts
+            Some(vec!["allowed_sender.testnet".to_string()]),   // whitelisted_senders
+            false,                                              // use_exchange
+        )
+        .await;
+        let signed_delegate_action = create_signed_delegate_action(
+            Some("unlisted_sender.testnet"), // sender_id not in whitelisted_senders
+            Some("unlisted_contract.testnet"), // receiver_id not in whitelisted_contracts
+            None,                            // Default actions
+        );
+
+        let result = validate_signed_delegate_action(&app_state, &signed_delegate_action);
+
+        assert!(
+            result.is_err(),
+            "Expected validation to fail when both sender and receiver are not whitelisted."
+        );
+    }
+
+    #[tokio::test]
+    async fn test_exchange_feature_with_sender_whitelist() {
+        let app_state = create_app_state(
+            false,                                             // use_whitelisted_contracts
+            true,                                              // use_whitelisted_senders
+            None,                                              // whitelisted_contracts
+            Some(vec!["exchange_sender.testnet".to_string()]), // whitelisted_senders
+            true,                                              // use_exchange
+        )
+        .await;
+        let actions = vec![Action::FunctionCall(FunctionCallAction {
+            method_name: FT_TRANSFER_METHOD_NAME.to_string(),
+            args: BASE64_ENGINE
+                .encode("{\"receiver_id\":\"valid_receiver.testnet\",\"amount\":\"1000\"}")
+                .into_bytes(),
+            gas: 300_000_000_000_000,
+            deposit: FT_TRANSFER_ATTACHMENT_DEPOSIT_AMOUNT,
+        })];
+        let signed_delegate_action = create_signed_delegate_action(
+            Some("exchange_sender.testnet"), // sender_id in whitelisted_senders
+            Some("exchange.testnet"),        // receiver_id, arbitrary for this test
+            Some(actions),
+        );
+
+        let result = validate_signed_delegate_action(&app_state, &signed_delegate_action);
+
+        assert!(
+            result.is_ok(),
+            "Expected validation to pass for a whitelisted sender performing a valid exchange operation."
+        );
+    }
+
+    #[tokio::test]
+    async fn test_pay_with_ft_and_exchange_conflict() {
+        let mut app_state = create_app_state(
+            false,                                       // use_whitelisted_contracts
+            true,                                        // use_whitelisted_senders
+            None,                                        // whitelisted_contracts
+            Some(vec!["ft_sender.testnet".to_string()]), // whitelisted_senders
+            true,                                        // use_exchange enabled
+        )
+        .await;
+        app_state.config.use_pay_with_ft = true;
+        app_state.config.burn_address = "burn_address.testnet".to_string();
+
+        // Attempting an FT transfer not to the burn address
+        let actions = vec![Action::FunctionCall(FunctionCallAction {
+            method_name: FT_TRANSFER_METHOD_NAME.to_string(),
+            args: BASE64_ENGINE
+                .encode("{\"receiver_id\":\"another_address.testnet\",\"amount\":\"1000\"}")
+                .into_bytes(),
+            gas: 300_000_000_000_000,
+            deposit: FT_TRANSFER_ATTACHMENT_DEPOSIT_AMOUNT,
+        })];
+        let signed_delegate_action = create_signed_delegate_action(
+            Some("ft_sender.testnet"),    // sender_id in whitelisted_senders
+            Some("some_service.testnet"), // receiver_id, arbitrary for this test
+            Some(actions),
+        );
+
+        let result = validate_signed_delegate_action(&app_state, &signed_delegate_action);
+        println!("{result:?}");
+
+        assert!(
+            result.is_err(),
+            "Expected validation to fail due to conflict between use_pay_with_ft and the exchange operation not targeting the burn address."
+        );
+    }
+
+    #[tokio::test]
     /// Tests that get_redis_cnxn returns a valid Redis connection
     async fn test_get_redis_cnxn() {
         let redis_pool = create_test_redis_pool().await;
