@@ -1422,7 +1422,7 @@ fn validate_signed_delegate_action(
                 }) => {
                     debug!("method_name: {:?}", method_name);
                     debug!("deposit: {:?}", deposit);
-                    if state.config.use_whitelisted_contracts && !is_whitelisted_da_receiver {
+                    if !is_whitelisted_da_receiver {
                         return Err(RelayError {
                             status_code: StatusCode::BAD_REQUEST,
                             message: format!(
