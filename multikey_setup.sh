@@ -49,14 +49,13 @@ for ((i = 1; i <= KEYS_COUNT; i++)); do
   # Now OUTPUT should contain all the command output, including what was sent to stderr
   echo "OUTPUT: $OUTPUT" # Debugging line to verify output
 
-  # TODO PUBLIC_KEY and SECRET_KEY are empty - FIX
-  # Extract Public Key using grep and sed for more robust parsing
-  PUBLIC_KEY=$(echo "$OUTPUT" | grep -o 'Public Key: \K.*')
-  echo PUBLIC_KEY $PUBLIC_KEY
+  # Use awk to reliably extract Public Key, accommodating potential variations in output formatting
+  PUBLIC_KEY=$(echo "$OUTPUT" | awk '/Public Key:/ {for (i=3; i<=NF; i++) printf $i " "; print ""}' | xargs)
+#  echo PUBLIC_KEY $PUBLIC_KEY
 
-  # Extract SECRET KEYPAIR using grep and sed, ensuring we get everything after the colon
-  SECRET_KEY=$(echo "$OUTPUT" | grep -o 'SECRET KEYPAIR: \K.*')
-  echo SECRET_KEY $SECRET_KEY
+  # Use awk to reliably extract SECRET KEYPAIR, similar handling as Public Key
+  SECRET_KEY=$(echo "$OUTPUT" | awk '/SECRET KEYPAIR:/ {for (i=3; i<=NF; i++) printf $i " "; print ""}' | xargs)
+#  echo SECRET_KEY $SECRET_KEY
 
   JSON_ENTRY="{\"account_id\":\"$ACCOUNT_ID\", \"public_key\":\"$PUBLIC_KEY\", \"secret_key\":\"$SECRET_KEY\"}"
   jq ". += [$JSON_ENTRY]" "$KEY_FILE" > tmp.$$.json && mv tmp.$$.json "$KEY_FILE"
@@ -66,10 +65,17 @@ done
 
 
 # Update config.toml
-if grep -q "keys_filename" $CONFIG_FILE; then
-  sed -i "/keys_filename/c\keys_filename = \"$KEY_FILE\"" $CONFIG_FILE
+if grep -q "keys_filename" "$CONFIG_FILE"; then
+  # For macOS compatibility, use '' -i ''
+  if [[ "$OSTYPE" == "darwin"* ]]; then
+    sed -i '' "s|keys_filename = \".*\"|keys_filename = \"$KEY_FILE\"|" "$CONFIG_FILE"
+  else
+    # Assuming GNU sed for Linux
+    sed -i "s|keys_filename = \".*\"|keys_filename = \"$KEY_FILE\"|" "$CONFIG_FILE"
+  fi
 else
-  echo "keys_filename = \"$KEY_FILE\"" >> $CONFIG_FILE
+  echo "keys_filename = \"$KEY_FILE\"" >> "$CONFIG_FILE"
 fi
+
 
 echo "All keys have been successfully generated and saved to $KEY_FILE."
