@@ -2,7 +2,6 @@ mod error;
 mod redis_fns;
 mod rpc_conf;
 mod shared_storage;
-
 use axum::{
     extract::{Json, State},
     http::StatusCode,
@@ -1869,12 +1868,13 @@ mod tests {
     use bytes::BytesMut;
 
     use near_crypto::KeyType::ED25519;
-    use near_crypto::{InMemorySigner, PublicKey, Signature, Signer};
+    use near_crypto::{InMemorySigner, PublicKey, Signature};
 
     use near_primitives::account::{AccessKey, AccessKeyPermission};
     use near_primitives::delegate_action::{
         DelegateAction, NonDelegateAction, SignedDelegateAction,
     };
+    use near_primitives::signable_message::{SignableMessage, SignableMessageType};
     use near_primitives::transaction::{Action, AddKeyAction, FunctionCallAction, TransferAction};
     use near_primitives::types::Balance;
     use near_primitives::types::{BlockHeight, Nonce};
@@ -1932,6 +1932,7 @@ mod tests {
         sender_id: Option<&str>,
         receiver_id: Option<&str>,
         actions: Option<Vec<Action>>,
+        nonce: Option<u64>,
     ) -> SignedDelegateAction {
         // dw, it's just a testnet account
         let seed: String =
@@ -1963,24 +1964,25 @@ mod tests {
                 .into_iter()
                 .map(|a| NonDelegateAction::try_from(a).unwrap())
                 .collect(),
-            nonce: 1 as Nonce,
+            nonce: nonce.unwrap_or(0),
             max_block_height: 2000000000 as BlockHeight,
             public_key,
         };
 
-        let signature = signer.sign(&delegate_action.try_to_vec().unwrap());
-
-        SignedDelegateAction {
+        let signable = SignableMessage::new(&delegate_action, SignableMessageType::DelegateAction);
+        let signed = SignedDelegateAction {
+            signature: signable.sign(&signer),
             delegate_action,
-            signature,
-        }
+        };
+
+        signed
     }
 
     #[tokio::test]
     /// Tests that validate_signed_delegate_action returns Ok when no whitelisting is used
     async fn test_validate_signed_delegate_action_no_whitelisting() {
         let app_state = create_app_state(false, false, None, None, false).await;
-        let signed_delegate_action = create_signed_delegate_action(None, None, None);
+        let signed_delegate_action = create_signed_delegate_action(None, None, None, None);
 
         let result = validate_signed_delegate_action(&app_state, &signed_delegate_action);
 
@@ -1991,7 +1993,7 @@ mod tests {
     /// Tests that validate_signed_delegate_action returns an error when the receiver is not whitelisted
     async fn test_validate_signed_delegate_action_receiver_not_whitelisted() {
         let app_state = create_app_state(true, false, None, None, false).await;
-        let signed_delegate_action = create_signed_delegate_action(None, None, None);
+        let signed_delegate_action = create_signed_delegate_action(None, None, None, None);
 
         let result = validate_signed_delegate_action(&app_state, &signed_delegate_action);
 
@@ -2003,7 +2005,7 @@ mod tests {
     async fn test_validate_signed_delegate_action_sender_not_whitelisted() {
         let mut app_state = create_app_state(false, true, None, None, false).await;
         app_state.config.use_whitelisted_senders = true;
-        let signed_delegate_action = create_signed_delegate_action(None, None, None);
+        let signed_delegate_action = create_signed_delegate_action(None, None, None, None);
 
         let result = validate_signed_delegate_action(&app_state, &signed_delegate_action);
 
@@ -2024,6 +2026,7 @@ mod tests {
             Some("sender.testnet"),               // sender_id
             Some("whitelisted_receiver.testnet"), // receiver_id matches the whitelisted receiver (contract)
             None,                                 // Default actions
+            None,                                 // Default nonce
         );
 
         let result = validate_signed_delegate_action(&app_state, &signed_delegate_action);
@@ -2048,6 +2051,7 @@ mod tests {
             Some("whitelisted_sender.testnet"), // sender_id matches the whitelisted sender
             Some("receiver.testnet"),           // receiver_id
             None,                               // Default actions
+            None,                               // Default nonce
         );
 
         let result = validate_signed_delegate_action(&app_state, &signed_delegate_action);
@@ -2072,6 +2076,7 @@ mod tests {
             Some("whitelisted_sender.testnet"), // sender_id matches the whitelisted sender
             Some("whitelisted_receiver.testnet"), // receiver_id matches the whitelisted receiver (contract)
             None,                                 // Default actions
+            None,                                 // Default nonce
         );
 
         let result = validate_signed_delegate_action(&app_state, &signed_delegate_action);
@@ -2096,6 +2101,7 @@ mod tests {
             Some("sender.testnet"),                   // sender_id
             Some("non_whitelisted_receiver.testnet"), // receiver_id is not in the whitelisted receivers
             None,                                     // Default actions
+            None,                                     // Default nonce
         );
 
         let result = validate_signed_delegate_action(&app_state, &signed_delegate_action);
@@ -2120,6 +2126,7 @@ mod tests {
             Some("non_whitelisted_sender.testnet"), // sender_id is not in the whitelisted senders
             Some("receiver.testnet"),               // receiver_id
             None,                                   // Default actions
+            None,                                   // Default nonce
         );
 
         let result = validate_signed_delegate_action(&app_state, &signed_delegate_action);
@@ -2144,6 +2151,7 @@ mod tests {
             Some("non_whitelisted_sender.testnet"), // sender_id is not in the whitelisted senders
             Some("non_whitelisted_receiver.testnet"), // receiver_id is not in the whitelisted receivers
             None,                                     // Default actions
+            None,                                     // Default nonce
         );
 
         let result = validate_signed_delegate_action(&app_state, &signed_delegate_action);
@@ -2176,6 +2184,7 @@ mod tests {
             Some("sender.testnet"),   // Matching the whitelisted sender
             Some("exchange.testnet"), // Receiver (not relevant in this case)
             Some(actions),
+            None,
         );
 
         let result = validate_signed_delegate_action(&app_state, &signed_delegate_action);
@@ -2208,6 +2217,7 @@ mod tests {
             Some("sender.testnet"),
             Some("exchange.testnet"),
             Some(actions),
+            None,
         );
 
         let result = validate_signed_delegate_action(&app_state, &signed_delegate_action);
@@ -2239,6 +2249,7 @@ mod tests {
             Some("sender.testnet"),
             Some("exchange.testnet"),
             Some(actions),
+            None,
         );
 
         let result = validate_signed_delegate_action(&app_state, &signed_delegate_action);
@@ -2273,6 +2284,7 @@ mod tests {
             Some("non_whitelisted_sender.testnet"), // Non-whitelisted sender
             Some("exchange.testnet"),
             Some(actions),
+            None,
         );
 
         let result = validate_signed_delegate_action(&app_state, &signed_delegate_action);
@@ -2293,6 +2305,7 @@ mod tests {
                 gas: 30000000000000,
                 deposit: 1,
             })]),
+            None,
         );
         assert!(validate_signed_delegate_action(&state, &action).is_err());
     }
@@ -2303,7 +2316,7 @@ mod tests {
     async fn test_validation_fails_for_disallowed_action_type_exchange() {
         let state = create_app_state(false, true, None, None, true).await;
         let action = create_signed_delegate_action(
-            None, None, None, // default action type is transfer, which is not allowed
+            None, None, None, None, // default action type is transfer, which is not allowed
         );
         assert!(validate_signed_delegate_action(&state, &action).is_err());
     }
@@ -2336,6 +2349,7 @@ mod tests {
                 gas: 300000000000000,
                 deposit: 1, // Simulated deposit for the action
             })]),
+            None,
         );
 
         let result = validate_signed_delegate_action(&app_state, &signed_delegate_action);
@@ -2373,6 +2387,7 @@ mod tests {
                 gas: 300000000000000,
                 deposit: 1, // Simulated deposit for the action
             })]),
+            None,
         );
 
         let result = validate_signed_delegate_action(&app_state, &signed_delegate_action);
@@ -2409,7 +2424,7 @@ mod tests {
         })];
 
         let signed_delegate_action =
-            create_signed_delegate_action(Some(sender_id), Some(receiver_id), Some(actions));
+            create_signed_delegate_action(Some(sender_id), Some(receiver_id), Some(actions), None);
 
         let result = validate_signed_delegate_action(&app_state, &signed_delegate_action);
 
@@ -2439,7 +2454,7 @@ mod tests {
         let actions = vec![Action::Transfer(TransferAction { deposit: 1000 })]; // Non-key management action
 
         let signed_delegate_action =
-            create_signed_delegate_action(Some(sender_id), Some(receiver_id), Some(actions));
+            create_signed_delegate_action(Some(sender_id), Some(receiver_id), Some(actions), None);
 
         let result = validate_signed_delegate_action(&app_state, &signed_delegate_action);
 
@@ -2463,6 +2478,7 @@ mod tests {
             Some("unlisted_sender.testnet"), // sender_id not in whitelisted_senders
             Some("unlisted_contract.testnet"), // receiver_id not in whitelisted_contracts
             None,                            // Default actions
+            None,                            // Default nonce
         );
 
         let result = validate_signed_delegate_action(&app_state, &signed_delegate_action);
@@ -2495,6 +2511,7 @@ mod tests {
             Some("exchange_sender.testnet"), // sender_id in whitelisted_senders
             Some("exchange.testnet"),        // receiver_id, arbitrary for this test
             Some(actions),
+            None,
         );
 
         let result = validate_signed_delegate_action(&app_state, &signed_delegate_action);
@@ -2531,6 +2548,7 @@ mod tests {
             Some("ft_sender.testnet"),    // sender_id in whitelisted_senders
             Some("some_service.testnet"), // receiver_id, arbitrary for this test
             Some(actions),
+            None,
         );
 
         let result = validate_signed_delegate_action(&app_state, &signed_delegate_action);
@@ -2800,4 +2818,36 @@ mod tests {
         println!("ft_transfer_args_b64: {ft_transfer_args_b64}");
         println!("add_message_args_b64: {add_message_args_b64}");
     }
+
+    #[tokio::test]
+    async fn test_relay() {
+        // Call the `/relay` function happy path
+        let app_state = create_app_state(false, false, None, None, false).await;
+        let axum_state: State<Arc<AppState>> = convert_app_state_to_arc_app_state(app_state);
+        let account_id: AccountId = "relayer_test0.testnet".parse().unwrap();
+        let public_key: PublicKey =
+            PublicKey::from_str("ed25519:AMypJZjcMYwHCx2JFSwXAPuygDS5sy1vRNc2aoh3EjTN").unwrap();
+
+        let (nonce, _block_hash, _) = axum_state
+            .rpc_client
+            .fetch_nonce(&account_id, &public_key)
+            .await
+            .unwrap();
+
+        let signed_delegate_action = create_signed_delegate_action(None, None, None, Some(nonce));
+        assert!(signed_delegate_action.verify());
+
+        let serialized_signed_delegate_action = signed_delegate_action.try_to_vec().unwrap();
+        let json_payload = Json(serialized_signed_delegate_action);
+
+        let response = relay(axum_state, json_payload).await.into_response();
+        let response_status = response.status();
+        let body: BoxBody = response.into_body();
+        let body_str: String = read_body_to_string(body).await.unwrap();
+        println!("Response body: {body_str:?}");
+        assert_eq!(response_status, StatusCode::OK);
+        assert!(body_str.contains("Relayed and sent transaction"));
+    }
+
+    // Utilize or adapt existing helper functions like `read_body_to_string` from your tests
 }
