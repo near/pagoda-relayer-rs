@@ -1212,7 +1212,10 @@ async fn create_signed_meta_tx(
     if let (Some(nonce_param), Some(block_hash_param)) = (pk_and_sda.nonce, &pk_and_sda.block_hash)
     {
         nonce = nonce_param;
-        block_hash = CryptoHash::from_str(&block_hash_param.clone()).unwrap();
+        block_hash = CryptoHash::from_str(&block_hash_param.clone()).map_err(|_e| RelayError {
+            status_code: StatusCode::BAD_REQUEST,
+            message: format!("block hash {:?} is invalid", block_hash_param.clone()),
+        })?;
     } else {
         (nonce, block_hash) = fetch_nonce_and_block_hash(state, signer).await?;
     }
