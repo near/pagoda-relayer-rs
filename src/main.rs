@@ -1970,12 +1970,10 @@ mod tests {
         };
 
         let signable = SignableMessage::new(&delegate_action, SignableMessageType::DelegateAction);
-        let signed = SignedDelegateAction {
+        SignedDelegateAction {
             signature: signable.sign(&signer),
             delegate_action,
         };
-
-        signed
     }
 
     #[tokio::test]
