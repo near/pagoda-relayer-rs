@@ -1973,7 +1973,7 @@ mod tests {
         SignedDelegateAction {
             signature: signable.sign(&signer),
             delegate_action,
-        };
+        }
     }
 
     #[tokio::test]
@@ -2826,13 +2826,13 @@ mod tests {
         let public_key: PublicKey =
             PublicKey::from_str("ed25519:AMypJZjcMYwHCx2JFSwXAPuygDS5sy1vRNc2aoh3EjTN").unwrap();
 
-        let (nonce, _block_hash, _) = axum_state
+        let (nonce, _block_hash, _) = &axum_state
             .rpc_client
             .fetch_nonce(&account_id, &public_key)
             .await
             .unwrap();
 
-        let signed_delegate_action = create_signed_delegate_action(None, None, None, Some(nonce));
+        let signed_delegate_action = create_signed_delegate_action(None, None, None, Some(*nonce));
         assert!(signed_delegate_action.verify());
 
         let serialized_signed_delegate_action = signed_delegate_action.try_to_vec().unwrap();
@@ -2855,14 +2855,14 @@ mod tests {
         let public_key: PublicKey =
             PublicKey::from_str("ed25519:AMypJZjcMYwHCx2JFSwXAPuygDS5sy1vRNc2aoh3EjTN").unwrap();
 
-        let (nonce, _block_hash, _) = axum_state
+        let (nonce, _block_hash, _) = &axum_state
             .rpc_client
             .fetch_nonce(&account_id, &public_key)
             .await
             .unwrap();
 
         let mut signed_delegate_action =
-            create_signed_delegate_action(None, None, None, Some(nonce));
+            create_signed_delegate_action(None, None, None, Some(*nonce));
         signed_delegate_action.signature = "ed25519:5uJu7KapH89h9cQm5btE1DKnbiFXSZNT7McDw5LHy8pdAt5Mz9DfuyQZadGgFExo88or9152iwcw2q12rnFWa6bg".parse().unwrap();
 
         let serialized_signed_delegate_action = signed_delegate_action.try_to_vec().unwrap();
