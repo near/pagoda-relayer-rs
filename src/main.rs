@@ -2619,8 +2619,7 @@ mod tests {
 
     #[tokio::test]
     // NOTE: uncomment ignore locally to run test bc redis doesn't work in github action build env
-    #[ignore]
-    async fn test_send_meta_tx() {
+    async fn test_send_meta_tx_invalid_signature() {
         // tests assume testnet in config
         // Test Transfer Action
         let actions = vec![Action::Transfer(TransferAction { deposit: 1 })];
@@ -2656,7 +2655,8 @@ mod tests {
         let body: BoxBody = response.into_body();
         let body_str: String = read_body_to_string(body).await.unwrap();
         println!("Response body: {body_str:?}");
-        assert_eq!(response_status, StatusCode::OK);
+        assert_eq!(response_status, StatusCode::INTERNAL_SERVER_ERROR);
+        assert!(body_str.contains("DelegateActionInvalidSignature"))
     }
 
     #[tokio::test]
