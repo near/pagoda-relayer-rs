@@ -2849,5 +2849,71 @@ mod tests {
         assert!(body_str.contains("Relayed and sent transaction"));
     }
 
+    #[tokio::test]
+    async fn test_relay_with_bad_signature() {
+        let app_state = create_app_state(false, false, None, None, false).await;
+        let axum_state: State<Arc<AppState>> = convert_app_state_to_arc_app_state(app_state);
+        let account_id: AccountId = "relayer_test0.testnet".parse().unwrap();
+        let public_key: PublicKey =
+            PublicKey::from_str("ed25519:AMypJZjcMYwHCx2JFSwXAPuygDS5sy1vRNc2aoh3EjTN").unwrap();
+
+        let (nonce, _block_hash, _) = axum_state
+            .rpc_client
+            .fetch_nonce(&account_id, &public_key)
+            .await
+            .unwrap();
+
+        let mut signed_delegate_action =
+            create_signed_delegate_action(None, None, None, Some(nonce));
+        signed_delegate_action.signature = "ed25519:5uJu7KapH89h9cQm5btE1DKnbiFXSZNT7McDw5LHy8pdAt5Mz9DfuyQZadGgFExo88or9152iwcw2q12rnFWa6bg".parse().unwrap();
+
+        let serialized_signed_delegate_action = signed_delegate_action.try_to_vec().unwrap();
+        let json_payload = Json(serialized_signed_delegate_action);
+
+        let response = relay(axum_state, json_payload).await.into_response();
+        let response_status = response.status();
+        let body: BoxBody = response.into_body();
+        let body_str: String = read_body_to_string(body).await.unwrap();
+        println!("Response body: {body_str:?}");
+        assert_eq!(response_status, StatusCode::INTERNAL_SERVER_ERROR);
+        assert!(body_str.contains("DelegateActionInvalidSignature"));
+    }
+
+    #[tokio::test]
+    async fn test_relay_with_bad_nonce() {
+        let app_state = create_app_state(false, false, None, None, false).await;
+        let axum_state: State<Arc<AppState>> = convert_app_state_to_arc_app_state(app_state);
+
+        let nonce = 69;
+        let signed_delegate_action = create_signed_delegate_action(None, None, None, Some(nonce));
+        assert!(signed_delegate_action.verify());
+
+        let serialized_signed_delegate_action = signed_delegate_action.try_to_vec().unwrap();
+        let json_payload = Json(serialized_signed_delegate_action);
+
+        let response = relay(axum_state, json_payload).await.into_response();
+        let response_status = response.status();
+        let body: BoxBody = response.into_body();
+        let body_str: String = read_body_to_string(body).await.unwrap();
+        println!("Response body: {body_str:?}");
+        assert_eq!(response_status, StatusCode::INTERNAL_SERVER_ERROR);
+        assert!(body_str.contains("DelegateActionInvalidNonce"));
+    }
+
+    #[tokio::test]
+    async fn test_relay_bad_payload() {
+        let app_state = create_app_state(false, false, None, None, false).await;
+        let axum_state: State<Arc<AppState>> = convert_app_state_to_arc_app_state(app_state);
+
+        let json_payload = Json(vec![]);
+        let response = relay(axum_state, json_payload).await.into_response();
+        let response_status = response.status();
+        let body: BoxBody = response.into_body();
+        let body_str: String = read_body_to_string(body).await.unwrap();
+        println!("Response body: {body_str:?}");
+        assert_eq!(response_status, StatusCode::BAD_REQUEST);
+        assert!(body_str.contains("Error deserializing payload data object"));
+    }
+
     // Utilize or adapt existing helper functions like `read_body_to_string` from your tests
 }
