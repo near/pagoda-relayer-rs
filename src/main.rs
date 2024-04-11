@@ -2568,6 +2568,51 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_get_allowance() {
+        let redis_pool = create_test_redis_pool().await;
+        let account_id = "test_account.testnet";
+        let allowance: u64 = 90000000000000;
+
+        // Set an allowance for the test account
+        set_account_and_allowance_in_redis(&redis_pool, account_id, &allowance)
+            .await
+            .unwrap();
+
+        // Attempt to get the allowance for the test account
+        let result = get_remaining_allowance(&redis_pool, &account_id.parse().unwrap()).await;
+
+        assert_eq!(result.unwrap(), allowance);
+
+        // Clean up
+        let _: () = redis_pool.get().unwrap().del(account_id).unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_update_allowance() {
+        let redis_pool = create_test_redis_pool().await;
+        let account_id = "test_update_account.testnet";
+        let initial_allowance: u64 = 50000000000000;
+        let updated_allowance: u64 = 100000000000000;
+
+        // Set an initial allowance for the account
+        set_account_and_allowance_in_redis(&redis_pool, account_id, &initial_allowance)
+            .await
+            .unwrap();
+
+        // Update the allowance for the account
+        set_account_and_allowance_in_redis(&redis_pool, account_id, &updated_allowance)
+            .await
+            .unwrap();
+
+        // Retrieve and assert the updated allowance
+        let result = get_remaining_allowance(&redis_pool, &account_id.parse().unwrap()).await;
+        assert_eq!(result.unwrap(), updated_allowance);
+
+        // Clean up
+        let _: () = redis_pool.get().unwrap().del(account_id).unwrap();
+    }
+
+    #[tokio::test]
     /// Tests that update_all_allowances_in_redis updates all keys with the provided allowance
     async fn test_update_all_allowances_in_redis() {
         let redis_pool = create_test_redis_pool();
@@ -2578,6 +2623,41 @@ mod tests {
             update_all_allowances_in_redis(&redis_pool.await, network_env, allowance_in_gas).await;
 
         assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_register_account_and_allowance() {
+        let app_state = create_app_state(false, false, None, None, false).await;
+        let axum_state: State<Arc<AppState>> = convert_app_state_to_arc_app_state(app_state);
+
+        let account_id = "test_register_account.testnet";
+        let allowance: u64 = 90000000000000;
+        let oauth_token = "unique_oauth_token";
+        let redis_pool = create_test_redis_pool().await;
+
+        let account_id_and_allowance_oauth_json = AccountIdAllowanceOauthJson {
+            account_id: account_id.to_string(),
+            allowance,
+            oauth_token: oauth_token.to_string(),
+        };
+
+        // Register the account with an allowance and an OAuth token
+        register_account_and_allowance(axum_state, axum::Json(account_id_and_allowance_oauth_json))
+            .await
+            .into_response();
+
+        // Verify the allowance was set
+        let allowance_result =
+            get_remaining_allowance(&redis_pool, &account_id.parse().unwrap()).await;
+        assert_eq!(allowance_result.unwrap(), allowance);
+
+        // Verify the OAuth token was set
+        let oauth_token_result: bool = redis_pool.get().unwrap().exists(oauth_token).unwrap();
+        assert!(oauth_token_result);
+
+        // Clean up
+        let _: () = redis_pool.get().unwrap().del(account_id).unwrap();
+        let _: () = redis_pool.get().unwrap().del(oauth_token).unwrap();
     }
 
     #[test]
@@ -2913,5 +2993,49 @@ mod tests {
         assert!(body_str.contains("Error deserializing payload data object"));
     }
 
-    // Utilize or adapt existing helper functions like `read_body_to_string` from your tests
+    #[tokio::test]
+    async fn test_send_meta_tx_async() {
+        // Setup test environment
+        let app_state = create_app_state(false, false, None, None, false).await;
+        let axum_state: State<Arc<AppState>> = convert_app_state_to_arc_app_state(app_state);
+
+        // Create a valid SignedDelegateAction as done in test_relay()
+        let nonce = 1; // Simplified for example; in practice, fetch or mock a valid nonce
+        let signed_delegate_action = create_signed_delegate_action(None, None, None, Some(nonce));
+        assert!(signed_delegate_action.verify()); // Optional, verify the signature for correctness
+
+        // Serialize the SignedDelegateAction
+        let json_payload = Json(signed_delegate_action);
+
+        // Call the /send_meta_tx_async endpoint
+        let response = send_meta_tx_async(axum_state, json_payload)
+            .await
+            .into_response();
+
+        // Verify the response status is OK (200)
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn test_send_meta_tx_nopoll() {
+        // Setup test environment
+        let app_state = create_app_state(false, false, None, None, false).await;
+        let axum_state: State<Arc<AppState>> = convert_app_state_to_arc_app_state(app_state);
+
+        // Create a valid SignedDelegateAction as done in test_relay()
+        let nonce = 1; // Simplified for example; in practice, fetch or mock a valid nonce
+        let signed_delegate_action = create_signed_delegate_action(None, None, None, Some(nonce));
+        assert!(signed_delegate_action.verify()); // Optional, verify the signature for correctness
+
+        // Serialize the SignedDelegateAction
+        let json_payload = Json(signed_delegate_action);
+
+        // Call the /send_meta_tx_nopoll endpoint
+        let response = send_meta_tx_nopoll(axum_state, json_payload)
+            .await
+            .into_response();
+
+        // Verify the response status is OK (200)
+        assert_eq!(response.status(), StatusCode::OK);
+    }
 }
