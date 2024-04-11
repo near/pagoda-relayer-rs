@@ -24,14 +24,15 @@ These features can be mixed and matched "à la carte". Use of one feature does n
 NOTE: If integrating with fastauth make sure to enable feature flags: `cargo build --features fastauth_features,shared_storage`. If using shared storage, make sure to enable feature flags: `cargo build --features shared_storage`
 
 
-1. Cover the gas costs of end users while allowing them to maintain custody of their funds and approve transactions (`/relay`, `/send_meta_tx`, `/send_meta_tx_async`, `/send_meta_tx_nopoll`)
-2. Only pay for users interacting with certain contracts by whitelisting contracts addresses (`whitelisted_contracts` in `config.toml`) 
-3. Specify gas cost allowances for all accounts (`/update_all_allowances`) or on a per-user account basis (`/create_account_atomic`, `/register_account`, `/update_allowance`) and keep track of allowances (`/get_allowance`)
-4. Specify the accounts for which the relayer will cover gas fees (`whitelisted_delegate_action_receiver_ids` in `config.toml`)
-5. Only allow users to register if they have a unique Oauth Token (`/create_account_atomic`, `/register_account`)
-6. Relayer Key Rotation: `keys_filenames` in `config.toml`
-7. Integrate with [Fastauth SDK](https://docs.near.org/tools/fastauth-sdk). See `/examples/configs/fastauth.toml`
-8. Mix and Match config options - see `examples/configs`
+1. Sign and send Meta Transactions to the RPC to cover the gas costs of end users while allowing them to maintain custody of their funds and approve transactions (`/relay`, `/send_meta_tx`, `/send_meta_tx_async`, `/send_meta_tx_nopoll`)
+2. Sign Meta Transactions returning a Signed Meta Transaction to be sent to the RPC later - (`/sign_meta_tx`, `/sign_meta_tx_no_filter`)
+3. Only pay for users interacting with certain contracts by whitelisting contracts addresses (`whitelisted_contracts` in `config.toml`) 
+4. Specify gas cost allowances for all accounts (`/update_all_allowances`) or on a per-user account basis (`/create_account_atomic`, `/register_account`, `/update_allowance`) and keep track of allowances (`/get_allowance`)
+5. Specify the accounts for which the relayer will cover gas fees (`whitelisted_delegate_action_receiver_ids` in `config.toml`)
+6. Only allow users to register if they have a unique Oauth Token (`/create_account_atomic`, `/register_account`)
+7. Relayer Key Rotation: `keys_filenames` in `config.toml`
+8. Integrate with [Fastauth SDK](https://docs.near.org/tools/fastauth-sdk). See `/examples/configs/fastauth.toml`
+9. Mix and Match config options - see `examples/configs`
 
 ### Features - COMING SOON
 1. Allow users to pay for gas fees using Fungible Tokens they hold. This can be implemented by either:
@@ -87,6 +88,8 @@ For more extensive testing, especially when you've deployed the relayer to multi
 - POST `/send_meta_tx`
 - POST `/send_meta_tx_async`
 - POST `/send_meta_tx_nopoll`
+- POST `/sign_meta_tx`,
+  POST `/sign_meta_tx_no_filter`,
 - GET `/get_allowance`
 - POST `/update_allowance`
 - POST `/update_all_allowances`
@@ -96,7 +99,7 @@ For more extensive testing, especially when you've deployed the relayer to multi
 ## Basic Setup - Local Dev <a id="basic_setup"></a>
 1. [Install Rust for NEAR Development](https://docs.near.org/sdk/rust/get-started)
 2. If you don't have a NEAR account, [create one](https://docs.near.org/concepts/basics/accounts/creating-accounts)
-3. With the account from step 2, create a json file in this directory in the format `{"account_id":"example.testnet","public_key":"ed25519:98GtfFzez3opomVpwa7i4m3nptHtc7Ha514XHMWszLtQ","private_key":"ed25519:YWuyKVQHE3rJQYRC3pRGV56o1qEtA1PnMYPDEtroc5kX4A4mWrJwF7XkzGe7JWNMABbtY4XFDBJEzgLyfPkwpzC"}` using a [Full Access Key](https://docs.near.org/concepts/basics/accounts/access-keys#key-types) from an account that has enough NEAR to cover the gas costs of transactions your server will be relaying. Usually, this will be a copy of the json file found in the `.near-credentials` directory. 
+3. With the account from step 2, create a json file in this directory in the format `[{"account_id":"example.testnet","public_key":"ed25519:98GtfFzez3opomVpwa7i4m3nptHtc7Ha514XHMWszLtQ","private_key":"ed25519:YWuyKVQHE3rJQYRC3pRGV56o1qEtA1PnMYPDEtroc5kX4A4mWrJwF7XkzGe7JWNMABbtY4XFDBJEzgLyfPkwpzC"}]` using a [Full Access Key](https://docs.near.org/concepts/basics/accounts/access-keys#key-types) from an account that has enough NEAR to cover the gas costs of transactions your server will be relaying. Usually, this will be a copy of the json file found in the `.near-credentials` directory. 
 4. Update values in `config.toml`
 5. Open up the `port` from `config.toml` in your machine's network settings
 6. Run the server using `cargo run`. 
