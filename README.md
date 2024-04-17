@@ -88,8 +88,8 @@ For more extensive testing, especially when you've deployed the relayer to multi
 - POST `/send_meta_tx`
 - POST `/send_meta_tx_async`
 - POST `/send_meta_tx_nopoll`
-- POST `/sign_meta_tx`,
-  POST `/sign_meta_tx_no_filter`,
+- POST `/sign_meta_tx`
+- POST `/sign_meta_tx_no_filter`
 - GET `/get_allowance`
 - POST `/update_allowance`
 - POST `/update_all_allowances`
