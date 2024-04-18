@@ -150,7 +150,19 @@ which returns:
     }
 }
 ```
-   - sign the `delegate_action`. Ensure the signature is base64 encoded. 
+   - sign the `delegate_action`. Ensure the signature is base64 encoded. An example to do this using Rust [near_primitives](https://crates.io/crates/near-primitives) and [near_crypto](https://crates.io/crates/near-crypto) would look like (you need to adjust for your setup using the json created):
+```
+let signer: InMemorySigner = InMemorySigner::from_file(/* &std::path::Path -- YOUR FILE HERE, should include public key to sign with */);
+let signed_meta_tx = Transaction {
+        nonce,
+        block_hash,
+        signer_id,
+        public_key,
+        receiver_id,
+        actions,
+    }
+    .sign(&signer);
+``` 
    - add the newly created signature to create the `signed_delegate_action` and send it to the relayer running locally by calling: POST http://localhost:3030/send_meta_tx
 ```
 {
