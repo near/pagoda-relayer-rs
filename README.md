@@ -102,9 +102,77 @@ For more extensive testing, especially when you've deployed the relayer to multi
 3. With the account from step 2, create a json file in this directory in the format `[{"account_id":"example.testnet","public_key":"ed25519:98GtfFzez3opomVpwa7i4m3nptHtc7Ha514XHMWszLtQ","private_key":"ed25519:YWuyKVQHE3rJQYRC3pRGV56o1qEtA1PnMYPDEtroc5kX4A4mWrJwF7XkzGe7JWNMABbtY4XFDBJEzgLyfPkwpzC"}]` using a [Full Access Key](https://docs.near.org/concepts/basics/accounts/access-keys#key-types) from an account that has enough NEAR to cover the gas costs of transactions your server will be relaying. Usually, this will be a copy of the json file found in the `.near-credentials` directory. 
 4. Update values in `config.toml`
 5. Open up the `port` from `config.toml` in your machine's network settings
-6. Run the server using `cargo run`. 
-7. (OPTIONAL) To run with logs (tracing) enabled run `RUST_LOG=tower_http=debug cargo run`
-8. (OPTIONAL) If integrating with fastauth make sure to enable feature flags: `cargo build --features fastauth_features,shared_storage`. If using shared storage, make sure to enable feature flags: `cargo build --features shared_storage`
+6. Run the server using `cargo run`.
+7. Send a Meta Transaction!
+  - Get the most latest `block_height` and `nonce` for the public key on the account creating the `signed_delegate_action` by calling: POST https://rpc.testnet.near.org/ 
+```
+{
+  "jsonrpc": "2.0",
+  "id": "dontcare",
+  "method": "query",
+  "params": {
+    "request_type": "view_access_key",
+    "finality": "final",
+    "account_id": "your_account.testnet",
+    "public_key": "ed25519:7PjxWgJ7bWu9KAcunaUjvcd6Ct6ugaGaWLGQ7aSG4buS"
+  }
+}
+```
+which returns:
+```
+{
+    "jsonrpc": "2.0",
+    "result": {
+        "block_hash": "7cwPTgH7WgctP1dGKu3kNpa7CHGww9BLTvLvDumHEfPD",
+        "block_height": 161633049,
+        "nonce": 157762570000389,
+        "permission": "FullAccess"
+    },
+    "id": "dontcare"
+}
+```
+   - Use the `block_height` + 100 (or some other reasonable buffer) and `nonce` + 1 to create `delegate_action` 
+```
+{
+    "delegate_action": {
+        "actions": [
+            {
+                "Transfer": {
+                    "deposit": "1"
+                }
+            }
+        ],
+        "max_block_height": 161633149,
+        "nonce": 157762570000390,
+        "public_key": "ed25519:89GtfFzez3opomVpwa7i4m3nptHtc7Ha514XHMWszQtL",
+        "receiver_id": "reciever_account.testnet",
+        "sender_id": "your_account.testnet"
+    }
+}
+```
+   - sign the `delegate_action`. Ensure the signature is base64 encoded. 
+   - add the newly created signature to create the `signed_delegate_action` and send it to the relayer running locally by calling: POST http://localhost:3030/send_meta_tx
+```
+{
+    "delegate_action": {
+        "actions": [
+            {
+                "Transfer": {
+                    "deposit": "1"
+                }
+            }
+        ],
+        "max_block_height": 161633149,
+        "nonce": 157762570000390,
+        "public_key": "ed25519:89GtfFzez3opomVpwa7i4m3nptHtc7Ha514XHMWszQtL",
+        "receiver_id": "reciever_account.testnet",
+        "sender_id": "your_account.testnet"
+    },
+    "signature": "ed25519:5uJu7KapH89h9cQm5btE1DKnbiFXSZNT7McDw5LHy8pdAt5Mz9DfuyQZadGgFExo88or9152iwcw2q12rnFWa6bg"
+}
+```
+8. (OPTIONAL) To run with logs (tracing) enabled run `RUST_LOG=tower_http=debug cargo run`
+9. (OPTIONAL) If integrating with fastauth make sure to enable feature flags: `cargo build --features fastauth_features,shared_storage`. If using shared storage, make sure to enable feature flags: `cargo build --features shared_storage`
 
 ## Redis Setup - OPTIONAL 
 NOTE: this is only needed if you intend to use whitelisting, allowances, and oauth functionality
