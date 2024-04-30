@@ -2395,7 +2395,7 @@ dependencies = [
 [[package]]
 name = "near-fetch"
 version = "0.2.0"
-source = "git+https://github.com/r-near/fetch?rev=e8288b8#e8288b8aa9328732c8b2eb1172e7a99b71eef306"
+source = "git+https://github.com/r-near/fetch?rev=6fdb579#6fdb579fab5292588df5142d40939f38f0278b82"
 dependencies = [
  "base64 0.22.0",
  "near-account-id",
