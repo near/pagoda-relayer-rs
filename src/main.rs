@@ -37,9 +37,7 @@ use std::future::Future;
 use std::path::PathBuf;
 use std::str::FromStr;
 use std::string::ToString;
-use std::time::Duration;
 use std::{net::SocketAddr, sync::Arc};
-use tokio::time::sleep;
 use tower_http::trace::TraceLayer;
 use tracing::{debug, error, info, instrument, warn};
 use tracing_flame::FlameLayer;
@@ -800,11 +798,11 @@ async fn create_account_atomic(
        after updated redis and adding shared storage, finally return success msg
     */
     let create_account_sda_result = if state.config.use_fastauth_features {
-        process_signed_delegate_action_big_timeout(state.as_ref(), sda.clone()).await
+        process_signed_delegate_action(state.as_ref(), sda, Some(TxExecutionStatus::IncludedFinal))
+            .await
     } else {
-        process_signed_delegate_action(state.as_ref(), sda).await
+        process_signed_delegate_action(state.as_ref(), sda, None).await
     };
-
     if let Err(err) = create_account_sda_result {
         return (err.status_code, err.message).into_response();
     }
@@ -1017,7 +1015,9 @@ async fn relay(State(state): State<Arc<AppState>>, data: Json<Vec<u8>>) -> impl 
     // deserialize SignedDelegateAction using borsh
     match SignedDelegateAction::try_from_slice(&data.0) {
         Ok(signed_delegate_action) => {
-            match process_signed_delegate_action(state.as_ref(), &signed_delegate_action).await {
+            match process_signed_delegate_action(state.as_ref(), &signed_delegate_action, None)
+                .await
+            {
                 Ok(response) => response.into_response(),
                 Err(err) => (err.status_code, err.message).into_response(),
             }
@@ -1047,7 +1047,7 @@ async fn send_meta_tx(
 ) -> impl IntoResponse {
     let relayer_response = process_signed_delegate_action(
         &state, // deserialize SignedDelegateAction using serde json
-        &data.0,
+        &data.0, None,
     )
     .await;
     match relayer_response {
@@ -1239,100 +1239,39 @@ async fn create_signed_meta_tx(
 async fn process_signed_delegate_action(
     state: &AppState,
     signed_delegate_action: &SignedDelegateAction,
+    wait_until: Option<TxExecutionStatus>,
 ) -> Result<String, RelayError> {
+    // Store as a direct value which will be cloned inside the closure.
+    let wait_until_param = wait_until.unwrap_or(TxExecutionStatus::ExecutedOptimistic);
+
     filter_and_send_signed_delegate_action(
         state,
         signed_delegate_action.clone(),
-        |receiver_id, actions| async move {
-            match state
-                .rpc_client
-                .send_tx(
-                    &*ROTATING_SIGNER,
-                    &receiver_id,
-                    actions,
-                    Some(TxExecutionStatus::Executed),
-                )
-                .await
-            {
-                Err(err) => {
-                    let err_msg: String = format!("Error signing transaction: {:?}", err);
-                    error!("{err_msg}");
-                    Err(err_msg)
-                }
-                Ok(FinalExecutionOutcomeView {
-                    status,
-                    transaction_outcome,
-                    receipts_outcome,
-                    ..
-                }) => Ok(TransactionResult {
-                    status,
-                    transaction_outcome,
-                    receipts_outcome,
-                }),
-            }
-        },
-    )
-    .await
-}
-
-// TODO remove this when `send_tx` jsonrpc method is live in 1.37 release
-async fn process_signed_delegate_action_big_timeout(
-    state: &AppState,
-    signed_delegate_action: SignedDelegateAction,
-) -> Result<String, RelayError> {
-    filter_and_send_signed_delegate_action(
-        state,
-        signed_delegate_action,
-        |receiver_id, actions| async move {
-            let hash = state
-                .rpc_client
-                .send_tx_async(&*ROTATING_SIGNER, &receiver_id, actions, None)
-                .await
-                .map_err(|err| {
-                    let err_msg: String = format!("Error signing transaction: {:?}", err);
-                    error!("{err_msg}");
-                    err_msg
-                })?;
-
-            let mut last_res = None;
-            const MAX_RETRIES: usize = 300;
-            for _retry_no in 1..=MAX_RETRIES {
-                let second = Duration::from_secs(1);
-                let res = match state
+        move |receiver_id, actions| {
+            // 'move' is used here to take ownership of wait_until_param in the closure
+            let wait_until_clone = Some(wait_until_param.clone()); // Clone here for each invocation
+            async move {
+                match state
                     .rpc_client
-                    .tx_async_status(ROTATING_SIGNER.account_id(), hash, None)
+                    .send_tx(&*ROTATING_SIGNER, &receiver_id, actions, wait_until_clone)
                     .await
                 {
-                    Ok(res) => res,
-                    // The node is unstable, wait a second and try again
-                    Err(_) => {
-                        sleep(second).await;
-                        continue;
+                    Err(err) => {
+                        let err_msg = format!("Error signing transaction: {:?}", err);
+                        error!("{err_msg}");
+                        Err(err_msg)
                     }
-                };
-                last_res = Some(res.clone());
-                match res.status {
-                    FinalExecutionStatus::NotStarted => sleep(second).await,
-                    FinalExecutionStatus::Started => sleep(second).await,
-                    FinalExecutionStatus::Failure(_) => break,
-                    FinalExecutionStatus::SuccessValue(_) => break,
+                    Ok(FinalExecutionOutcomeView {
+                        status,
+                        transaction_outcome,
+                        receipts_outcome,
+                        ..
+                    }) => Ok(TransactionResult {
+                        status,
+                        transaction_outcome,
+                        receipts_outcome,
+                    }),
                 }
-            }
-            if let Some(FinalExecutionOutcomeView {
-                status,
-                transaction_outcome,
-                receipts_outcome,
-                ..
-            }) = last_res
-            {
-                Ok(TransactionResult {
-                    status,
-                    transaction_outcome,
-                    receipts_outcome,
-                })
-            } else {
-                error!("Tried {MAX_RETRIES} times, failed {MAX_RETRIES} times");
-                Err(format!("Failed after {MAX_RETRIES} retries"))
             }
         },
     )
@@ -1632,7 +1571,12 @@ where
     let actions: Vec<Action> = vec![Action::Delegate(Box::new(signed_delegate_action.clone()))];
     let txn_hash: CryptoHash = state
         .rpc_client
-        .send_tx_async(&*ROTATING_SIGNER, receiver_id, actions, None)
+        .send_tx_async(
+            &*ROTATING_SIGNER,
+            receiver_id,
+            actions,
+            Some(TxExecutionStatus::Included),
+        )
         .await
         .map_err(|err| {
             let err_msg = format!("Error signing transaction: {err:?}");
@@ -1691,7 +1635,12 @@ where
 
         let execution = state
             .rpc_client
-            .send_tx(&*ROTATING_SIGNER, receiver_id, actions, None)
+            .send_tx(
+                &*ROTATING_SIGNER,
+                receiver_id,
+                actions,
+                Some(TxExecutionStatus::ExecutedOptimistic),
+            )
             .await
             .map_err(|err| {
                 let err_msg = format!("Error signing transaction: {err:?}");
@@ -1747,7 +1696,12 @@ where
     } else {
         let execution = state
             .rpc_client
-            .send_tx(&*ROTATING_SIGNER, receiver_id, actions, None)
+            .send_tx(
+                &*ROTATING_SIGNER,
+                receiver_id,
+                actions,
+                Some(TxExecutionStatus::ExecutedOptimistic),
+            )
             .await
             .map_err(|err| {
                 let err_msg = format!("Error signing transaction: {err:?}");
