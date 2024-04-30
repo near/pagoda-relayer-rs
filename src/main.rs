@@ -16,14 +16,14 @@ use near_crypto::{InMemorySigner, Signer};
 use near_fetch::signer::{ExposeAccountId, KeyRotatingSigner};
 use near_jsonrpc_client::methods::broadcast_tx_async::RpcBroadcastTxAsyncRequest;
 
-use near_primitives::delegate_action::SignedDelegateAction;
+use near_primitives::borsh::{self, BorshDeserialize};
 use near_primitives::hash::CryptoHash;
 use near_primitives::transaction::{Action, FunctionCallAction, Transaction};
 use near_primitives::types::{AccountId, Nonce};
 use near_primitives::views::{
     ExecutionOutcomeWithIdView, FinalExecutionOutcomeView, FinalExecutionStatus,
 };
-use near_primitives::{borsh::BorshDeserialize, borsh::BorshSerialize};
+use near_primitives::{action::delegate::SignedDelegateAction, views::TxExecutionStatus};
 use once_cell::sync::Lazy;
 use r2d2::{Pool, PooledConnection};
 use r2d2_redis::redis::{Commands, ErrorKind::IoError, RedisError};
@@ -1204,7 +1204,9 @@ async fn create_signed_meta_tx(
     })?;
     let signer: &InMemorySigner = temp_signer;
     let receiver_id: &AccountId = &pk_and_sda.signed_delegate_action.delegate_action.sender_id;
-    let actions: Vec<Action> = vec![Action::Delegate(pk_and_sda.signed_delegate_action.clone())];
+    let actions: Vec<Action> = vec![Action::Delegate(Box::new(
+        pk_and_sda.signed_delegate_action.clone(),
+    ))];
     let nonce: u64;
     let block_hash: CryptoHash;
 
@@ -1229,7 +1231,7 @@ async fn create_signed_meta_tx(
     }
     .sign(signer);
 
-    let signed_meta_tx_b64: String = BASE64_ENGINE.encode(signed_meta_tx.try_to_vec().unwrap());
+    let signed_meta_tx_b64: String = BASE64_ENGINE.encode(borsh::to_vec(&signed_meta_tx).unwrap());
     Ok(json!({"signed_transaction": signed_meta_tx_b64}).to_string())
 }
 
@@ -1244,7 +1246,12 @@ async fn process_signed_delegate_action(
         |receiver_id, actions| async move {
             match state
                 .rpc_client
-                .send_tx(&*ROTATING_SIGNER, &receiver_id, actions)
+                .send_tx(
+                    &*ROTATING_SIGNER,
+                    &receiver_id,
+                    actions,
+                    Some(TxExecutionStatus::Executed),
+                )
                 .await
             {
                 Err(err) => {
@@ -1279,7 +1286,7 @@ async fn process_signed_delegate_action_big_timeout(
         |receiver_id, actions| async move {
             let hash = state
                 .rpc_client
-                .send_tx_async(&*ROTATING_SIGNER, &receiver_id, actions)
+                .send_tx_async(&*ROTATING_SIGNER, &receiver_id, actions, None)
                 .await
                 .map_err(|err| {
                     let err_msg: String = format!("Error signing transaction: {:?}", err);
@@ -1293,7 +1300,7 @@ async fn process_signed_delegate_action_big_timeout(
                 let second = Duration::from_secs(1);
                 let res = match state
                     .rpc_client
-                    .tx_async_status(ROTATING_SIGNER.account_id(), hash)
+                    .tx_async_status(ROTATING_SIGNER.account_id(), hash, None)
                     .await
                 {
                     Ok(res) => res,
@@ -1417,11 +1424,13 @@ fn validate_signed_delegate_action(
         }
         for non_delegate_action in non_delegate_actions {
             match non_delegate_action.clone() {
-                Action::FunctionCall(FunctionCallAction {
-                    method_name,
-                    deposit,
-                    ..
-                }) => {
+                Action::FunctionCall(boxed_function_call_action) => {
+                    let FunctionCallAction {
+                        method_name,
+                        deposit,
+                        ..
+                    } = *boxed_function_call_action;
+
                     debug!("method_name: {:?}", method_name);
                     debug!("deposit: {:?}", deposit);
                     if state.config.use_whitelisted_contracts && !is_whitelisted_da_receiver {
@@ -1550,7 +1559,8 @@ fn validate_signed_delegate_action(
         let treasury_payments: Vec<Action> = non_delegate_actions
             .into_iter()
             .filter(|action| {
-                if let Action::FunctionCall(FunctionCallAction { ref args, .. }) = action {
+                if let Action::FunctionCall(ref function_call_action) = action {
+                    let FunctionCallAction { ref args, .. } = **function_call_action;
                     debug!("args: {:?}", args);
 
                     // convert to ascii lowercase
@@ -1619,10 +1629,10 @@ where
 
     // the receiver of the txn is the sender of the signed delegate action
     let receiver_id: &AccountId = &signed_delegate_action.delegate_action.sender_id;
-    let actions: Vec<Action> = vec![Action::Delegate(signed_delegate_action.clone())];
+    let actions: Vec<Action> = vec![Action::Delegate(Box::new(signed_delegate_action.clone()))];
     let txn_hash: CryptoHash = state
         .rpc_client
-        .send_tx_async(&*ROTATING_SIGNER, receiver_id, actions)
+        .send_tx_async(&*ROTATING_SIGNER, receiver_id, actions, None)
         .await
         .map_err(|err| {
             let err_msg = format!("Error signing transaction: {err:?}");
@@ -1657,7 +1667,7 @@ where
 
     // the receiver of the txn is the sender of the signed delegate action
     let receiver_id: &AccountId = &signed_delegate_action.delegate_action.sender_id;
-    let actions: Vec<Action> = vec![Action::Delegate(signed_delegate_action.clone())];
+    let actions: Vec<Action> = vec![Action::Delegate(Box::new(signed_delegate_action.clone()))];
 
     // gas allowance redis specific validation
     if state.config.use_redis {
@@ -1681,7 +1691,7 @@ where
 
         let execution = state
             .rpc_client
-            .send_tx(&*ROTATING_SIGNER, receiver_id, actions)
+            .send_tx(&*ROTATING_SIGNER, receiver_id, actions, None)
             .await
             .map_err(|err| {
                 let err_msg = format!("Error signing transaction: {err:?}");
@@ -1737,7 +1747,7 @@ where
     } else {
         let execution = state
             .rpc_client
-            .send_tx(&*ROTATING_SIGNER, receiver_id, actions)
+            .send_tx(&*ROTATING_SIGNER, receiver_id, actions, None)
             .await
             .map_err(|err| {
                 let err_msg = format!("Error signing transaction: {err:?}");
@@ -1871,7 +1881,7 @@ mod tests {
     use near_crypto::{InMemorySigner, PublicKey, Signature};
 
     use near_primitives::account::{AccessKey, AccessKeyPermission};
-    use near_primitives::delegate_action::{
+    use near_primitives::action::delegate::{
         DelegateAction, NonDelegateAction, SignedDelegateAction,
     };
     use near_primitives::signable_message::{SignableMessage, SignableMessageType};
@@ -2169,14 +2179,14 @@ mod tests {
         .await;
 
         // Simulate a valid `ft_transfer` function call action
-        let actions = vec![Action::FunctionCall(FunctionCallAction {
+        let actions = vec![Action::FunctionCall(Box::new(FunctionCallAction {
             method_name: FT_TRANSFER_METHOD_NAME.to_string(),
             args: BASE64_ENGINE
                 .encode("{\"receiver_id\":\"receiver.testnet\",\"amount\":\"10\"}")
                 .into_bytes(),
             gas: 30_000_000_000_000,
             deposit: FT_TRANSFER_ATTACHMENT_DEPOSIT_AMOUNT,
-        })];
+        }))];
 
         let signed_delegate_action = create_signed_delegate_action(
             Some("sender.testnet"),   // Matching the whitelisted sender
@@ -2204,12 +2214,12 @@ mod tests {
         .await;
 
         // Using an invalid method name
-        let actions = vec![Action::FunctionCall(FunctionCallAction {
+        let actions = vec![Action::FunctionCall(Box::new(FunctionCallAction {
             method_name: "invalid_method".to_string(),
             args: BASE64_ENGINE.encode("{}").into_bytes(),
             gas: 30_000_000_000_000,
             deposit: 1,
-        })];
+        }))];
 
         let signed_delegate_action = create_signed_delegate_action(
             Some("sender.testnet"),
@@ -2234,14 +2244,14 @@ mod tests {
         .await;
 
         // Valid method name but incorrect deposit amount
-        let actions = vec![Action::FunctionCall(FunctionCallAction {
+        let actions = vec![Action::FunctionCall(Box::new(FunctionCallAction {
             method_name: FT_TRANSFER_METHOD_NAME.to_string(),
             args: BASE64_ENGINE
                 .encode("{\"receiver_id\":\"receiver.testnet\",\"amount\":\"10\"}")
                 .into_bytes(),
             gas: 30_000_000_000_000,
             deposit: 0, // Incorrect deposit amount
-        })];
+        }))];
 
         let signed_delegate_action = create_signed_delegate_action(
             Some("sender.testnet"),
@@ -2269,14 +2279,14 @@ mod tests {
         .await;
 
         // Non-whitelisted sender but valid method and deposit
-        let actions = vec![Action::FunctionCall(FunctionCallAction {
+        let actions = vec![Action::FunctionCall(Box::new(FunctionCallAction {
             method_name: FT_TRANSFER_METHOD_NAME.to_string(),
             args: BASE64_ENGINE
                 .encode("{\"receiver_id\":\"receiver.testnet\",\"amount\":\"10\"}")
                 .into_bytes(),
             gas: 30_000_000_000_000,
             deposit: FT_TRANSFER_ATTACHMENT_DEPOSIT_AMOUNT,
-        })];
+        }))];
 
         let signed_delegate_action = create_signed_delegate_action(
             Some("non_whitelisted_sender.testnet"), // Non-whitelisted sender
@@ -2297,12 +2307,12 @@ mod tests {
         let action = create_signed_delegate_action(
             None,
             None,
-            Some(vec![Action::FunctionCall(FunctionCallAction {
+            Some(vec![Action::FunctionCall(Box::new(FunctionCallAction {
                 method_name: "invalid_method".to_string(),
                 args: vec![],
                 gas: 30000000000000,
                 deposit: 1,
-            })]),
+            }))]),
             None,
         );
         assert!(validate_signed_delegate_action(&state, &action).is_err());
@@ -2336,7 +2346,7 @@ mod tests {
         let signed_delegate_action = create_signed_delegate_action(
             Some("whitelisted_sender.testnet"),   // Mock sender
             Some(&app_state.config.burn_address), // Use the configured burn address
-            Some(vec![Action::FunctionCall(FunctionCallAction {
+            Some(vec![Action::FunctionCall(Box::new(FunctionCallAction {
                 method_name: "ft_transfer".to_string(),
                 args: json!({
                     "receiver_id": app_state.config.burn_address,
@@ -2346,7 +2356,7 @@ mod tests {
                 .into_bytes(),
                 gas: 300000000000000,
                 deposit: 1, // Simulated deposit for the action
-            })]),
+            }))]),
             None,
         );
 
@@ -2374,7 +2384,7 @@ mod tests {
         let signed_delegate_action = create_signed_delegate_action(
             Some("whitelisted_sender.testnet"), // Mock sender
             Some("non_burn_address.testnet"),   // Use a non-burn address
-            Some(vec![Action::FunctionCall(FunctionCallAction {
+            Some(vec![Action::FunctionCall(Box::new(FunctionCallAction {
                 method_name: "ft_transfer".to_string(),
                 args: json!({
                     "receiver_id": "non_burn_address.testnet",
@@ -2384,7 +2394,7 @@ mod tests {
                 .into_bytes(),
                 gas: 300000000000000,
                 deposit: 1, // Simulated deposit for the action
-            })]),
+            }))]),
             None,
         );
 
@@ -2411,7 +2421,7 @@ mod tests {
         // Simulate a valid SignedDelegateAction for AddKey by the same account to itself
         let sender_id = "user_with_fastauth.testnet";
         let receiver_id = sender_id; // Matching sender and receiver for fastauth scenario
-        let actions = vec![Action::AddKey(AddKeyAction {
+        let actions = vec![Action::AddKey(Box::new(AddKeyAction {
             public_key: "ed25519:3GTVh8BQjY3t9ZUpzwCSMbFqWVTswei8uMBQBBnS5H6p"
                 .parse()
                 .unwrap(),
@@ -2419,7 +2429,7 @@ mod tests {
                 nonce: 0,
                 permission: AccessKeyPermission::FullAccess,
             },
-        })];
+        }))];
 
         let signed_delegate_action =
             create_signed_delegate_action(Some(sender_id), Some(receiver_id), Some(actions), None);
@@ -2497,14 +2507,14 @@ mod tests {
             true,                                              // use_exchange
         )
         .await;
-        let actions = vec![Action::FunctionCall(FunctionCallAction {
+        let actions = vec![Action::FunctionCall(Box::new(FunctionCallAction {
             method_name: FT_TRANSFER_METHOD_NAME.to_string(),
             args: BASE64_ENGINE
                 .encode("{\"receiver_id\":\"valid_receiver.testnet\",\"amount\":\"1000\"}")
                 .into_bytes(),
             gas: 300_000_000_000_000,
             deposit: FT_TRANSFER_ATTACHMENT_DEPOSIT_AMOUNT,
-        })];
+        }))];
         let signed_delegate_action = create_signed_delegate_action(
             Some("exchange_sender.testnet"), // sender_id in whitelisted_senders
             Some("exchange.testnet"),        // receiver_id, arbitrary for this test
@@ -2534,14 +2544,14 @@ mod tests {
         app_state.config.burn_address = "burn_address.testnet".to_string();
 
         // Attempting an FT transfer not to the burn address
-        let actions = vec![Action::FunctionCall(FunctionCallAction {
+        let actions = vec![Action::FunctionCall(Box::new(FunctionCallAction {
             method_name: FT_TRANSFER_METHOD_NAME.to_string(),
             args: BASE64_ENGINE
                 .encode("{\"receiver_id\":\"another_address.testnet\",\"amount\":\"1000\"}")
                 .into_bytes(),
             gas: 300_000_000_000_000,
             deposit: FT_TRANSFER_ATTACHMENT_DEPOSIT_AMOUNT,
-        })];
+        }))];
         let signed_delegate_action = create_signed_delegate_action(
             Some("ft_sender.testnet"),    // sender_id in whitelisted_senders
             Some("some_service.testnet"), // receiver_id, arbitrary for this test
@@ -2915,7 +2925,7 @@ mod tests {
         let signed_delegate_action = create_signed_delegate_action(None, None, None, Some(*nonce));
         assert!(signed_delegate_action.verify());
 
-        let serialized_signed_delegate_action = signed_delegate_action.try_to_vec().unwrap();
+        let serialized_signed_delegate_action = borsh::to_vec(&signed_delegate_action).unwrap();
         let json_payload = Json(serialized_signed_delegate_action);
 
         let response = relay(axum_state, json_payload).await.into_response();
@@ -2945,7 +2955,7 @@ mod tests {
             create_signed_delegate_action(None, None, None, Some(*nonce));
         signed_delegate_action.signature = "ed25519:5uJu7KapH89h9cQm5btE1DKnbiFXSZNT7McDw5LHy8pdAt5Mz9DfuyQZadGgFExo88or9152iwcw2q12rnFWa6bg".parse().unwrap();
 
-        let serialized_signed_delegate_action = signed_delegate_action.try_to_vec().unwrap();
+        let serialized_signed_delegate_action = borsh::to_vec(&signed_delegate_action).unwrap();
         let json_payload = Json(serialized_signed_delegate_action);
 
         let response = relay(axum_state, json_payload).await.into_response();
@@ -2966,7 +2976,7 @@ mod tests {
         let signed_delegate_action = create_signed_delegate_action(None, None, None, Some(nonce));
         assert!(signed_delegate_action.verify());
 
-        let serialized_signed_delegate_action = signed_delegate_action.try_to_vec().unwrap();
+        let serialized_signed_delegate_action = borsh::to_vec(&signed_delegate_action).unwrap();
         let json_payload = Json(serialized_signed_delegate_action);
 
         let response = relay(axum_state, json_payload).await.into_response();
