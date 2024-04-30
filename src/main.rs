@@ -1235,6 +1235,7 @@ async fn create_signed_meta_tx(
     Ok(json!({"signed_transaction": signed_meta_tx_b64}).to_string())
 }
 
+// Single unified function to send a transaction
 #[instrument]
 async fn process_signed_delegate_action(
     state: &AppState,
@@ -1278,6 +1279,9 @@ async fn process_signed_delegate_action(
     .await
 }
 
+// Notice we got rid of the old `big_timeout` function
+
+// Uses the old deprecated RPC call to send a transaction
 async fn process_signed_delegate_action_noretry_async(
     state: &AppState,
     signed_delegate_action: SignedDelegateAction,
