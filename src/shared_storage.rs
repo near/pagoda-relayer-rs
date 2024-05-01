@@ -91,7 +91,7 @@ impl SharedStoragePoolManager {
     }
 
     async fn allocate_deposit_to_pool(&self) -> anyhow::Result<()> {
-        let actions = vec![Action::FunctionCall(FunctionCallAction {
+        let actions = vec![Action::FunctionCall(Box::new(FunctionCallAction {
             method_name: "shared_storage_pool_deposit".into(),
             args: serde_json::json!({
                 "owner_id": self.pool_owner_id.clone(),
@@ -100,16 +100,16 @@ impl SharedStoragePoolManager {
             .into_bytes(),
             gas: MAX_GAS,
             deposit: STORAGE_UP_DEPOSIT,
-        })];
+        }))];
         self.rpc_client
-            .send_tx(&self.signer, &self.pool_contract_id, actions)
+            .send_tx(&self.signer, &self.pool_contract_id, actions, None)
             .await
             .context("failed to send transaction for shared_storage_pool_deposit")?;
         Ok(())
     }
 
     async fn share_storage(&self, id: AccountId, max_bytes: StorageUsage) -> anyhow::Result<()> {
-        let actions = vec![Action::FunctionCall(FunctionCallAction {
+        let actions = vec![Action::FunctionCall(Box::new(FunctionCallAction {
             method_name: "share_storage".into(),
             args: serde_json::json!({
                 "account_id": id,
@@ -119,9 +119,9 @@ impl SharedStoragePoolManager {
             .into_bytes(),
             gas: MAX_GAS,
             deposit: 0,
-        })];
+        }))];
         self.rpc_client
-            .send_tx(&self.signer, &self.pool_contract_id, actions)
+            .send_tx(&self.signer, &self.pool_contract_id, actions, None)
             .await
             .context("failed to send transaction for share_storage")?;
         Ok(())
