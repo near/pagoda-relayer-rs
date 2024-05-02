@@ -2,7 +2,8 @@ FROM rust:1.77 AS builder
 WORKDIR /usr/src/relayer
 COPY Cargo.toml Cargo.lock ./
 COPY src ./src
-RUN cargo build --release
+ARG BUILD_FLAGS
+RUN if [ -z "$BUILD_FLAGS" ]; then cargo build --release; else cargo build --release --features ${BUILD_FLAGS}; fi
 
 
 FROM ubuntu:22.04
