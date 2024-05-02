@@ -519,6 +519,10 @@ async fn main() {
     let mut shared_storage_pool = None;
     let mut redis_pool = None;
 
+    if config.use_redis {
+        redis_pool = Some(create_redis_pool(&config));
+    }
+
     // initialize our shared storage pool manager if using fastauth features or using shared storage
     if config.use_fastauth_features || config.use_shared_storage {
         #[cfg(any(feature = "fastauth_features", feature = "shared_storage"))]
@@ -540,10 +544,6 @@ async fn main() {
     if config.use_fastauth_features {
         #[cfg(feature = "fastauth_features")]
         init_senders_infinite_allowance_fastauth(&config, redis_pool.as_ref().unwrap()).await;
-    }
-
-    if config.use_redis {
-        redis_pool = Some(create_redis_pool(&config));
     }
 
     let app_state = Arc::new(AppState {
