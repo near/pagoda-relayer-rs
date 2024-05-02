@@ -2,7 +2,6 @@ mod error;
 mod redis_fns;
 mod rpc_conf;
 mod shared_storage;
-
 use axum::{
     extract::{Json, State},
     http::StatusCode,
@@ -13,18 +12,18 @@ use axum::{
 use base64::engine::general_purpose::STANDARD_NO_PAD as BASE64_ENGINE;
 use base64::Engine;
 use config::{Config, File as ConfigFile};
-use near_crypto::{InMemorySigner, PublicKey, Signature, Signer};
-use near_fetch::signer::{ExposeAccountId, KeyRotatingSigner, SignerExt};
+use near_crypto::{InMemorySigner, Signer};
+use near_fetch::signer::{ExposeAccountId, KeyRotatingSigner};
 use near_jsonrpc_client::methods::broadcast_tx_async::RpcBroadcastTxAsyncRequest;
-use near_jsonrpc_client::methods::broadcast_tx_commit::RpcBroadcastTxCommitRequest;
-use near_primitives::delegate_action::SignedDelegateAction;
+
+use near_primitives::borsh::{self, BorshDeserialize};
 use near_primitives::hash::CryptoHash;
-use near_primitives::transaction::{Action, FunctionCallAction, SignedTransaction, Transaction};
+use near_primitives::transaction::{Action, FunctionCallAction, Transaction};
 use near_primitives::types::{AccountId, Nonce};
 use near_primitives::views::{
     ExecutionOutcomeWithIdView, FinalExecutionOutcomeView, FinalExecutionStatus,
 };
-use near_primitives::{borsh::BorshDeserialize, borsh::BorshSerialize};
+use near_primitives::{action::delegate::SignedDelegateAction, views::TxExecutionStatus};
 use once_cell::sync::Lazy;
 use r2d2::{Pool, PooledConnection};
 use r2d2_redis::redis::{Commands, ErrorKind::IoError, RedisError};
@@ -33,14 +32,12 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::fmt;
-use std::fmt::{Debug, Display, Error, Formatter};
+use std::fmt::{Debug, Display, Formatter};
 use std::future::Future;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::str::FromStr;
 use std::string::ToString;
-use std::time::Duration;
 use std::{net::SocketAddr, sync::Arc};
-use tokio::time::sleep;
 use tower_http::trace::TraceLayer;
 use tracing::{debug, error, info, instrument, warn};
 use tracing_flame::FlameLayer;
@@ -53,8 +50,6 @@ use crate::error::RelayError;
 use crate::redis_fns::*;
 use crate::rpc_conf::NetworkConfig;
 use crate::shared_storage::SharedStoragePoolManager;
-#[cfg(feature = "shared_storage")]
-use crate::shared_storage::*;
 
 // CONSTANTS
 // transaction cost in Gas (10^21yN or 10Tgas or 0.001N)
@@ -497,7 +492,7 @@ struct TransactionResult {
 #[tokio::main]
 async fn main() {
     // load config
-    let mut toml_config = Config::builder()
+    let toml_config = Config::builder()
         .add_source(ConfigFile::with_name("config.toml"))
         .build()
         .unwrap();
@@ -524,6 +519,10 @@ async fn main() {
     let mut shared_storage_pool = None;
     let mut redis_pool = None;
 
+    if config.use_redis {
+        redis_pool = Some(create_redis_pool(&config));
+    }
+
     // initialize our shared storage pool manager if using fastauth features or using shared storage
     if config.use_fastauth_features || config.use_shared_storage {
         #[cfg(any(feature = "fastauth_features", feature = "shared_storage"))]
@@ -544,11 +543,7 @@ async fn main() {
     // if fastauth enabled, initialize whitelisted senders with "infinite" allowance in relayer DB
     if config.use_fastauth_features {
         #[cfg(feature = "fastauth_features")]
-        init_senders_infinite_allowance_fastauth(&config, &redis_pool.as_ref().unwrap()).await;
-    }
-
-    if config.use_redis {
-        redis_pool = Some(create_redis_pool(&config));
+        init_senders_infinite_allowance_fastauth(&config, redis_pool.as_ref().unwrap()).await;
     }
 
     let app_state = Arc::new(AppState {
@@ -682,6 +677,7 @@ async fn init_senders_infinite_allowance_fastauth(
     request_body = AccountIdJson,
     responses(
         (status = 200, description = "90000000000000", body = String),
+        (status = 403, description = "Invalid account_id", body = String),
         (status = 500, description = "Error getting allowance for account_id example.near in Relayer DB: err_msg", body = String)
     )
 )]
@@ -698,7 +694,7 @@ async fn get_allowance(
         )
             .into_response();
     };
-    match get_remaining_allowance(&state.redis_pool.as_ref().unwrap(), &account_id_val).await {
+    match get_remaining_allowance(state.redis_pool.as_ref().unwrap(), &account_id_val).await {
         Ok(allowance) => (
             StatusCode::OK,
             allowance.to_string(), // TODO: LP return in json format
@@ -762,7 +758,7 @@ async fn create_account_atomic(
     */
 
     // check if the oauth_token has already been used and is a key in Redis
-    match get_oauth_token_in_redis(&state.redis_pool.as_ref().unwrap(), oauth_token).await {
+    match get_oauth_token_in_redis(state.redis_pool.as_ref().unwrap(), oauth_token).await {
         Ok(is_oauth_token_in_redis) => {
             if is_oauth_token_in_redis {
                 let err_msg = format!(
@@ -782,7 +778,7 @@ async fn create_account_atomic(
         }
     }
     let redis_result = set_account_and_allowance_in_redis(
-        &state.redis_pool.as_ref().unwrap(),
+        state.redis_pool.as_ref().unwrap(),
         account_id,
         allowance_in_gas,
     )
@@ -802,11 +798,11 @@ async fn create_account_atomic(
        after updated redis and adding shared storage, finally return success msg
     */
     let create_account_sda_result = if state.config.use_fastauth_features {
-        process_signed_delegate_action_big_timeout(state.as_ref(), sda.clone()).await
+        process_signed_delegate_action(state.as_ref(), sda, Some(TxExecutionStatus::IncludedFinal))
+            .await
     } else {
-        process_signed_delegate_action(state.as_ref(), sda).await
+        process_signed_delegate_action(state.as_ref(), sda, None).await
     };
-
     if let Err(err) = create_account_sda_result {
         return (err.status_code, err.message).into_response();
     }
@@ -834,7 +830,7 @@ async fn create_account_atomic(
     }
 
     // add oauth token to redis (key: oauth_token, val: true)
-    match set_oauth_token_in_redis(&state.redis_pool.as_ref().unwrap(), oauth_token).await {
+    match set_oauth_token_in_redis(state.redis_pool.as_ref().unwrap(), oauth_token).await {
         Ok(_) => {
             let ok_msg = format!(
                 "Added Oauth token {oauth_token:?} for account_id {account_id:?} \
@@ -872,7 +868,7 @@ async fn update_allowance(
     let allowance_in_gas: &u64 = &account_id_allowance.allowance;
 
     let redis_result = set_account_and_allowance_in_redis(
-        &state.redis_pool.as_ref().unwrap(),
+        state.redis_pool.as_ref().unwrap(),
         account_id,
         allowance_in_gas,
     )
@@ -906,7 +902,7 @@ async fn update_all_allowances(
 ) -> impl IntoResponse {
     let allowance_in_gas = allowance_json.allowance_in_gas;
     let redis_response = update_all_allowances_in_redis(
-        &state.redis_pool.as_ref().unwrap(),
+        state.redis_pool.as_ref().unwrap(),
         &state.config.network_env,
         allowance_in_gas,
     )
@@ -936,7 +932,7 @@ async fn register_account_and_allowance(
     let allowance_in_gas: &u64 = &account_id_allowance_oauth.allowance;
     let oauth_token: &String = &account_id_allowance_oauth.oauth_token;
     // check if the oauth_token has already been used and is a key in Relayer DB
-    match get_oauth_token_in_redis(&state.redis_pool.as_ref().unwrap(), oauth_token).await {
+    match get_oauth_token_in_redis(state.redis_pool.as_ref().unwrap(), oauth_token).await {
         Ok(is_oauth_token_in_redis) => {
             if is_oauth_token_in_redis {
                 let err_msg = format!(
@@ -957,7 +953,7 @@ async fn register_account_and_allowance(
         }
     }
     let redis_result = set_account_and_allowance_in_redis(
-        &state.redis_pool.as_ref().unwrap(),
+        state.redis_pool.as_ref().unwrap(),
         account_id,
         allowance_in_gas,
     )
@@ -989,7 +985,7 @@ async fn register_account_and_allowance(
     }
 
     // add oauth token to redis (key: oauth_token, val: true)
-    match set_oauth_token_in_redis(&state.redis_pool.as_ref().unwrap(), oauth_token).await {
+    match set_oauth_token_in_redis(state.redis_pool.as_ref().unwrap(), oauth_token).await {
         Ok(_) => {
             let ok_msg = format!("Added Oauth token {account_id_allowance_oauth:?} to Relayer DB");
             info!("{ok_msg}");
@@ -1019,7 +1015,9 @@ async fn relay(State(state): State<Arc<AppState>>, data: Json<Vec<u8>>) -> impl 
     // deserialize SignedDelegateAction using borsh
     match SignedDelegateAction::try_from_slice(&data.0) {
         Ok(signed_delegate_action) => {
-            match process_signed_delegate_action(state.as_ref(), &signed_delegate_action).await {
+            match process_signed_delegate_action(state.as_ref(), &signed_delegate_action, None)
+                .await
+            {
                 Ok(response) => response.into_response(),
                 Err(err) => (err.status_code, err.message).into_response(),
             }
@@ -1049,7 +1047,7 @@ async fn send_meta_tx(
 ) -> impl IntoResponse {
     let relayer_response = process_signed_delegate_action(
         &state, // deserialize SignedDelegateAction using serde json
-        &data.0,
+        &data.0, None,
     )
     .await;
     match relayer_response {
@@ -1206,14 +1204,19 @@ async fn create_signed_meta_tx(
     })?;
     let signer: &InMemorySigner = temp_signer;
     let receiver_id: &AccountId = &pk_and_sda.signed_delegate_action.delegate_action.sender_id;
-    let actions: Vec<Action> = vec![Action::Delegate(pk_and_sda.signed_delegate_action.clone())];
-    let mut nonce: u64;
-    let mut block_hash: CryptoHash;
+    let actions: Vec<Action> = vec![Action::Delegate(Box::new(
+        pk_and_sda.signed_delegate_action.clone(),
+    ))];
+    let nonce: u64;
+    let block_hash: CryptoHash;
 
     if let (Some(nonce_param), Some(block_hash_param)) = (pk_and_sda.nonce, &pk_and_sda.block_hash)
     {
         nonce = nonce_param;
-        block_hash = CryptoHash::from_str(&block_hash_param.clone()).unwrap();
+        block_hash = CryptoHash::from_str(&block_hash_param.clone()).map_err(|_e| RelayError {
+            status_code: StatusCode::BAD_REQUEST,
+            message: format!("block hash {:?} is invalid", block_hash_param.clone()),
+        })?;
     } else {
         (nonce, block_hash) = fetch_nonce_and_block_hash(state, signer).await?;
     }
@@ -1228,109 +1231,57 @@ async fn create_signed_meta_tx(
     }
     .sign(signer);
 
-    let signed_meta_tx_b64: String = BASE64_ENGINE.encode(signed_meta_tx.try_to_vec().unwrap());
+    let signed_meta_tx_b64: String = BASE64_ENGINE.encode(borsh::to_vec(&signed_meta_tx).unwrap());
     Ok(json!({"signed_transaction": signed_meta_tx_b64}).to_string())
 }
 
+// Single unified function to send a transaction
 #[instrument]
 async fn process_signed_delegate_action(
     state: &AppState,
     signed_delegate_action: &SignedDelegateAction,
+    wait_until: Option<TxExecutionStatus>,
 ) -> Result<String, RelayError> {
+    // Store as a direct value which will be cloned inside the closure.
+    let wait_until_param = wait_until.unwrap_or(TxExecutionStatus::ExecutedOptimistic);
+
     filter_and_send_signed_delegate_action(
         state,
         signed_delegate_action.clone(),
-        |receiver_id, actions| async move {
-            match state
-                .rpc_client
-                .send_tx(&*ROTATING_SIGNER, &receiver_id, actions)
-                .await
-            {
-                Err(err) => {
-                    let err_msg: String = format!("Error signing transaction: {:?}", err);
-                    error!("{err_msg}");
-                    Err(err_msg)
-                }
-                Ok(FinalExecutionOutcomeView {
-                    status,
-                    transaction_outcome,
-                    receipts_outcome,
-                    ..
-                }) => Ok(TransactionResult {
-                    status,
-                    transaction_outcome,
-                    receipts_outcome,
-                }),
-            }
-        },
-    )
-    .await
-}
-
-// TODO remove this when `send_tx` jsonrpc method is live in 1.37 release
-async fn process_signed_delegate_action_big_timeout(
-    state: &AppState,
-    signed_delegate_action: SignedDelegateAction,
-) -> Result<String, RelayError> {
-    filter_and_send_signed_delegate_action(
-        state,
-        signed_delegate_action,
-        |receiver_id, actions| async move {
-            let hash = state
-                .rpc_client
-                .send_tx_async(&*ROTATING_SIGNER, &receiver_id, actions)
-                .await
-                .map_err(|err| {
-                    let err_msg: String = format!("Error signing transaction: {:?}", err);
-                    error!("{err_msg}");
-                    err_msg
-                })?;
-
-            let mut last_res = None;
-            const MAX_RETRIES: usize = 300;
-            for _retry_no in 1..=MAX_RETRIES {
-                let second = Duration::from_secs(1);
-                let res = match state
+        move |receiver_id, actions| {
+            // 'move' is used here to take ownership of wait_until_param in the closure
+            let wait_until_clone = Some(wait_until_param.clone()); // Clone here for each invocation
+            async move {
+                match state
                     .rpc_client
-                    .tx_async_status(ROTATING_SIGNER.account_id(), hash)
+                    .send_tx(&*ROTATING_SIGNER, &receiver_id, actions, wait_until_clone)
                     .await
                 {
-                    Ok(res) => res,
-                    // The node is unstable, wait a second and try again
-                    Err(_) => {
-                        sleep(second).await;
-                        continue;
+                    Err(err) => {
+                        let err_msg = format!("Error signing transaction: {:?}", err);
+                        error!("{err_msg}");
+                        Err(err_msg)
                     }
-                };
-                last_res = Some(res.clone());
-                match res.status {
-                    FinalExecutionStatus::NotStarted => sleep(second).await,
-                    FinalExecutionStatus::Started => sleep(second).await,
-                    FinalExecutionStatus::Failure(_) => break,
-                    FinalExecutionStatus::SuccessValue(_) => break,
+                    Ok(FinalExecutionOutcomeView {
+                        status,
+                        transaction_outcome,
+                        receipts_outcome,
+                        ..
+                    }) => Ok(TransactionResult {
+                        status,
+                        transaction_outcome,
+                        receipts_outcome,
+                    }),
                 }
-            }
-            if let Some(FinalExecutionOutcomeView {
-                status,
-                transaction_outcome,
-                receipts_outcome,
-                ..
-            }) = last_res
-            {
-                Ok(TransactionResult {
-                    status,
-                    transaction_outcome,
-                    receipts_outcome,
-                })
-            } else {
-                error!("Tried {MAX_RETRIES} times, failed {MAX_RETRIES} times");
-                Err(format!("Failed after {MAX_RETRIES} retries"))
             }
         },
     )
     .await
 }
 
+// Notice we got rid of the old `big_timeout` function
+
+// Uses the old deprecated RPC call to send a transaction
 async fn process_signed_delegate_action_noretry_async(
     state: &AppState,
     signed_delegate_action: SignedDelegateAction,
@@ -1384,6 +1335,7 @@ fn validate_signed_delegate_action(
     let da_receiver_id = &signed_delegate_action.delegate_action.receiver_id;
 
     // if we are not using whitelisted contracts or senders, then no validation needed
+    // TODO: Is this true? What about validating method name? Or Pay With FT?
     if !state.config.use_whitelisted_contracts && !state.config.use_whitelisted_senders {
         return Ok(());
     }
@@ -1394,7 +1346,7 @@ fn validate_signed_delegate_action(
         .whitelisted_contracts
         .iter()
         .any(|s| s.as_str() == da_receiver_id.as_str());
-    if state.config.use_exchange.clone() {
+    if state.config.use_exchange {
         let non_delegate_actions: Vec<Action> =
             signed_delegate_action.delegate_action.get_actions();
         if state.config.use_whitelisted_senders {
@@ -1415,18 +1367,20 @@ fn validate_signed_delegate_action(
         }
         for non_delegate_action in non_delegate_actions {
             match non_delegate_action.clone() {
-                Action::FunctionCall(FunctionCallAction {
-                    method_name,
-                    deposit,
-                    ..
-                }) => {
+                Action::FunctionCall(boxed_function_call_action) => {
+                    let FunctionCallAction {
+                        method_name,
+                        deposit,
+                        ..
+                    } = *boxed_function_call_action;
+
                     debug!("method_name: {:?}", method_name);
                     debug!("deposit: {:?}", deposit);
-                    if !is_whitelisted_da_receiver {
+                    if state.config.use_whitelisted_contracts && !is_whitelisted_da_receiver {
                         return Err(RelayError {
                             status_code: StatusCode::BAD_REQUEST,
                             message: format!(
-                                "Delegate Action Sender_id {receiver_id:?} is not whitelisted"
+                                "Delegate Action Receiver_id {da_receiver_id:?} is not whitelisted"
                             ),
                         });
                     }
@@ -1509,7 +1463,7 @@ fn validate_signed_delegate_action(
         let non_delegate_action = signed_delegate_action
             .delegate_action
             .actions
-            .get(0)
+            .first()
             .ok_or_else(|| {
                 let err_msg = "DelegateAction must have at least one NonDelegateAction";
                 warn!("{err_msg}");
@@ -1548,7 +1502,8 @@ fn validate_signed_delegate_action(
         let treasury_payments: Vec<Action> = non_delegate_actions
             .into_iter()
             .filter(|action| {
-                if let Action::FunctionCall(FunctionCallAction { ref args, .. }) = action {
+                if let Action::FunctionCall(ref function_call_action) = action {
+                    let FunctionCallAction { ref args, .. } = **function_call_action;
                     debug!("args: {:?}", args);
 
                     // convert to ascii lowercase
@@ -1615,11 +1570,17 @@ where
         validate_signed_delegate_action(state, &signed_delegate_action);
     validation_result?;
 
-    let receiver_id: &AccountId = &signed_delegate_action.delegate_action.receiver_id;
-    let actions: Vec<Action> = vec![Action::Delegate(signed_delegate_action.clone())];
+    // the receiver of the txn is the sender of the signed delegate action
+    let receiver_id: &AccountId = &signed_delegate_action.delegate_action.sender_id;
+    let actions: Vec<Action> = vec![Action::Delegate(Box::new(signed_delegate_action.clone()))];
     let txn_hash: CryptoHash = state
         .rpc_client
-        .send_tx_async(&*ROTATING_SIGNER, receiver_id, actions)
+        .send_tx_async(
+            &*ROTATING_SIGNER,
+            receiver_id,
+            actions,
+            Some(TxExecutionStatus::Included),
+        )
         .await
         .map_err(|err| {
             let err_msg = format!("Error signing transaction: {err:?}");
@@ -1652,9 +1613,9 @@ where
         validate_signed_delegate_action(state, &signed_delegate_action);
     validation_result?;
 
-    let signer_account_id: &AccountId = &signed_delegate_action.delegate_action.sender_id;
-    let receiver_id: &AccountId = &signed_delegate_action.delegate_action.receiver_id;
-    let actions: Vec<Action> = vec![Action::Delegate(signed_delegate_action.clone())];
+    // the receiver of the txn is the sender of the signed delegate action
+    let receiver_id: &AccountId = &signed_delegate_action.delegate_action.sender_id;
+    let actions: Vec<Action> = vec![Action::Delegate(Box::new(signed_delegate_action.clone()))];
 
     // gas allowance redis specific validation
     if state.config.use_redis {
@@ -1678,7 +1639,12 @@ where
 
         let execution = state
             .rpc_client
-            .send_tx(&*ROTATING_SIGNER, receiver_id, actions)
+            .send_tx(
+                &*ROTATING_SIGNER,
+                receiver_id,
+                actions,
+                Some(TxExecutionStatus::ExecutedOptimistic),
+            )
             .await
             .map_err(|err| {
                 let err_msg = format!("Error signing transaction: {err:?}");
@@ -1706,7 +1672,7 @@ where
         debug!("total gas burnt in yN: {}", gas_used_in_yn);
         let new_allowance = update_remaining_allowance(
             &state.redis_pool.clone().unwrap(),
-            &signer_account_id,
+            receiver_id,
             gas_used_in_yn,
             remaining_allowance,
         )
@@ -1719,7 +1685,7 @@ where
                 message: err_msg,
             }
         })?;
-        info!("Updated remaining allowance for account {signer_account_id}: {new_allowance}",);
+        info!("Updated remaining allowance for account {receiver_id}: {new_allowance}",);
 
         if let FinalExecutionStatus::Failure(_) = status {
             error!("Error message: \n{status_msg:?}");
@@ -1734,7 +1700,12 @@ where
     } else {
         let execution = state
             .rpc_client
-            .send_tx(&*ROTATING_SIGNER, receiver_id, actions)
+            .send_tx(
+                &*ROTATING_SIGNER,
+                receiver_id,
+                actions,
+                Some(TxExecutionStatus::ExecutedOptimistic),
+            )
             .await
             .map_err(|err| {
                 let err_msg = format!("Error signing transaction: {err:?}");
@@ -1861,37 +1832,26 @@ mod tests {
     use axum::{
         extract::{Json, State},
         http::StatusCode,
-        routing::{get, post},
-        Router,
     };
     use bytes::BytesMut;
-    use config::{Config, File as ConfigFile};
+
     use near_crypto::KeyType::ED25519;
-    use near_crypto::{ED25519PublicKey, InMemorySigner, KeyType, PublicKey, Signature, Signer};
-    use near_fetch::signer::{ExposeAccountId, KeyRotatingSigner, SignerExt};
-    use near_primitives::delegate_action::{
+    use near_crypto::{InMemorySigner, PublicKey, Signature};
+
+    use near_primitives::account::{AccessKey, AccessKeyPermission};
+    use near_primitives::action::delegate::{
         DelegateAction, NonDelegateAction, SignedDelegateAction,
     };
-    use near_primitives::transaction::{
-        Action, AddKeyAction, FunctionCallAction, Transaction, TransferAction,
-    };
+    use near_primitives::signable_message::{SignableMessage, SignableMessageType};
+    use near_primitives::transaction::{Action, AddKeyAction, FunctionCallAction, TransferAction};
     use near_primitives::types::Balance;
     use near_primitives::types::{BlockHeight, Nonce};
-    use near_primitives::views::ActionView::AddKey;
-    use near_primitives::views::{
-        ExecutionOutcomeWithIdView, FinalExecutionOutcomeView, FinalExecutionStatus,
-    };
-    use near_primitives::{borsh::BorshDeserialize, transaction::CreateAccountAction};
-    use r2d2::{Pool, PooledConnection};
-    use r2d2_redis::redis::{Commands, ErrorKind::IoError, RedisError};
+
+    use r2d2::Pool;
     use r2d2_redis::RedisConnectionManager;
-    use serde_json::{json, Value};
-    use std::fmt::{Debug, Display, Formatter};
-    use std::path::{Path, PathBuf};
-    use std::{net::SocketAddr, sync::Arc};
-    use tracing::{debug, error, info, instrument, warn};
-    use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
-    use utoipa::{OpenApi, ToSchema};
+    use serde_json::json;
+
+    use std::sync::Arc;
 
     /// Helper function to create a test Redis pool
     async fn create_test_redis_pool() -> Pool<RedisConnectionManager> {
@@ -1905,17 +1865,16 @@ mod tests {
         use_whitelisted_senders: bool,
         whitelisted_contracts: Option<Vec<String>>,
         whitelisted_senders: Option<Vec<String>>,
-        use_exchange: bool,
+        _use_exchange: bool,
     ) -> AppState {
-        let mut config = RelayerConfiguration::default();
-        config.use_whitelisted_contracts = use_whitelisted_contracts;
-        config.use_whitelisted_senders = use_whitelisted_senders;
-        if whitelisted_contracts.is_some() {
-            config.whitelisted_contracts = whitelisted_contracts.unwrap();
-        }
-        if whitelisted_senders.is_some() {
-            config.whitelisted_senders = whitelisted_senders.unwrap();
-        }
+        let config = RelayerConfiguration {
+            use_whitelisted_contracts,
+            use_whitelisted_senders,
+            whitelisted_contracts: whitelisted_contracts.unwrap_or_default(),
+            whitelisted_senders: whitelisted_senders.unwrap_or_default(),
+            use_exchange: _use_exchange,
+            ..Default::default()
+        };
         let rpc_client = Arc::new(config.network_config.rpc_client());
         let rpc_client_nofetch = Arc::new(config.network_config.raw_rpc_client());
         let redis_pool = Some(create_test_redis_pool().await);
@@ -1941,6 +1900,7 @@ mod tests {
         sender_id: Option<&str>,
         receiver_id: Option<&str>,
         actions: Option<Vec<Action>>,
+        nonce: Option<u64>,
     ) -> SignedDelegateAction {
         // dw, it's just a testnet account
         let seed: String =
@@ -1972,16 +1932,15 @@ mod tests {
                 .into_iter()
                 .map(|a| NonDelegateAction::try_from(a).unwrap())
                 .collect(),
-            nonce: 1 as Nonce,
+            nonce: nonce.unwrap_or(0),
             max_block_height: 2000000000 as BlockHeight,
             public_key,
         };
 
-        let signature = signer.sign(&delegate_action.try_to_vec().unwrap());
-
+        let signable = SignableMessage::new(&delegate_action, SignableMessageType::DelegateAction);
         SignedDelegateAction {
+            signature: signable.sign(&signer),
             delegate_action,
-            signature,
         }
     }
 
@@ -1989,7 +1948,7 @@ mod tests {
     /// Tests that validate_signed_delegate_action returns Ok when no whitelisting is used
     async fn test_validate_signed_delegate_action_no_whitelisting() {
         let app_state = create_app_state(false, false, None, None, false).await;
-        let signed_delegate_action = create_signed_delegate_action(None, None, None);
+        let signed_delegate_action = create_signed_delegate_action(None, None, None, None);
 
         let result = validate_signed_delegate_action(&app_state, &signed_delegate_action);
 
@@ -1999,9 +1958,8 @@ mod tests {
     #[tokio::test]
     /// Tests that validate_signed_delegate_action returns an error when the receiver is not whitelisted
     async fn test_validate_signed_delegate_action_receiver_not_whitelisted() {
-        let mut app_state = create_app_state(true, false, None, None, false).await;
-        app_state.config.use_whitelisted_contracts = true;
-        let signed_delegate_action = create_signed_delegate_action(None, None, None);
+        let app_state = create_app_state(true, false, None, None, false).await;
+        let signed_delegate_action = create_signed_delegate_action(None, None, None, None);
 
         let result = validate_signed_delegate_action(&app_state, &signed_delegate_action);
 
@@ -2013,7 +1971,7 @@ mod tests {
     async fn test_validate_signed_delegate_action_sender_not_whitelisted() {
         let mut app_state = create_app_state(false, true, None, None, false).await;
         app_state.config.use_whitelisted_senders = true;
-        let signed_delegate_action = create_signed_delegate_action(None, None, None);
+        let signed_delegate_action = create_signed_delegate_action(None, None, None, None);
 
         let result = validate_signed_delegate_action(&app_state, &signed_delegate_action);
 
@@ -2021,24 +1979,282 @@ mod tests {
     }
 
     #[tokio::test]
-    /// Tests that validate_signed_delegate_action returns success when the sender + receiver are whitelisted
-    async fn test_validation_with_whitelisted_contracts_and_sender() {
-        let state = create_app_state(
-            true,
-            true,
-            Some(vec!["relayer_test1.testnet".to_string()]),
-            Some(vec!["relayer_test0.testnet".to_string()]),
-            false,
+    async fn test_validate_signed_delegate_action_only_receiver_whitelisted() {
+        let app_state = create_app_state(
+            true,  // Receiver (contract) whitelisting enabled
+            false, // Sender whitelisting disabled
+            Some(vec!["whitelisted_receiver.testnet".to_string()]), // Whitelisted receivers (contracts)
+            None,                                                   // Whitelisted senders not used
+            false,                                                  // use_exchange disabled
         )
         .await;
-        let sda = create_signed_delegate_action(
-            Some("relayer_test0.testnet"),
-            Some("relayer_test1.testnet"),
-            Some(vec![Action::Transfer(TransferAction {
-                deposit: 0.00000001 as Balance,
-            })]),
+        let signed_delegate_action = create_signed_delegate_action(
+            Some("sender.testnet"),               // sender_id
+            Some("whitelisted_receiver.testnet"), // receiver_id matches the whitelisted receiver (contract)
+            None,                                 // Default actions
+            None,                                 // Default nonce
         );
-        assert!(validate_signed_delegate_action(&state, &sda).is_ok());
+
+        let result = validate_signed_delegate_action(&app_state, &signed_delegate_action);
+
+        assert!(
+            result.is_ok(),
+            "Expected OK validation for actions with whitelisted receiver."
+        );
+    }
+
+    #[tokio::test]
+    async fn test_validate_signed_delegate_action_only_sender_whitelisted() {
+        let app_state = create_app_state(
+            false, // Receiver (contract) whitelisting disabled
+            true,  // Sender whitelisting enabled
+            None,  // Whitelisted receivers (contracts) not used
+            Some(vec!["whitelisted_sender.testnet".to_string()]), // Whitelisted senders
+            false, // use_exchange disabled
+        )
+        .await;
+        let signed_delegate_action = create_signed_delegate_action(
+            Some("whitelisted_sender.testnet"), // sender_id matches the whitelisted sender
+            Some("receiver.testnet"),           // receiver_id
+            None,                               // Default actions
+            None,                               // Default nonce
+        );
+
+        let result = validate_signed_delegate_action(&app_state, &signed_delegate_action);
+
+        assert!(
+            result.is_ok(),
+            "Expected OK validation for actions with whitelisted sender."
+        );
+    }
+
+    #[tokio::test]
+    async fn test_validate_signed_delegate_action_both_whitelisted() {
+        let app_state = create_app_state(
+            true, // Receiver (contract) whitelisting enabled
+            true, // Sender whitelisting enabled
+            Some(vec!["whitelisted_receiver.testnet".to_string()]), // Whitelisted receivers (contracts)
+            Some(vec!["whitelisted_sender.testnet".to_string()]),   // Whitelisted senders
+            false,                                                  // Pay with FT disabled
+        )
+        .await;
+        let signed_delegate_action = create_signed_delegate_action(
+            Some("whitelisted_sender.testnet"), // sender_id matches the whitelisted sender
+            Some("whitelisted_receiver.testnet"), // receiver_id matches the whitelisted receiver (contract)
+            None,                                 // Default actions
+            None,                                 // Default nonce
+        );
+
+        let result = validate_signed_delegate_action(&app_state, &signed_delegate_action);
+
+        assert!(
+            result.is_ok(),
+            "Expected OK validation for actions with both sender and receiver whitelisted."
+        );
+    }
+
+    #[tokio::test]
+    async fn test_validate_action_receiver_not_in_whitelist() {
+        let app_state = create_app_state(
+            true,  // Receiver (contract) whitelisting enabled
+            false, // Sender whitelisting disabled
+            Some(vec!["whitelisted_receiver.testnet".to_string()]), // Whitelisted receivers (contracts)
+            None,                                                   // Whitelisted senders not used
+            false,                                                  // Pay with FT disabled
+        )
+        .await;
+        let signed_delegate_action = create_signed_delegate_action(
+            Some("sender.testnet"),                   // sender_id
+            Some("non_whitelisted_receiver.testnet"), // receiver_id is not in the whitelisted receivers
+            None,                                     // Default actions
+            None,                                     // Default nonce
+        );
+
+        let result = validate_signed_delegate_action(&app_state, &signed_delegate_action);
+
+        assert!(
+            result.is_err(),
+            "Expected validation failure due to receiver not being in whitelist."
+        );
+    }
+
+    #[tokio::test]
+    async fn test_validate_action_sender_not_in_whitelist() {
+        let app_state = create_app_state(
+            false, // Receiver (contract) whitelisting disabled
+            true,  // Sender whitelisting enabled
+            None,  // Whitelisted receivers not used
+            Some(vec!["whitelisted_sender.testnet".to_string()]), // Whitelisted senders
+            false, // use_exchange disabled
+        )
+        .await;
+        let signed_delegate_action = create_signed_delegate_action(
+            Some("non_whitelisted_sender.testnet"), // sender_id is not in the whitelisted senders
+            Some("receiver.testnet"),               // receiver_id
+            None,                                   // Default actions
+            None,                                   // Default nonce
+        );
+
+        let result = validate_signed_delegate_action(&app_state, &signed_delegate_action);
+
+        assert!(
+            result.is_err(),
+            "Expected validation failure due to sender not being in whitelist."
+        );
+    }
+
+    #[tokio::test]
+    async fn test_validate_action_both_sender_receiver_not_in_whitelist() {
+        let app_state = create_app_state(
+            true, // Receiver (contract) whitelisting enabled
+            true, // Sender whitelisting enabled
+            Some(vec!["whitelisted_receiver.testnet".to_string()]), // Whitelisted receivers
+            Some(vec!["whitelisted_sender.testnet".to_string()]), // Whitelisted senders
+            false, // Pay with FT disabled
+        )
+        .await;
+        let signed_delegate_action = create_signed_delegate_action(
+            Some("non_whitelisted_sender.testnet"), // sender_id is not in the whitelisted senders
+            Some("non_whitelisted_receiver.testnet"), // receiver_id is not in the whitelisted receivers
+            None,                                     // Default actions
+            None,                                     // Default nonce
+        );
+
+        let result = validate_signed_delegate_action(&app_state, &signed_delegate_action);
+
+        assert!(result.is_err(), "Expected validation failure due to both sender and receiver not being in their respective whitelists.");
+    }
+
+    #[tokio::test]
+    async fn test_valid_function_call_with_whitelisted_sender() {
+        let app_state = create_app_state(
+            false,                                    // use_whitelisted_contracts
+            true,                                     // use_whitelisted_senders
+            None,                                     // whitelisted_contracts
+            Some(vec!["sender.testnet".to_string()]), // whitelisted_senders
+            true,                                     // use_exchange
+        )
+        .await;
+
+        // Simulate a valid `ft_transfer` function call action
+        let actions = vec![Action::FunctionCall(Box::new(FunctionCallAction {
+            method_name: FT_TRANSFER_METHOD_NAME.to_string(),
+            args: BASE64_ENGINE
+                .encode("{\"receiver_id\":\"receiver.testnet\",\"amount\":\"10\"}")
+                .into_bytes(),
+            gas: 30_000_000_000_000,
+            deposit: FT_TRANSFER_ATTACHMENT_DEPOSIT_AMOUNT,
+        }))];
+
+        let signed_delegate_action = create_signed_delegate_action(
+            Some("sender.testnet"),   // Matching the whitelisted sender
+            Some("exchange.testnet"), // Receiver (not relevant in this case)
+            Some(actions),
+            None,
+        );
+
+        let result = validate_signed_delegate_action(&app_state, &signed_delegate_action);
+        assert!(
+            result.is_ok(),
+            "Expected validation to pass for a valid function call with a whitelisted sender."
+        );
+    }
+
+    #[tokio::test]
+    async fn test_invalid_method_name_with_whitelisted_sender() {
+        let app_state = create_app_state(
+            false,
+            true,
+            None,
+            Some(vec!["sender.testnet".to_string()]),
+            true,
+        )
+        .await;
+
+        // Using an invalid method name
+        let actions = vec![Action::FunctionCall(Box::new(FunctionCallAction {
+            method_name: "invalid_method".to_string(),
+            args: BASE64_ENGINE.encode("{}").into_bytes(),
+            gas: 30_000_000_000_000,
+            deposit: 1,
+        }))];
+
+        let signed_delegate_action = create_signed_delegate_action(
+            Some("sender.testnet"),
+            Some("exchange.testnet"),
+            Some(actions),
+            None,
+        );
+
+        let result = validate_signed_delegate_action(&app_state, &signed_delegate_action);
+        assert!(result.is_err(), "Expected validation to fail for an invalid method name, even with a whitelisted sender.");
+    }
+
+    #[tokio::test]
+    async fn test_valid_method_name_incorrect_deposit() {
+        let app_state = create_app_state(
+            false,
+            true,
+            None,
+            Some(vec!["sender.testnet".to_string()]),
+            true,
+        )
+        .await;
+
+        // Valid method name but incorrect deposit amount
+        let actions = vec![Action::FunctionCall(Box::new(FunctionCallAction {
+            method_name: FT_TRANSFER_METHOD_NAME.to_string(),
+            args: BASE64_ENGINE
+                .encode("{\"receiver_id\":\"receiver.testnet\",\"amount\":\"10\"}")
+                .into_bytes(),
+            gas: 30_000_000_000_000,
+            deposit: 0, // Incorrect deposit amount
+        }))];
+
+        let signed_delegate_action = create_signed_delegate_action(
+            Some("sender.testnet"),
+            Some("exchange.testnet"),
+            Some(actions),
+            None,
+        );
+
+        let result = validate_signed_delegate_action(&app_state, &signed_delegate_action);
+        assert!(
+            result.is_err(),
+            "Expected validation to fail for a correct method name with incorrect deposit amount."
+        );
+    }
+
+    #[tokio::test]
+    async fn test_non_whitelisted_sender_valid_method_and_deposit() {
+        let app_state = create_app_state(
+            false,
+            true,
+            None,
+            Some(vec!["whitelisted_sender.testnet".to_string()]),
+            true,
+        )
+        .await;
+
+        // Non-whitelisted sender but valid method and deposit
+        let actions = vec![Action::FunctionCall(Box::new(FunctionCallAction {
+            method_name: FT_TRANSFER_METHOD_NAME.to_string(),
+            args: BASE64_ENGINE
+                .encode("{\"receiver_id\":\"receiver.testnet\",\"amount\":\"10\"}")
+                .into_bytes(),
+            gas: 30_000_000_000_000,
+            deposit: FT_TRANSFER_ATTACHMENT_DEPOSIT_AMOUNT,
+        }))];
+
+        let signed_delegate_action = create_signed_delegate_action(
+            Some("non_whitelisted_sender.testnet"), // Non-whitelisted sender
+            Some("exchange.testnet"),
+            Some(actions),
+            None,
+        );
+
+        let result = validate_signed_delegate_action(&app_state, &signed_delegate_action);
+        assert!(result.is_err(), "Expected validation to fail for a non-whitelisted sender, despite valid method and deposit.");
     }
 
     #[tokio::test]
@@ -2049,12 +2265,13 @@ mod tests {
         let action = create_signed_delegate_action(
             None,
             None,
-            Some(vec![Action::FunctionCall(FunctionCallAction {
+            Some(vec![Action::FunctionCall(Box::new(FunctionCallAction {
                 method_name: "invalid_method".to_string(),
                 args: vec![],
                 gas: 30000000000000,
                 deposit: 1,
-            })]),
+            }))]),
+            None,
         );
         assert!(validate_signed_delegate_action(&state, &action).is_err());
     }
@@ -2065,9 +2282,248 @@ mod tests {
     async fn test_validation_fails_for_disallowed_action_type_exchange() {
         let state = create_app_state(false, true, None, None, true).await;
         let action = create_signed_delegate_action(
-            None, None, None, // default action type is transfer, which is not allowed
+            None, None, None, None, // default action type is transfer, which is not allowed
         );
         assert!(validate_signed_delegate_action(&state, &action).is_err());
+    }
+
+    #[tokio::test]
+    async fn test_validate_signed_delegate_action_ft_transfer_to_burn_address() {
+        let mut app_state = create_app_state(
+            false,                                                // use_whitelisted_contracts
+            true,                                                 // use_whitelisted_senders
+            None,                                                 // whitelisted_contracts
+            Some(vec!["whitelisted_sender.testnet".to_string()]), // whitelisted_senders
+            false,                                                // use_exchange
+        )
+        .await;
+        app_state.config.use_pay_with_ft = true;
+        app_state.config.burn_address = "burn_address.testnet".to_string();
+
+        // Create a SignedDelegateAction simulating an FT transfer to the burn address
+        let signed_delegate_action = create_signed_delegate_action(
+            Some("whitelisted_sender.testnet"),   // Mock sender
+            Some(&app_state.config.burn_address), // Use the configured burn address
+            Some(vec![Action::FunctionCall(Box::new(FunctionCallAction {
+                method_name: "ft_transfer".to_string(),
+                args: json!({
+                    "receiver_id": app_state.config.burn_address,
+                    "amount": "1000000000000000000" // Example amount
+                })
+                .to_string()
+                .into_bytes(),
+                gas: 300000000000000,
+                deposit: 1, // Simulated deposit for the action
+            }))]),
+            None,
+        );
+
+        let result = validate_signed_delegate_action(&app_state, &signed_delegate_action);
+        println!("{result:?}");
+        assert!(
+            result.is_ok(),
+            "Expected FT transfer to burn address to be valid."
+        );
+    }
+
+    #[tokio::test]
+    async fn test_validate_signed_delegate_action_ft_transfer_to_non_burn_address() {
+        let mut app_state = create_app_state(
+            false,                                                // use_whitelisted_contracts
+            true,                                                 // use_whitelisted_senders
+            None,                                                 // whitelisted_contracts
+            Some(vec!["whitelisted_sender.testnet".to_string()]), // whitelisted_senders
+            false,                                                // use_exchange
+        )
+        .await;
+        app_state.config.use_pay_with_ft = true;
+
+        // Create a SignedDelegateAction simulating an FT transfer to a non-burn address
+        let signed_delegate_action = create_signed_delegate_action(
+            Some("whitelisted_sender.testnet"), // Mock sender
+            Some("non_burn_address.testnet"),   // Use a non-burn address
+            Some(vec![Action::FunctionCall(Box::new(FunctionCallAction {
+                method_name: "ft_transfer".to_string(),
+                args: json!({
+                    "receiver_id": "non_burn_address.testnet",
+                    "amount": "1000000000000000000" // Example amount
+                })
+                .to_string()
+                .into_bytes(),
+                gas: 300000000000000,
+                deposit: 1, // Simulated deposit for the action
+            }))]),
+            None,
+        );
+
+        let result = validate_signed_delegate_action(&app_state, &signed_delegate_action);
+        assert!(
+            result.is_err(),
+            "Expected FT transfer to non-burn address to be invalid."
+        );
+    }
+
+    #[tokio::test]
+    async fn test_validate_signed_delegate_action_fastauth_with_contract_whitelisting_valid_scenario(
+    ) {
+        let mut app_state = create_app_state(
+            true,                                                   // use_whitelisted_contracts enabled
+            false, // use_whitelisted_senders disabled for this test
+            Some(vec!["whitelisted_contract.testnet".to_string()]), // Assuming this is irrelevant for this test due to fastauth specifics
+            None,  // No whitelisted_senders specified
+            false, // use_exchange disabled
+        )
+        .await;
+        app_state.config.use_fastauth_features = true;
+
+        // Simulate a valid SignedDelegateAction for AddKey by the same account to itself
+        let sender_id = "user_with_fastauth.testnet";
+        let receiver_id = sender_id; // Matching sender and receiver for fastauth scenario
+        let actions = vec![Action::AddKey(Box::new(AddKeyAction {
+            public_key: "ed25519:3GTVh8BQjY3t9ZUpzwCSMbFqWVTswei8uMBQBBnS5H6p"
+                .parse()
+                .unwrap(),
+            access_key: AccessKey {
+                nonce: 0,
+                permission: AccessKeyPermission::FullAccess,
+            },
+        }))];
+
+        let signed_delegate_action =
+            create_signed_delegate_action(Some(sender_id), Some(receiver_id), Some(actions), None);
+
+        let result = validate_signed_delegate_action(&app_state, &signed_delegate_action);
+
+        assert!(
+            result.is_ok(),
+            "Expected OK validation for valid fastauth scenario with contract whitelisting."
+        );
+    }
+
+    #[tokio::test]
+    async fn test_validate_signed_delegate_action_fastauth_with_contract_whitelisting_invalid_scenario(
+    ) {
+        let mut app_state = create_app_state(
+            true,                                                   // use_whitelisted_contracts enabled
+            false, // use_whitelisted_senders disabled for this test
+            Some(vec!["whitelisted_contract.testnet".to_string()]), // Assuming this is irrelevant for this test due to fastauth specifics
+            None,  // No whitelisted_senders specified
+            false, // use_exchange disabled
+        )
+        .await;
+        app_state.config.use_fastauth_features = true;
+
+        // Simulate an invalid SignedDelegateAction where sender and receiver IDs do not match
+        // and the action is not a self-action (e.g., transferring tokens), making it invalid under fastauth
+        let sender_id = "user_without_fastauth.testnet"; // Not matching receiver, simulating a non-self action
+        let receiver_id = "another_account.testnet";
+        let actions = vec![Action::Transfer(TransferAction { deposit: 1000 })]; // Non-key management action
+
+        let signed_delegate_action =
+            create_signed_delegate_action(Some(sender_id), Some(receiver_id), Some(actions), None);
+
+        let result = validate_signed_delegate_action(&app_state, &signed_delegate_action);
+
+        assert!(
+            result.is_err(),
+            "Expected error validation for invalid fastauth scenario with contract whitelisting."
+        );
+    }
+
+    #[tokio::test]
+    async fn test_both_whitelists_enabled_without_relevant_entries() {
+        let app_state = create_app_state(
+            true,                                               // use_whitelisted_contracts
+            true,                                               // use_whitelisted_senders
+            Some(vec!["allowed_contract.testnet".to_string()]), // whitelisted_contracts
+            Some(vec!["allowed_sender.testnet".to_string()]),   // whitelisted_senders
+            false,                                              // use_exchange
+        )
+        .await;
+        let signed_delegate_action = create_signed_delegate_action(
+            Some("unlisted_sender.testnet"), // sender_id not in whitelisted_senders
+            Some("unlisted_contract.testnet"), // receiver_id not in whitelisted_contracts
+            None,                            // Default actions
+            None,                            // Default nonce
+        );
+
+        let result = validate_signed_delegate_action(&app_state, &signed_delegate_action);
+
+        assert!(
+            result.is_err(),
+            "Expected validation to fail when both sender and receiver are not whitelisted."
+        );
+    }
+
+    #[tokio::test]
+    async fn test_exchange_feature_with_sender_whitelist() {
+        let app_state = create_app_state(
+            false,                                             // use_whitelisted_contracts
+            true,                                              // use_whitelisted_senders
+            None,                                              // whitelisted_contracts
+            Some(vec!["exchange_sender.testnet".to_string()]), // whitelisted_senders
+            true,                                              // use_exchange
+        )
+        .await;
+        let actions = vec![Action::FunctionCall(Box::new(FunctionCallAction {
+            method_name: FT_TRANSFER_METHOD_NAME.to_string(),
+            args: BASE64_ENGINE
+                .encode("{\"receiver_id\":\"valid_receiver.testnet\",\"amount\":\"1000\"}")
+                .into_bytes(),
+            gas: 300_000_000_000_000,
+            deposit: FT_TRANSFER_ATTACHMENT_DEPOSIT_AMOUNT,
+        }))];
+        let signed_delegate_action = create_signed_delegate_action(
+            Some("exchange_sender.testnet"), // sender_id in whitelisted_senders
+            Some("exchange.testnet"),        // receiver_id, arbitrary for this test
+            Some(actions),
+            None,
+        );
+
+        let result = validate_signed_delegate_action(&app_state, &signed_delegate_action);
+
+        assert!(
+            result.is_ok(),
+            "Expected validation to pass for a whitelisted sender performing a valid exchange operation."
+        );
+    }
+
+    #[tokio::test]
+    async fn test_pay_with_ft_and_exchange_conflict() {
+        let mut app_state = create_app_state(
+            false,                                       // use_whitelisted_contracts
+            true,                                        // use_whitelisted_senders
+            None,                                        // whitelisted_contracts
+            Some(vec!["ft_sender.testnet".to_string()]), // whitelisted_senders
+            true,                                        // use_exchange enabled
+        )
+        .await;
+        app_state.config.use_pay_with_ft = true;
+        app_state.config.burn_address = "burn_address.testnet".to_string();
+
+        // Attempting an FT transfer not to the burn address
+        let actions = vec![Action::FunctionCall(Box::new(FunctionCallAction {
+            method_name: FT_TRANSFER_METHOD_NAME.to_string(),
+            args: BASE64_ENGINE
+                .encode("{\"receiver_id\":\"another_address.testnet\",\"amount\":\"1000\"}")
+                .into_bytes(),
+            gas: 300_000_000_000_000,
+            deposit: FT_TRANSFER_ATTACHMENT_DEPOSIT_AMOUNT,
+        }))];
+        let signed_delegate_action = create_signed_delegate_action(
+            Some("ft_sender.testnet"),    // sender_id in whitelisted_senders
+            Some("some_service.testnet"), // receiver_id, arbitrary for this test
+            Some(actions),
+            None,
+        );
+
+        let result = validate_signed_delegate_action(&app_state, &signed_delegate_action);
+        println!("{result:?}");
+
+        assert!(
+            result.is_err(),
+            "Expected validation to fail due to conflict between use_pay_with_ft and the exchange operation not targeting the burn address."
+        );
     }
 
     #[tokio::test]
@@ -2077,6 +2533,51 @@ mod tests {
         let result = get_redis_cnxn(&redis_pool).await;
 
         assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_get_allowance() {
+        let redis_pool = create_test_redis_pool().await;
+        let account_id = "test_account.testnet";
+        let allowance: u64 = 90000000000000;
+
+        // Set an allowance for the test account
+        set_account_and_allowance_in_redis(&redis_pool, account_id, &allowance)
+            .await
+            .unwrap();
+
+        // Attempt to get the allowance for the test account
+        let result = get_remaining_allowance(&redis_pool, &account_id.parse().unwrap()).await;
+
+        assert_eq!(result.unwrap(), allowance);
+
+        // Clean up
+        let _: () = redis_pool.get().unwrap().del(account_id).unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_update_allowance() {
+        let redis_pool = create_test_redis_pool().await;
+        let account_id = "test_update_account.testnet";
+        let initial_allowance: u64 = 50000000000000;
+        let updated_allowance: u64 = 100000000000000;
+
+        // Set an initial allowance for the account
+        set_account_and_allowance_in_redis(&redis_pool, account_id, &initial_allowance)
+            .await
+            .unwrap();
+
+        // Update the allowance for the account
+        set_account_and_allowance_in_redis(&redis_pool, account_id, &updated_allowance)
+            .await
+            .unwrap();
+
+        // Retrieve and assert the updated allowance
+        let result = get_remaining_allowance(&redis_pool, &account_id.parse().unwrap()).await;
+        assert_eq!(result.unwrap(), updated_allowance);
+
+        // Clean up
+        let _: () = redis_pool.get().unwrap().del(account_id).unwrap();
     }
 
     #[tokio::test]
@@ -2090,6 +2591,41 @@ mod tests {
             update_all_allowances_in_redis(&redis_pool.await, network_env, allowance_in_gas).await;
 
         assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_register_account_and_allowance() {
+        let app_state = create_app_state(false, false, None, None, false).await;
+        let axum_state: State<Arc<AppState>> = convert_app_state_to_arc_app_state(app_state);
+
+        let account_id = "test_register_account.testnet";
+        let allowance: u64 = 90000000000000;
+        let oauth_token = "unique_oauth_token";
+        let redis_pool = create_test_redis_pool().await;
+
+        let account_id_and_allowance_oauth_json = AccountIdAllowanceOauthJson {
+            account_id: account_id.to_string(),
+            allowance,
+            oauth_token: oauth_token.to_string(),
+        };
+
+        // Register the account with an allowance and an OAuth token
+        register_account_and_allowance(axum_state, axum::Json(account_id_and_allowance_oauth_json))
+            .await
+            .into_response();
+
+        // Verify the allowance was set
+        let allowance_result =
+            get_remaining_allowance(&redis_pool, &account_id.parse().unwrap()).await;
+        assert_eq!(allowance_result.unwrap(), allowance);
+
+        // Verify the OAuth token was set
+        let oauth_token_result: bool = redis_pool.get().unwrap().exists(oauth_token).unwrap();
+        assert!(oauth_token_result);
+
+        // Clean up
+        let _: () = redis_pool.get().unwrap().del(account_id).unwrap();
+        let _: () = redis_pool.get().unwrap().del(oauth_token).unwrap();
     }
 
     #[test]
@@ -2131,8 +2667,7 @@ mod tests {
 
     #[tokio::test]
     // NOTE: uncomment ignore locally to run test bc redis doesn't work in github action build env
-    #[ignore]
-    async fn test_send_meta_tx() {
+    async fn test_send_meta_tx_invalid_signature() {
         // tests assume testnet in config
         // Test Transfer Action
         let actions = vec![Action::Transfer(TransferAction { deposit: 1 })];
@@ -2168,7 +2703,8 @@ mod tests {
         let body: BoxBody = response.into_body();
         let body_str: String = read_body_to_string(body).await.unwrap();
         println!("Response body: {body_str:?}");
-        assert_eq!(response_status, StatusCode::OK);
+        assert_eq!(response_status, StatusCode::INTERNAL_SERVER_ERROR);
+        assert!(body_str.contains("DelegateActionInvalidSignature"))
     }
 
     #[tokio::test]
@@ -2216,7 +2752,7 @@ mod tests {
         let max_block_height = 122790412;
         let pk_str: String = "ed25519:89GtfFzez3opomVpwa7i4m3nptHtc7Ha514XHMWszQtL".to_string();
         let public_key: PublicKey = PublicKey::from_str(&pk_str).unwrap();
-        let signature: Signature = Signature::from("ed25519:5uJu7KapH89h9cQm5btE1DKnbiFXSZNT7McDw5LHy8pdAt5Mz9DfuyQZadGgFExo88or9152iwcw2q12rnFWa6bg".parse().unwrap());
+        let signature: Signature = "ed25519:5uJu7KapH89h9cQm5btE1DKnbiFXSZNT7McDw5LHy8pdAt5Mz9DfuyQZadGgFExo88or9152iwcw2q12rnFWa6bg".parse().unwrap();
 
         // Call the `send_meta_tx` function with a sender that has no gas allowance
         // (and a receiver_id that isn't in whitelist)
@@ -2261,7 +2797,7 @@ mod tests {
         let max_block_height = 122790412;
         let pk_str: String = "ed25519:89GtfFzez3opomVpwa7i4m3nptHtc7Ha514XHMWszQtL".to_string();
         let public_key: PublicKey = PublicKey::from_str(&pk_str).unwrap();
-        let signature: Signature = Signature::from("ed25519:5uJu7KapH89h9cQm5btE1DKnbiFXSZNT7McDw5LHy8pdAt5Mz9DfuyQZadGgFExo88or9152iwcw2q12rnFWa6bg".parse().unwrap());
+        let signature: Signature = "ed25519:5uJu7KapH89h9cQm5btE1DKnbiFXSZNT7McDw5LHy8pdAt5Mz9DfuyQZadGgFExo88or9152iwcw2q12rnFWa6bg".parse().unwrap();
 
         // Call the `send_meta_tx` function with a sender that has no gas allowance
         // (and a receiver_id that isn't in whitelist)
@@ -2327,5 +2863,147 @@ mod tests {
         let add_message_args_b64 = BASE64_ENGINE.encode(add_message_args_json.to_string());
         println!("ft_transfer_args_b64: {ft_transfer_args_b64}");
         println!("add_message_args_b64: {add_message_args_b64}");
+    }
+
+    #[tokio::test]
+    async fn test_relay() {
+        // Call the `/relay` function happy path
+        let app_state = create_app_state(false, false, None, None, false).await;
+        let axum_state: State<Arc<AppState>> = convert_app_state_to_arc_app_state(app_state);
+        let account_id: AccountId = "relayer_test0.testnet".parse().unwrap();
+        let public_key: PublicKey =
+            PublicKey::from_str("ed25519:AMypJZjcMYwHCx2JFSwXAPuygDS5sy1vRNc2aoh3EjTN").unwrap();
+
+        let (nonce, _block_hash, _) = &axum_state
+            .rpc_client
+            .fetch_nonce(&account_id, &public_key)
+            .await
+            .unwrap();
+
+        let signed_delegate_action = create_signed_delegate_action(None, None, None, Some(*nonce));
+        assert!(signed_delegate_action.verify());
+
+        let serialized_signed_delegate_action = borsh::to_vec(&signed_delegate_action).unwrap();
+        let json_payload = Json(serialized_signed_delegate_action);
+
+        let response = relay(axum_state, json_payload).await.into_response();
+        let response_status = response.status();
+        let body: BoxBody = response.into_body();
+        let body_str: String = read_body_to_string(body).await.unwrap();
+        println!("Response body: {body_str:?}");
+        assert_eq!(response_status, StatusCode::OK);
+        assert!(body_str.contains("Relayed and sent transaction"));
+    }
+
+    #[tokio::test]
+    async fn test_relay_with_bad_signature() {
+        let app_state = create_app_state(false, false, None, None, false).await;
+        let axum_state: State<Arc<AppState>> = convert_app_state_to_arc_app_state(app_state);
+        let account_id: AccountId = "relayer_test0.testnet".parse().unwrap();
+        let public_key: PublicKey =
+            PublicKey::from_str("ed25519:AMypJZjcMYwHCx2JFSwXAPuygDS5sy1vRNc2aoh3EjTN").unwrap();
+
+        let (nonce, _block_hash, _) = &axum_state
+            .rpc_client
+            .fetch_nonce(&account_id, &public_key)
+            .await
+            .unwrap();
+
+        let mut signed_delegate_action =
+            create_signed_delegate_action(None, None, None, Some(*nonce));
+        signed_delegate_action.signature = "ed25519:5uJu7KapH89h9cQm5btE1DKnbiFXSZNT7McDw5LHy8pdAt5Mz9DfuyQZadGgFExo88or9152iwcw2q12rnFWa6bg".parse().unwrap();
+
+        let serialized_signed_delegate_action = borsh::to_vec(&signed_delegate_action).unwrap();
+        let json_payload = Json(serialized_signed_delegate_action);
+
+        let response = relay(axum_state, json_payload).await.into_response();
+        let response_status = response.status();
+        let body: BoxBody = response.into_body();
+        let body_str: String = read_body_to_string(body).await.unwrap();
+        println!("Response body: {body_str:?}");
+        assert_eq!(response_status, StatusCode::INTERNAL_SERVER_ERROR);
+        assert!(body_str.contains("DelegateActionInvalidSignature"));
+    }
+
+    #[tokio::test]
+    async fn test_relay_with_bad_nonce() {
+        let app_state = create_app_state(false, false, None, None, false).await;
+        let axum_state: State<Arc<AppState>> = convert_app_state_to_arc_app_state(app_state);
+
+        let nonce = 69;
+        let signed_delegate_action = create_signed_delegate_action(None, None, None, Some(nonce));
+        assert!(signed_delegate_action.verify());
+
+        let serialized_signed_delegate_action = borsh::to_vec(&signed_delegate_action).unwrap();
+        let json_payload = Json(serialized_signed_delegate_action);
+
+        let response = relay(axum_state, json_payload).await.into_response();
+        let response_status = response.status();
+        let body: BoxBody = response.into_body();
+        let body_str: String = read_body_to_string(body).await.unwrap();
+        println!("Response body: {body_str:?}");
+        assert_eq!(response_status, StatusCode::INTERNAL_SERVER_ERROR);
+        assert!(body_str.contains("DelegateActionInvalidNonce"));
+    }
+
+    #[tokio::test]
+    async fn test_relay_bad_payload() {
+        let app_state = create_app_state(false, false, None, None, false).await;
+        let axum_state: State<Arc<AppState>> = convert_app_state_to_arc_app_state(app_state);
+
+        let json_payload = Json(vec![]);
+        let response = relay(axum_state, json_payload).await.into_response();
+        let response_status = response.status();
+        let body: BoxBody = response.into_body();
+        let body_str: String = read_body_to_string(body).await.unwrap();
+        println!("Response body: {body_str:?}");
+        assert_eq!(response_status, StatusCode::BAD_REQUEST);
+        assert!(body_str.contains("Error deserializing payload data object"));
+    }
+
+    #[tokio::test]
+    async fn test_send_meta_tx_async() {
+        // Setup test environment
+        let app_state = create_app_state(false, false, None, None, false).await;
+        let axum_state: State<Arc<AppState>> = convert_app_state_to_arc_app_state(app_state);
+
+        // Create a valid SignedDelegateAction as done in test_relay()
+        let nonce = 1; // Simplified for example; in practice, fetch or mock a valid nonce
+        let signed_delegate_action = create_signed_delegate_action(None, None, None, Some(nonce));
+        assert!(signed_delegate_action.verify()); // Optional, verify the signature for correctness
+
+        // Serialize the SignedDelegateAction
+        let json_payload = Json(signed_delegate_action);
+
+        // Call the /send_meta_tx_async endpoint
+        let response = send_meta_tx_async(axum_state, json_payload)
+            .await
+            .into_response();
+
+        // Verify the response status is OK (200)
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn test_send_meta_tx_nopoll() {
+        // Setup test environment
+        let app_state = create_app_state(false, false, None, None, false).await;
+        let axum_state: State<Arc<AppState>> = convert_app_state_to_arc_app_state(app_state);
+
+        // Create a valid SignedDelegateAction as done in test_relay()
+        let nonce = 1; // Simplified for example; in practice, fetch or mock a valid nonce
+        let signed_delegate_action = create_signed_delegate_action(None, None, None, Some(nonce));
+        assert!(signed_delegate_action.verify()); // Optional, verify the signature for correctness
+
+        // Serialize the SignedDelegateAction
+        let json_payload = Json(signed_delegate_action);
+
+        // Call the /send_meta_tx_nopoll endpoint
+        let response = send_meta_tx_nopoll(axum_state, json_payload)
+            .await
+            .into_response();
+
+        // Verify the response status is OK (200)
+        assert_eq!(response.status(), StatusCode::OK);
     }
 }

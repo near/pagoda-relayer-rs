@@ -28,7 +28,7 @@ use_redis = false
 use_whitelisted_contracts = false
 
 # if you're using a whitelist for exchanges, you can set the following to true
-use_whitelisted_delegate_action_receiver_ids = true
+use_whitelisted_senders = true
 # for exchange_addresses, you can add the exchange contract account id
 whitelisted_delegate_action_receiver_ids = ["exchange_address0.near", "exchange_address1.near"]
 

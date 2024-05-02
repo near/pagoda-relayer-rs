@@ -15,6 +15,8 @@ relayer_account_id = "nomnomnom.testnet"
 # NOTE: account_id for all keys used should match as they should be derived from the same account_id
 # this is recommended for high throughput use cases to prevent nonce race conditions
 keys_filename = "./account_keys/nomnomnom.testnet.json"
+
+use_whitelisted_contracts = true
 # whitelisted contract ids (receiver_id)
 whitelisted_contracts = ["nomnomnom.testnet", "relayer_test0.testnet", "relayer_test1.testnet"]
 # if this is set to false, just call /send_meta_tx or /relay endpoints. All other endpoints are coupled with using redis

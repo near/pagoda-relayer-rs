@@ -17,7 +17,7 @@ keys_filename = "./account_keys/nomnomnom.testnet.json"
 # whitelisted contract ids (receiver_id)
 whitelisted_contracts = ["nomnomnom.testnet", "relayer_test0.testnet", "relayer_test1.testnet"]
 # use this to whitelist sender account ids (delegate_action_receiver_ids)
-use_whitelisted_delegate_action_receiver_ids = true
+use_whitelisted_senders = true
 # whitelisted sender account ids (delegate_action_receiver_ids)
 whitelisted_delegate_action_receiver_ids = ["relayer_test1.testnet"]
 
