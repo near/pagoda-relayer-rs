@@ -30,7 +30,7 @@ use_whitelisted_contracts = false
 # if you're using a whitelist for exchanges, you can set the following to true
 use_whitelisted_senders = true
 # for exchange_addresses, you can add the exchange contract account id
-whitelisted_senders = ["exchange_address0.near", "exchange_address1.near"]
+whitelisted_delegate_action_receiver_ids = ["exchange_address0.near", "exchange_address1.near"]
 
 # set use_fastauth_features to true if you're integrating with fastauth -
 # including check if sender id and receiver id are the same AND (AddKey or DeleteKey action) in process_signed_delegate_action fn

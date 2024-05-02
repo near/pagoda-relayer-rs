@@ -3,7 +3,7 @@
 # It covers gas for user transactions up to a allowance specified in Redis to interact with a whitelisted set of contracts.
 # Allowances are on a per account id basis and on signup (account creation in redis and on-chain) an oauth token is required to help with sybil resistance
 # This also makes use of a shared storage functionality on the near social db contract
-# and a whitelisted sender (whitelisted_senders)
+# and a whitelisted sender (whitelisted_delegate_action_receiver_ids)
 
 # Please note this is for reference only and you should be updating the values in the `config.toml` file found in the `pagoda-relayer-rs` directory.
 
@@ -27,7 +27,7 @@ shared_storage_keys_filename = "relayer-test.testnet.json"
 # whitelisted contract ids (receiver_id)
 whitelisted_contracts = ["relayer_test0.testnet"]
 # check if this is a whitelisted sender - to run without this feature, then set use_fastauth_features = false below
-whitelisted_senders = ["relayer_test1.testnet"]
+whitelisted_delegate_action_receiver_ids = ["relayer_test1.testnet"]
 # if this is set to false, just call /send_meta_tx or /relay endpoints. All other endpoints are coupled with using redis
 # this needs to be set to true if use_fastauth_features = true
 use_redis = true
