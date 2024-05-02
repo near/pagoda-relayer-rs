@@ -1,5 +1,5 @@
 # Whitelist Senders config
-# This is a config for a relayer that covers gas for a whitelisted set of users' transactions (identified by whitelisted_delegate_action_receiver_ids) to interact with a whitelisted set of contracts
+# This is a config for a relayer that covers gas for a whitelisted set of users' transactions (identified by whitelisted_senders) to interact with a whitelisted set of contracts
 
 # Please note this is for reference only and you should be updating the values in the `config.toml` file found in the `pagoda-relayer-rs` directory.
 
@@ -19,7 +19,7 @@ whitelisted_contracts = ["nomnomnom.testnet", "relayer_test0.testnet", "relayer_
 # use this to whitelist sender account ids (delegate_action_receiver_ids)
 use_whitelisted_senders = true
 # whitelisted sender account ids (delegate_action_receiver_ids)
-whitelisted_delegate_action_receiver_ids = ["relayer_test1.testnet"]
+whitelisted_senders = ["relayer_test1.testnet"]
 
 # if this is set to false, just call /send_meta_tx or /relay endpoints. All other endpoints are coupled with using redis
 # this needs to be set to true if use_fastauth_features = true

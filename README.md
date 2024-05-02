@@ -28,7 +28,7 @@ NOTE: If integrating with fastauth make sure to enable feature flags: `cargo bui
 2. Sign Meta Transactions returning a Signed Meta Transaction to be sent to the RPC later - (`/sign_meta_tx`, `/sign_meta_tx_no_filter`)
 3. Only pay for users interacting with certain contracts by whitelisting contracts addresses (`whitelisted_contracts` in `config.toml`) 
 4. Specify gas cost allowances for all accounts (`/update_all_allowances`) or on a per-user account basis (`/create_account_atomic`, `/register_account`, `/update_allowance`) and keep track of allowances (`/get_allowance`)
-5. Specify the accounts for which the relayer will cover gas fees (`whitelisted_delegate_action_receiver_ids` in `config.toml`)
+5. Specify the accounts for which the relayer will cover gas fees (`whitelisted_senders` in `config.toml`)
 6. Only allow users to register if they have a unique Oauth Token (`/create_account_atomic`, `/register_account`)
 7. Relayer Key Rotation: `keys_filenames` in `config.toml`
 8. Integrate with [Fastauth SDK](https://docs.near.org/tools/fastauth-sdk). See `/examples/configs/fastauth.toml`
