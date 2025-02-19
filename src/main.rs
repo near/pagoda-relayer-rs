@@ -3,7 +3,7 @@ mod redis_fns;
 mod rpc_conf;
 mod shared_storage;
 use axum::{
-    extract::{Json, State},
+    extract::{Json, Query, State},
     http::StatusCode,
     response::IntoResponse,
     routing::{get, post},
@@ -42,7 +42,7 @@ use tower_http::trace::TraceLayer;
 use tracing::{debug, error, info, instrument, warn};
 use tracing_flame::FlameLayer;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
-use utoipa::{OpenApi, ToSchema};
+use utoipa::{IntoParams, OpenApi, ToSchema};
 use utoipa_rapidoc::RapiDoc;
 use utoipa_swagger_ui::SwaggerUi;
 
@@ -438,7 +438,7 @@ impl Display for AccountIdAllowanceJson {
     }
 }
 
-#[derive(Clone, Debug, Deserialize, ToSchema)]
+#[derive(Clone, Debug, Deserialize, ToSchema, IntoParams)]
 struct AccountIdJson {
     #[schema(example = "example.near")]
     account_id: String,
@@ -674,7 +674,7 @@ async fn init_senders_infinite_allowance_fastauth(
 #[utoipa::path(
     get,
     path = "/get_allowance",
-    request_body = AccountIdJson,
+    params(AccountIdJson),
     responses(
         (status = 200, description = "90000000000000", body = String),
         (status = 403, description = "Invalid account_id", body = String),
@@ -684,13 +684,13 @@ async fn init_senders_infinite_allowance_fastauth(
 #[instrument]
 async fn get_allowance(
     State(state): State<Arc<AppState>>,
-    account_id_json: Json<AccountIdJson>,
+    Query(query): Query<AccountIdJson>,
 ) -> impl IntoResponse {
     // convert str account_id val from json to AccountId so I can reuse get_remaining_allowance fn
-    let Ok(account_id_val) = AccountId::from_str(&account_id_json.account_id) else {
+    let Ok(account_id_val) = AccountId::from_str(&query.account_id) else {
         return (
             StatusCode::FORBIDDEN,
-            format!("Invalid account_id: {}", account_id_json.account_id),
+            format!("Invalid account_id: {}", query.account_id),
         )
             .into_response();
     };
