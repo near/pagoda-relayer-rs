@@ -24,14 +24,15 @@ These features can be mixed and matched "à la carte". Use of one feature does n
 NOTE: If integrating with fastauth make sure to enable feature flags: `cargo build --features fastauth_features,shared_storage`. If using shared storage, make sure to enable feature flags: `cargo build --features shared_storage`
 
 
-1. Cover the gas costs of end users while allowing them to maintain custody of their funds and approve transactions (`/relay`, `/send_meta_tx`, `/send_meta_tx_async`, `/send_meta_tx_nopoll`)
-2. Only pay for users interacting with certain contracts by whitelisting contracts addresses (`whitelisted_contracts` in `config.toml`) 
-3. Specify gas cost allowances for all accounts (`/update_all_allowances`) or on a per-user account basis (`/create_account_atomic`, `/register_account`, `/update_allowance`) and keep track of allowances (`/get_allowance`)
-4. Specify the accounts for which the relayer will cover gas fees (`whitelisted_delegate_action_receiver_ids` in `config.toml`)
-5. Only allow users to register if they have a unique Oauth Token (`/create_account_atomic`, `/register_account`)
-6. Relayer Key Rotation: `keys_filenames` in `config.toml`
-7. Integrate with [Fastauth SDK](https://docs.near.org/tools/fastauth-sdk). See `/examples/configs/fastauth.toml`
-8. Mix and Match config options - see `examples/configs`
+1. Sign and send Meta Transactions to the RPC to cover the gas costs of end users while allowing them to maintain custody of their funds and approve transactions (`/relay`, `/send_meta_tx`, `/send_meta_tx_async`, `/send_meta_tx_nopoll`)
+2. Sign Meta Transactions returning a Signed Meta Transaction to be sent to the RPC later - (`/sign_meta_tx`, `/sign_meta_tx_no_filter`)
+3. Only pay for users interacting with certain contracts by whitelisting contracts addresses (`whitelisted_contracts` in `config.toml`) 
+4. Specify gas cost allowances for all accounts (`/update_all_allowances`) or on a per-user account basis (`/create_account_atomic`, `/register_account`, `/update_allowance`) and keep track of allowances (`/get_allowance`)
+5. Specify the accounts for which the relayer will cover gas fees (`whitelisted_delegate_action_receiver_ids` in `config.toml`)
+6. Only allow users to register if they have a unique Oauth Token (`/create_account_atomic`, `/register_account`)
+7. Relayer Key Rotation: `keys_filenames` in `config.toml`
+8. Integrate with [Fastauth SDK](https://docs.near.org/tools/fastauth-sdk). See `/examples/configs/fastauth.toml`
+9. Mix and Match config options - see `examples/configs`
 
 ### Features - COMING SOON
 1. Allow users to pay for gas fees using Fungible Tokens they hold. This can be implemented by either:
@@ -87,6 +88,8 @@ For more extensive testing, especially when you've deployed the relayer to multi
 - POST `/send_meta_tx`
 - POST `/send_meta_tx_async`
 - POST `/send_meta_tx_nopoll`
+- POST `/sign_meta_tx`
+- POST `/sign_meta_tx_no_filter`
 - GET `/get_allowance`
 - POST `/update_allowance`
 - POST `/update_all_allowances`
@@ -96,12 +99,92 @@ For more extensive testing, especially when you've deployed the relayer to multi
 ## Basic Setup - Local Dev <a id="basic_setup"></a>
 1. [Install Rust for NEAR Development](https://docs.near.org/sdk/rust/get-started)
 2. If you don't have a NEAR account, [create one](https://docs.near.org/concepts/basics/accounts/creating-accounts)
-3. With the account from step 2, create a json file in this directory in the format `{"account_id":"example.testnet","public_key":"ed25519:98GtfFzez3opomVpwa7i4m3nptHtc7Ha514XHMWszLtQ","private_key":"ed25519:YWuyKVQHE3rJQYRC3pRGV56o1qEtA1PnMYPDEtroc5kX4A4mWrJwF7XkzGe7JWNMABbtY4XFDBJEzgLyfPkwpzC"}` using a [Full Access Key](https://docs.near.org/concepts/basics/accounts/access-keys#key-types) from an account that has enough NEAR to cover the gas costs of transactions your server will be relaying. Usually, this will be a copy of the json file found in the `.near-credentials` directory. 
+3. With the account from step 2, create a json file in this directory in the format `[{"account_id":"example.testnet","public_key":"ed25519:98GtfFzez3opomVpwa7i4m3nptHtc7Ha514XHMWszLtQ","private_key":"ed25519:YWuyKVQHE3rJQYRC3pRGV56o1qEtA1PnMYPDEtroc5kX4A4mWrJwF7XkzGe7JWNMABbtY4XFDBJEzgLyfPkwpzC"}]` using a [Full Access Key](https://docs.near.org/concepts/basics/accounts/access-keys#key-types) from an account that has enough NEAR to cover the gas costs of transactions your server will be relaying. Usually, this will be a copy of the json file found in the `.near-credentials` directory. 
 4. Update values in `config.toml`
 5. Open up the `port` from `config.toml` in your machine's network settings
-6. Run the server using `cargo run`. 
-7. (OPTIONAL) To run with logs (tracing) enabled run `RUST_LOG=tower_http=debug cargo run`
-8. (OPTIONAL) If integrating with fastauth make sure to enable feature flags: `cargo build --features fastauth_features,shared_storage`. If using shared storage, make sure to enable feature flags: `cargo build --features shared_storage`
+6. Run the server using `cargo run`.
+7. Send a Meta Transaction!
+  - Get the most latest `block_height` and `nonce` for the public key on the account creating the `signed_delegate_action` by calling: POST https://rpc.testnet.near.org/ 
+```
+{
+  "jsonrpc": "2.0",
+  "id": "dontcare",
+  "method": "query",
+  "params": {
+    "request_type": "view_access_key",
+    "finality": "final",
+    "account_id": "your_account.testnet",
+    "public_key": "ed25519:7PjxWgJ7bWu9KAcunaUjvcd6Ct6ugaGaWLGQ7aSG4buS"
+  }
+}
+```
+which returns:
+```
+{
+    "jsonrpc": "2.0",
+    "result": {
+        "block_hash": "7cwPTgH7WgctP1dGKu3kNpa7CHGww9BLTvLvDumHEfPD",
+        "block_height": 161633049,
+        "nonce": 157762570000389,
+        "permission": "FullAccess"
+    },
+    "id": "dontcare"
+}
+```
+   - Use the `block_height` + 100 (or some other reasonable buffer) and `nonce` + 1 to create `delegate_action` 
+```
+{
+    "delegate_action": {
+        "actions": [
+            {
+                "Transfer": {
+                    "deposit": "1"
+                }
+            }
+        ],
+        "max_block_height": 161633149,
+        "nonce": 157762570000390,
+        "public_key": "ed25519:89GtfFzez3opomVpwa7i4m3nptHtc7Ha514XHMWszQtL",
+        "receiver_id": "reciever_account.testnet",
+        "sender_id": "your_account.testnet"
+    }
+}
+```
+   - sign the `delegate_action`. Ensure the signature is base64 encoded. An example to do this using Rust [near_primitives](https://crates.io/crates/near-primitives) and [near_crypto](https://crates.io/crates/near-crypto) would look like (you need to adjust for your setup using the json created):
+```
+let signer: InMemorySigner = InMemorySigner::from_file(/* &std::path::Path -- YOUR FILE HERE, should include public key to sign with */);
+let signed_meta_tx = Transaction {
+        nonce,
+        block_hash,
+        signer_id,
+        public_key,
+        receiver_id,
+        actions,
+    }
+    .sign(&signer);
+``` 
+   - add the newly created signature to create the `signed_delegate_action` and send it to the relayer running locally by calling: POST http://localhost:3030/send_meta_tx
+```
+{
+    "delegate_action": {
+        "actions": [
+            {
+                "Transfer": {
+                    "deposit": "1"
+                }
+            }
+        ],
+        "max_block_height": 161633149,
+        "nonce": 157762570000390,
+        "public_key": "ed25519:89GtfFzez3opomVpwa7i4m3nptHtc7Ha514XHMWszQtL",
+        "receiver_id": "reciever_account.testnet",
+        "sender_id": "your_account.testnet"
+    },
+    "signature": "ed25519:5uJu7KapH89h9cQm5btE1DKnbiFXSZNT7McDw5LHy8pdAt5Mz9DfuyQZadGgFExo88or9152iwcw2q12rnFWa6bg"
+}
+```
+8. (OPTIONAL) To run with logs (tracing) enabled run `RUST_LOG=tower_http=debug cargo run`
+9. (OPTIONAL) If integrating with fastauth make sure to enable feature flags: `cargo build --features fastauth_features,shared_storage`. If using shared storage, make sure to enable feature flags: `cargo build --features shared_storage`
 
 ## Redis Setup - OPTIONAL 
 NOTE: this is only needed if you intend to use whitelisting, allowances, and oauth functionality
@@ -114,15 +197,8 @@ NOTE: this is only needed if you intend to use whitelisting, allowances, and oau
 Option A using the [near-cli-rs](https://github.com/near/near-cli-rs):
 1. [Install near-cli-rs](https://github.com/near/near-cli-rs/releases/)
 2. Make sure you're using the appropriate network: `echo $NEAR_ENV`. To change it, `export NEAR_ENV=testnet`
-3. Make sure your keys you want to use for the relayer have a `'FullAccess'` access_key by running `near account list-keys your_relayer_account.testnet network-config testnet now`. This is required to create more keys. You need to have access to at least 1 `'FullAccess'` access_key
-4. Using the [add-key](https://github.com/near/near-cli-rs/blob/main/docs/GUIDE.en.md#add-key---add-an-access-key-to-an-account) command run `near-cli account add-key your_relayer_account.testnet grant-full-access autogenerate-new-keypair print-to-terminal network-config testnet sign-with-keychain send`
-   1. NOTE: You may need to modify `sign-with-keychain` depending on your setup
-   2. NOTE: You can also generate the above command yourself to accomodate your preferred setup using the interactive cli by running `near account add-key`. You can copy and paste the output command after completing your interactive session to repeat in step 5
-5. Repeat step 4 until you have the desired number of keys. Anywhere between 5-20 full access keys added to the relayer account works for most cases.
-6. To double-check your keys were successfully added to the account run `near account list-keys your_relayer_account.testnet network-config testnet now` again, and you should see the newly added full access keys
-7. Copy public and private (secret) key contents of the newly generated keys output in steps 4, 5 into the json file (`your_relayer_account.testnet.json` in the example) in the `account_keys` directory. You will now have a list of jsons with each json containing 3 entries: account_id, public_key, secret_key in the file.
-   1. NOTE: the `"account_id"` for all the keys will be your `your_relayer_account.testnet` account id since you added them to your account (not the implicit account ids from when the were generated)
-8. Make sure the `key_filename` in `config.toml` matches your (i.e. `"your_relayer_account.testnet.json"`) to the `keys_filenames` list in `config.toml`
+3. run `chmod 755 multikey_setup.sh`
+4. run `./multikey_setup.sh`
 
 
 Option B using the [near-cli](https://github.com/near/near-cli):
