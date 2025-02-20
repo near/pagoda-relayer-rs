@@ -17,7 +17,7 @@ pub async fn set_account_and_allowance_in_redis(
     let mut conn = get_redis_cnxn(redis_pool).await?;
 
     // Save the allowance information to Redis
-    conn.set(account_id, *allowance_in_gas)?;
+    let _: () = conn.set(account_id, *allowance_in_gas)?;
     Ok(())
 }
 
@@ -40,7 +40,7 @@ pub async fn set_oauth_token_in_redis(
     let mut conn = get_redis_cnxn(redis_pool).await?;
 
     // Save the allowance information to Relayer DB
-    conn.set(oauth_token, true)?;
+    let _: () = conn.set(oauth_token, true)?;
     Ok(())
 }
 
@@ -58,6 +58,7 @@ pub async fn get_remaining_allowance(
     Ok(remaining_allowance)
 }
 
+#[allow(dead_code)]
 #[derive(Debug)]
 pub enum UpdateRemainingAllowancError {
     Redis(RedisError),
@@ -83,7 +84,7 @@ pub async fn update_remaining_allowance(
         .or(Err(UpdateRemainingAllowancError::GasValueOverflowU64))?; // possible truncation
     let remaining_allowance = allowance - gas_used;
 
-    conn.set(account_id.as_str(), remaining_allowance)?;
+    let _: () = conn.set(account_id.as_str(), remaining_allowance)?;
 
     Ok(remaining_allowance)
 }

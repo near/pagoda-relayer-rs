@@ -144,7 +144,7 @@ impl SharedStoragePoolManager {
 
 /// Taken directly from near.social contract to deserialize into when calling
 /// get_account_storage.
-#[derive(Debug, Deserialize)]
+#[allow(dead_code)]
 pub struct StorageView {
     pub used_bytes: StorageUsage,
     pub available_bytes: StorageUsage,
