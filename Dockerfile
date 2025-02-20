@@ -1,4 +1,6 @@
 FROM rust:1.77 AS builder
+# Ensure Cargo is updated inside the container
+RUN rustup update && rustup default stable
 WORKDIR /usr/src/relayer
 COPY Cargo.toml Cargo.lock ./
 COPY src ./src
