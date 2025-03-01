@@ -1,0 +1,5 @@
+py-near
+base58
+cryptography
+pydantic
+loguru
